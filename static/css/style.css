@@ -258,6 +258,18 @@ fieldset {
   background: rgba(73, 26, 22, 0.55);
 }
 
+.browser-link {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-decoration: none;
+}
+
+.browser-gate {
+  min-height: calc(var(--viewport-stable-height) - 48px);
+  align-content: center;
+}
+
 .screen {
   display: grid;
   gap: 16px;

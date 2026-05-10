@@ -1,6 +1,10 @@
 (function () {
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
   const isAdmin = window.location.pathname === "/admin";
+  const query = new URLSearchParams(window.location.search);
+  const isExplicitDevMiniApp = query.get("miniapp_dev") === "1";
+  const hasTelegramInitData = Boolean(tg && tg.initData && tg.initDataUnsafe && tg.initDataUnsafe.user);
+  const canRunMiniApp = hasTelegramInitData || isExplicitDevMiniApp;
   const state = {
     me: null,
     platform: null,
@@ -23,6 +27,12 @@
       return;
     }
     document.body.classList.add("mini-body");
+    if (!canRunMiniApp) {
+      document.getElementById("userHeader").classList.add("hidden");
+      document.getElementById("bottomCta").classList.add("hidden");
+      renderBrowserGate();
+      return;
+    }
     renderUserHeader();
     initMiniApp();
   });
@@ -95,8 +105,8 @@
 
   function renderUserHeader() {
     const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || {};
-    const name = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") || "Senior coffee Drinker";
-    const login = tgUser.username ? `@${tgUser.username}` : tgUser.id ? `ID ${tgUser.id}` : "@zhenis_orda_inside";
+    const name = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") || "DEV Mini App";
+    const login = tgUser.username ? `@${tgUser.username}` : tgUser.id ? `ID ${tgUser.id}` : "@dev_preview";
     const avatar = document.getElementById("tgAvatar");
     const fallback = document.getElementById("tgAvatarFallback");
     document.getElementById("tgName").textContent = name;
@@ -132,7 +142,11 @@
   async function api(path, options = {}) {
     const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
     if (tg && tg.initData) headers["X-Telegram-Init-Data"] = tg.initData;
-    if (!tg || !tg.initData) headers["X-Miniapp-Dev"] = "1";
+    if (isExplicitDevMiniApp) {
+      headers["X-Miniapp-Dev"] = "1";
+      headers["X-Dev-Telegram-ID"] = query.get("telegram_id") || "777000";
+      headers["X-Dev-Username"] = query.get("username") || "dev_preview";
+    }
     const response = await fetch(path, Object.assign({}, options, { headers, credentials: "include" }));
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
@@ -157,6 +171,23 @@
     if (screen === "channels") return renderChannels();
     if (screen === "profile") return renderProfile();
     if (screen === "support") return renderSupport();
+  }
+
+  function renderBrowserGate() {
+    document.getElementById("appContent").innerHTML = `
+      <section class="screen browser-gate">
+        <div class="hero">
+          <p class="eyebrow">ZHENIS ORDA INSIDE</p>
+          <h1>Mini App тек Telegram ішінде ашылады.</h1>
+          <p class="muted">Қауіпсіздік үшін Telegram профилі браузерде көрсетілмейді. Mini App-ты Telegram боттағы батырма арқылы ашыңыз.</p>
+          <div class="pill-row"><span class="pill">Telegram initData required</span><span class="pill">Profile hidden</span></div>
+        </div>
+        <div class="grid two">
+          <a class="gold-btn browser-link" href="/admin">Admin panel</a>
+          <a class="ghost-btn browser-link" href="?miniapp_dev=1">Dev preview</a>
+        </div>
+      </section>
+    `;
   }
 
   function setScreen(screen) {

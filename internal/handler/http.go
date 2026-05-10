@@ -209,18 +209,18 @@ func (s *Server) withMiniAppAuth(next http.Handler) http.Handler {
 }
 
 func (s *Server) userFromMiniApp(r *http.Request) (repository.User, error) {
-	if s.cfg.Env == "development" && (r.URL.Query().Get("miniapp_dev") == "1" || r.Header.Get("X-Miniapp-Dev") == "1" || r.Header.Get("X-Telegram-Init-Data") == "") {
+	if s.cfg.Env == "development" && (r.URL.Query().Get("miniapp_dev") == "1" || r.Header.Get("X-Miniapp-Dev") == "1") {
 		telegramID := int64(777000)
-		if raw := r.URL.Query().Get("telegram_id"); raw != "" {
+		if raw := firstNonEmpty(r.URL.Query().Get("telegram_id"), r.Header.Get("X-Dev-Telegram-ID")); raw != "" {
 			if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil {
 				telegramID = parsed
 			}
 		}
-		username := r.URL.Query().Get("username")
+		username := firstNonEmpty(r.URL.Query().Get("username"), r.Header.Get("X-Dev-Username"))
 		if username == "" {
-			username = "test"
+			username = "dev_preview"
 		}
-		user, _, err := s.store.RegisterOrUpdateTelegramUser(r.Context(), repository.TelegramUserInput{TelegramID: telegramID, Username: username, FirstName: "Senior", LastName: "Drinker", Language: "kk"})
+		user, _, err := s.store.RegisterOrUpdateTelegramUser(r.Context(), repository.TelegramUserInput{TelegramID: telegramID, Username: username, FirstName: "Dev", LastName: "Preview", Language: "kk"})
 		return user, err
 	}
 	initData, err := s.validator.Validate(r.Header.Get("X-Telegram-Init-Data"), time.Now())
@@ -240,6 +240,15 @@ func (s *Server) userFromMiniApp(r *http.Request) (repository.User, error) {
 		StartParam: initData.StartParam,
 	})
 	return user, err
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (s *Server) withBrowserAuth(next http.HandlerFunc) http.Handler {

@@ -42,11 +42,11 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		Token:                     "token",
-		Port:                      getEnv("PORT", "8081"),
+		Token:                     strings.TrimSpace(os.Getenv("TOKEN")),
+		Port:                      getEnv("PORT", "8088"),
 		Env:                       getEnv("ENV", "development"),
-		BaseURL:                   strings.TrimRight(getEnv("BASE_URL", "http://localhost:8080"), "/"),
-		MiniAppURL:                strings.TrimRight(getEnv("MINI_APP_URL", "http://localhost:8080"), "/"),
+		BaseURL:                   strings.TrimRight(getEnv("BASE_URL", "http://localhost:8088"), "/"),
+		MiniAppURL:                strings.TrimRight(getEnv("MINI_APP_URL", "http://localhost:8088"), "/"),
 		DBPath:                    getEnv("DB_PATH", "data/zhenis_orda.sqlite"),
 		RedisAddr:                 getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:             os.Getenv("REDIS_PASSWORD"),
@@ -217,5 +217,5 @@ func (c Config) PaymentURL(provider string) string {
 }
 
 func (c Config) String() string {
-	return fmt.Sprintf("env=%s port=%s db=%s redis=%s bot_disabled=%t", c.Env, c.Port, c.DBPath, c.RedisAddr, c.DisableTelegramBot)
+	return fmt.Sprintf("env=%s port=%s base_url=%s mini_app_url=%s db=%s redis=%s bot_disabled=%t", c.Env, c.Port, c.BaseURL, c.MiniAppURL, c.DBPath, c.RedisAddr, c.DisableTelegramBot)
 }

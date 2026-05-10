@@ -48,7 +48,7 @@ func newTestHTTPServer(t *testing.T, env string) *handler.Server {
 
 func TestMiniAppDevAuth(t *testing.T) {
 	srv := newTestHTTPServer(t, "development")
-	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/me?miniapp_dev=1", nil)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -63,8 +63,8 @@ func TestMiniAppDevAuth(t *testing.T) {
 	}
 }
 
-func TestMiniAppProductionRequiresInitData(t *testing.T) {
-	srv := newTestHTTPServer(t, "production")
+func TestMiniAppRequiresInitDataWithoutExplicitDev(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
 	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
