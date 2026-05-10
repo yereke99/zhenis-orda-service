@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#080604" />
+    <title>ZHENIS ORDA INSIDE</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script defer src="/static/js/app.js"></script>
+  </head>
+  <body>
+    <div id="miniApp" class="app-shell">
+      <header class="user-header" id="userHeader">
+        <div class="avatar-wrap">
+          <img class="avatar" id="tgAvatar" alt="" />
+          <div class="avatar-fallback" id="tgAvatarFallback">Z</div>
+        </div>
+        <div class="user-meta">
+          <div class="user-name" id="tgName">ZHENIS ORDA</div>
+          <div class="user-login" id="tgLogin">@inside</div>
+        </div>
+        <div class="brand-mark" aria-label="ZHENIS ORDA">ZO</div>
+      </header>
+
+      <main class="content" id="appContent"></main>
+
+      <footer class="bottom-cta" id="bottomCta"></footer>
+    </div>
+
+    <div id="adminApp" class="admin-shell hidden">
+      <aside class="admin-sidebar">
+        <div class="admin-brand">
+          <div class="brand-mark">ZO</div>
+          <div>
+            <strong>ZHENIS ORDA</strong>
+            <span>INSIDE ADMIN</span>
+          </div>
+        </div>
+        <nav id="adminNav" class="admin-nav"></nav>
+      </aside>
+      <main class="admin-main">
+        <header class="admin-topbar">
+          <div>
+            <p class="eyebrow">Genius Orda</p>
+            <h1 id="adminTitle">Dashboard</h1>
+          </div>
+          <button class="ghost-btn" id="adminLogout" type="button">Logout</button>
+        </header>
+        <section id="adminContent" class="admin-content"></section>
+      </main>
+    </div>
+  </body>
+</html>

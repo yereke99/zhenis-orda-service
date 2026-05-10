@@ -1,0 +1,44 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: build/Dockerfile
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      ENV: ${ENV:-development}
+      PORT: 8080
+      TOKEN: ${TOKEN:-}
+      BASE_URL: ${BASE_URL:-http://localhost:8080}
+      MINI_APP_URL: ${MINI_APP_URL:-http://localhost:8080}
+      DB_PATH: /app/data/zhenis_orda.sqlite
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+      ADMIN_IDS: ${ADMIN_IDS:-}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      UPLOAD_DIR: /app/uploads
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080}
+      KASPI_PAY_URL: ${KASPI_PAY_URL:-}
+      KASPI_QR_IMAGE_URL: ${KASPI_QR_IMAGE_URL:-}
+      HALYK_PAYMENT_URL: ${HALYK_PAYMENT_URL:-}
+      BANK_CARD_PAYMENT_URL: ${BANK_CARD_PAYMENT_URL:-}
+      PAYMENT_PENDING_TTL_MINUTES: ${PAYMENT_PENDING_TTL_MINUTES:-60}
+      SUBSCRIPTION_DEFAULT_DAYS: ${SUBSCRIPTION_DEFAULT_DAYS:-30}
+      DISABLE_TELEGRAM_BOT: ${DISABLE_TELEGRAM_BOT:-true}
+    volumes:
+      - app-data:/app/data
+      - app-uploads:/app/uploads
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+volumes:
+  app-data:
+  app-uploads:
+  redis-data:

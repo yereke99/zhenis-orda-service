@@ -1,0 +1,404 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+
+	"zhenis-orda-service/config"
+	"zhenis-orda-service/internal/i18n"
+	"zhenis-orda-service/internal/repository"
+	"zhenis-orda-service/internal/service"
+
+	"go.uber.org/zap"
+)
+
+type InviteIssuer interface {
+	CreateInviteLink(ctx context.Context, chatID, name string, expiresAt time.Time) (string, error)
+	SendMessage(ctx context.Context, chatID int64, text string) error
+}
+
+type Server struct {
+	cfg       config.Config
+	store     *repository.Store
+	kv        KV
+	sessions  SessionManager
+	validator service.TelegramInitValidator
+	logger    *zap.Logger
+	bot       InviteIssuer
+}
+
+type ctxKey string
+
+const (
+	ctxUserKey    ctxKey = "user"
+	ctxAdminKey   ctxKey = "admin"
+	sessionCookie        = "zo_admin_session"
+)
+
+func NewServer(cfg config.Config, store *repository.Store, kv KV, logger *zap.Logger) *Server {
+	return &Server{
+		cfg:       cfg,
+		store:     store,
+		kv:        kv,
+		sessions:  NewSessionManager(kv, cfg.BrowserSessionTTL),
+		validator: service.NewTelegramInitValidator(cfg.Token, cfg.TelegramInitDataMaxAge),
+		logger:    logger,
+	}
+}
+
+func (s *Server) SetBot(bot InviteIssuer) {
+	s.bot = bot
+}
+
+func (s *Server) Routes() http.Handler {
+	mux := http.NewServeMux()
+
+	staticDir := http.Dir("static")
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(staticDir)))
+	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.cfg.UploadDir))))
+	mux.HandleFunc("GET /", s.serveIndex)
+	mux.HandleFunc("GET /admin", s.serveIndex)
+
+	mux.HandleFunc("POST /api/browser-auth/login", s.handleBrowserLogin)
+	mux.Handle("POST /api/browser-auth/logout", s.withBrowserAuth(s.handleBrowserLogout))
+	mux.Handle("GET /api/browser-auth/me", s.withBrowserAuth(s.handleBrowserMe))
+
+	mux.Handle("GET /api/me", s.withMiniAppAuth(http.HandlerFunc(s.handleMe)))
+	mux.Handle("GET /api/platform", s.withMiniAppAuth(http.HandlerFunc(s.handlePlatform)))
+	mux.Handle("POST /api/diagnostics", s.withMiniAppAuth(http.HandlerFunc(s.handleDiagnostics)))
+	mux.Handle("GET /api/tariffs", s.withMiniAppAuth(http.HandlerFunc(s.handleTariffs)))
+	mux.Handle("POST /api/payments", s.withMiniAppAuth(http.HandlerFunc(s.handleCreatePayment)))
+	mux.Handle("GET /api/payments/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handlePayment)))
+	mux.Handle("GET /api/subscription", s.withMiniAppAuth(http.HandlerFunc(s.handleSubscription)))
+	mux.Handle("GET /api/levels", s.withMiniAppAuth(http.HandlerFunc(s.handleLevels)))
+	mux.Handle("GET /api/levels/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handleLevel)))
+	mux.Handle("GET /api/lessons", s.withMiniAppAuth(http.HandlerFunc(s.handleLessons)))
+	mux.Handle("GET /api/lessons/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handleLesson)))
+	mux.Handle("POST /api/lessons/{id}/watched", s.withMiniAppAuth(http.HandlerFunc(s.handleLessonWatched)))
+	mux.Handle("GET /api/tests/{level_id}", s.withMiniAppAuth(http.HandlerFunc(s.handleTest)))
+	mux.Handle("POST /api/tests/{level_id}/submit", s.withMiniAppAuth(http.HandlerFunc(s.handleSubmitTest)))
+	mux.Handle("GET /api/assignments/{level_id}", s.withMiniAppAuth(http.HandlerFunc(s.handleAssignment)))
+	mux.Handle("POST /api/assignments/{level_id}/submit", s.withMiniAppAuth(http.HandlerFunc(s.handleSubmitAssignment)))
+	mux.Handle("GET /api/referral", s.withMiniAppAuth(http.HandlerFunc(s.handleReferral)))
+	mux.Handle("GET /api/bonuses", s.withMiniAppAuth(http.HandlerFunc(s.handleBonuses)))
+	mux.Handle("GET /api/coins", s.withMiniAppAuth(http.HandlerFunc(s.handleCoins)))
+	mux.Handle("GET /api/streams", s.withMiniAppAuth(http.HandlerFunc(s.handleStreams)))
+	mux.Handle("GET /api/channels", s.withMiniAppAuth(http.HandlerFunc(s.handleChannels)))
+	mux.Handle("POST /api/channels/{id}/invite", s.withMiniAppAuth(http.HandlerFunc(s.handleIssueInvite)))
+	mux.Handle("POST /api/support", s.withMiniAppAuth(http.HandlerFunc(s.handleSupport)))
+
+	admin := func(h http.HandlerFunc, roles ...string) http.Handler {
+		return s.withBrowserAuth(s.withRole(h, roles...))
+	}
+	mux.Handle("GET /api/admin/stats", admin(s.handleAdminStats, repository.RoleSuperAdmin, repository.RoleAnalyst, repository.RoleSupport, repository.RoleContentManager))
+	mux.Handle("GET /api/admin/users", admin(s.handleAdminUsers, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("GET /api/admin/users/{id}", admin(s.handleAdminUser, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("PATCH /api/admin/users/{id}/access", admin(s.handleAdminUserAccess, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("POST /api/admin/users/{id}/bonus", admin(s.handleAdminUserBonus, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("GET /api/admin/payments", admin(s.handleAdminPayments, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("GET /api/admin/payments/{id}", admin(s.handleAdminPayment, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/payments/{id}/approve", admin(s.handleAdminApprovePayment, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("POST /api/admin/payments/{id}/reject", admin(s.handleAdminRejectPayment, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("GET /api/admin/subscriptions", admin(s.handleAdminSubscriptions, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("PATCH /api/admin/subscriptions/{id}", admin(s.handleAdminPatchSubscription, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("GET /api/admin/levels", admin(s.handleAdminLevels, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/levels", admin(s.handleAdminPostLevel, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("PATCH /api/admin/levels/{id}", admin(s.handleAdminPostLevel, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("DELETE /api/admin/levels/{id}", admin(s.handleAdminDeleteLevel, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("GET /api/admin/lessons", admin(s.handleAdminLessons, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/lessons", admin(s.handleAdminPostLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("PATCH /api/admin/lessons/{id}", admin(s.handleAdminPostLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("DELETE /api/admin/lessons/{id}", admin(s.handleAdminDeleteLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("GET /api/admin/tests", admin(s.handleAdminPlaceholder("tests"), repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/tests", admin(s.handleAdminPostTest, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("PATCH /api/admin/tests/{id}", admin(s.handleAdminPostTest, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("DELETE /api/admin/tests/{id}", admin(s.handleAdminDeleteTest, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("GET /api/admin/assignments", admin(s.handleAdminPlaceholder("assignments"), repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
+	mux.Handle("GET /api/admin/assignments/submissions", admin(s.handleAdminPlaceholder("assignment_submissions"), repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("PATCH /api/admin/assignments/submissions/{id}", admin(s.handleAdminReviewAssignmentSubmission, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("GET /api/admin/referrals", admin(s.handleAdminPlaceholder("referrals"), repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("GET /api/admin/coins", admin(s.handleAdminPlaceholder("coins"), repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/coins/adjust", admin(s.handleAdminAdjustCoins, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("GET /api/admin/channels", admin(s.handleAdminChannels, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/channels", admin(s.handleAdminPostChannel, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleSupport))
+	mux.Handle("PATCH /api/admin/channels/{id}", admin(s.handleAdminPostChannel, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleSupport))
+	mux.Handle("DELETE /api/admin/channels/{id}", admin(s.handleAdminDeleteChannel, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("POST /api/admin/channels/{id}/issue-invite", admin(s.handleAdminIssueInvite, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("GET /api/admin/streams", admin(s.handleAdminStreams, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/streams", admin(s.handleAdminPostStream, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("PATCH /api/admin/streams/{id}", admin(s.handleAdminPostStream, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("DELETE /api/admin/streams/{id}", admin(s.handleAdminDeleteStream, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("POST /api/admin/broadcast", admin(s.handleAdminBroadcast, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("GET /api/admin/settings", admin(s.handleAdminSettings, repository.RoleSuperAdmin, repository.RoleAnalyst))
+	mux.Handle("PATCH /api/admin/settings", admin(s.handleAdminPatchSettings, repository.RoleSuperAdmin))
+	mux.Handle("GET /api/admin/audit", admin(s.handleAdminAudit, repository.RoleSuperAdmin, repository.RoleAnalyst))
+
+	return s.withCORS(s.recoverPanic(mux))
+}
+
+func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" && r.URL.Path != "/admin" {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, filepath.Join("static", "index.html"))
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if s.originAllowed(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Telegram-Init-Data, X-Miniapp-Dev")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) originAllowed(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	for _, allowed := range s.cfg.AllowedOrigins {
+		if allowed == "*" || strings.EqualFold(allowed, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) recoverPanic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if value := recover(); value != nil {
+				s.logger.Error("http panic", zap.Any("panic", value), zap.String("path", r.URL.Path))
+				writeError(w, http.StatusInternalServerError, "internal error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) withMiniAppAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, err := s.userFromMiniApp(r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "telegram auth required")
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxUserKey, user)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (s *Server) userFromMiniApp(r *http.Request) (repository.User, error) {
+	if s.cfg.Env == "development" && (r.URL.Query().Get("miniapp_dev") == "1" || r.Header.Get("X-Miniapp-Dev") == "1" || r.Header.Get("X-Telegram-Init-Data") == "") {
+		telegramID := int64(777000)
+		if raw := r.URL.Query().Get("telegram_id"); raw != "" {
+			if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				telegramID = parsed
+			}
+		}
+		username := r.URL.Query().Get("username")
+		if username == "" {
+			username = "test"
+		}
+		user, _, err := s.store.RegisterOrUpdateTelegramUser(r.Context(), repository.TelegramUserInput{TelegramID: telegramID, Username: username, FirstName: "Senior", LastName: "Drinker", Language: "kk"})
+		return user, err
+	}
+	initData, err := s.validator.Validate(r.Header.Get("X-Telegram-Init-Data"), time.Now())
+	if err != nil {
+		return repository.User{}, err
+	}
+	language := "kk"
+	if strings.HasPrefix(initData.User.Language, "ru") {
+		language = "ru"
+	}
+	user, _, err := s.store.RegisterOrUpdateTelegramUser(r.Context(), repository.TelegramUserInput{
+		TelegramID: initData.User.ID,
+		Username:   initData.User.Username,
+		FirstName:  initData.User.FirstName,
+		LastName:   initData.User.LastName,
+		Language:   language,
+		StartParam: initData.StartParam,
+	})
+	return user, err
+}
+
+func (s *Server) withBrowserAuth(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(sessionCookie)
+		if err != nil || cookie.Value == "" {
+			writeError(w, http.StatusUnauthorized, "admin auth required")
+			return
+		}
+		session, err := s.sessions.Get(r.Context(), cookie.Value)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "admin auth required")
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxAdminKey, repository.AdminActor{ID: session.AdminID, Role: session.Role, Name: session.Name})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (s *Server) withRole(next http.HandlerFunc, roles ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor := adminFromContext(r.Context())
+		if len(roles) == 0 || actor.Role == repository.RoleSuperAdmin {
+			next(w, r)
+			return
+		}
+		for _, role := range roles {
+			if actor.Role == role {
+				next(w, r)
+				return
+			}
+		}
+		writeError(w, http.StatusForbidden, "forbidden")
+	}
+}
+
+func userFromContext(ctx context.Context) repository.User {
+	user, _ := ctx.Value(ctxUserKey).(repository.User)
+	return user
+}
+
+func adminFromContext(ctx context.Context) repository.AdminActor {
+	actor, _ := ctx.Value(ctxAdminKey).(repository.AdminActor)
+	return actor
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]any{"error": message})
+}
+
+func decodeJSON(r *http.Request, dest any) error {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(dest)
+}
+
+func parsePathID(r *http.Request, key string) (int64, error) {
+	return strconv.ParseInt(r.PathValue(key), 10, 64)
+}
+
+func parsePathInt(r *http.Request, key string) (int, error) {
+	value, err := strconv.Atoi(r.PathValue(key))
+	return value, err
+}
+
+func mapRepoError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, repository.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, repository.ErrInvalidState):
+		writeError(w, http.StatusConflict, "invalid state")
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
+	return true
+}
+
+func (s *Server) handleBrowserLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Password string `json:"password"`
+		Login    string `json:"login"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	ok := false
+	if s.cfg.AdminPasswordHash != "" {
+		ok = bcrypt.CompareHashAndPassword([]byte(s.cfg.AdminPasswordHash), []byte(req.Password)) == nil
+	} else if s.cfg.Env == "development" {
+		ok = req.Password == "admin"
+	}
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid password")
+		return
+	}
+	adminID := int64(1)
+	if len(s.cfg.AdminIDs) > 0 {
+		adminID = s.cfg.AdminIDs[0]
+	}
+	session := BrowserSession{AdminID: adminID, Role: repository.RoleSuperAdmin, Name: "Super Admin"}
+	token, err := s.sessions.Create(r.Context(), session)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "session error")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(s.cfg.BrowserSessionTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   s.cfg.IsProduction(),
+		SameSite: http.SameSiteLaxMode,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"admin": session})
+}
+
+func (s *Server) handleBrowserLogout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(sessionCookie); err == nil {
+		_ = s.sessions.Delete(r.Context(), cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.cfg.IsProduction(), SameSite: http.SameSiteLaxMode})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleBrowserMe(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"admin": adminFromContext(r.Context())})
+}
+
+func ensureUploadDir(path string) error {
+	return os.MkdirAll(path, 0o755)
+}
+
+func safePublicUploadPath(uploadDir, filePath string) string {
+	if filePath == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(uploadDir, filePath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return filePath
+	}
+	return "/uploads/" + strings.ReplaceAll(rel, string(os.PathSeparator), "/")
+}
+
+func formatRejectMessage(language, comment string) string {
+	if strings.TrimSpace(comment) == "" {
+		comment = "чек анық емес"
+	}
+	return fmt.Sprintf(i18n.T(language, "payment_rejected"), comment)
+}

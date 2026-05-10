@@ -1,0 +1,8 @@
+data/
+uploads/
+.env
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+tmp/
+dist/
