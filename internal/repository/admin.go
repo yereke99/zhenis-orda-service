@@ -5,8 +5,21 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
+
+type AdminLessonFilter struct {
+	Query  string
+	Level  int
+	Status string
+}
+
+type AdminTestFilter struct {
+	Query  string
+	Level  int
+	Status string
+}
 
 func (s *Store) AdminStats(ctx context.Context) (AdminStats, error) {
 	var stats AdminStats
@@ -19,6 +32,10 @@ func (s *Store) AdminStats(ctx context.Context) (AdminStats, error) {
 		{&stats.ExpiredSubscriptions, `SELECT COUNT(*) FROM subscriptions WHERE status = 'expired'`},
 		{&stats.PendingPayments, `SELECT COUNT(*) FROM payments WHERE status = 'pending'`},
 		{&stats.UploadedReceipts, `SELECT COUNT(*) FROM payments WHERE status = 'uploaded_receipt'`},
+		{&stats.ApprovedPayments, `SELECT COUNT(*) FROM payments WHERE status = 'approved'`},
+		{&stats.MonthlyRevenueKZT, `SELECT COALESCE(SUM(amount_kzt), 0) FROM payments WHERE status = 'approved' AND approved_at >= datetime('now', 'start of month')`},
+		{&stats.LessonsCount, `SELECT COUNT(*) FROM lessons WHERE is_active = 1`},
+		{&stats.TestsCount, `SELECT COUNT(*) FROM tests WHERE is_active = 1`},
 		{&stats.ReferralsPaid, `SELECT COUNT(*) FROM referrals WHERE status IN ('paid','rewarded')`},
 		{&stats.CoinsIssued, `SELECT COALESCE(SUM(amount), 0) FROM coin_transactions WHERE amount > 0`},
 	}
@@ -66,7 +83,7 @@ func (s *Store) ListUsers(ctx context.Context, search string, limit, offset int)
 	return users, nil
 }
 
-func (s *Store) SetUserAccessClosed(ctx context.Context, userID int64, closed bool) error {
+func (s *Store) SetUserAccessClosed(ctx context.Context, userID string, closed bool) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET access_closed = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, boolInt(closed), userID)
 	return err
 }
@@ -104,6 +121,9 @@ func (s *Store) ListPayments(ctx context.Context, status string, limit, offset i
 	for i := range payments {
 		user, _ := s.GetUserByID(ctx, payments[i].UserID)
 		payments[i].User = &user
+		if receipt, _ := s.LatestReceiptForPayment(ctx, payments[i].ID); receipt != nil {
+			payments[i].Receipt = receipt
+		}
 	}
 	return payments, nil
 }
@@ -135,7 +155,7 @@ func (s *Store) ListSubscriptions(ctx context.Context, status string, limit, off
 	return subs, rows.Err()
 }
 
-func (s *Store) UpdateSubscriptionStatus(ctx context.Context, subscriptionID int64, status string) error {
+func (s *Store) UpdateSubscriptionStatus(ctx context.Context, subscriptionID string, status string) error {
 	if status != SubscriptionStatusActive && status != SubscriptionStatusExpired && status != SubscriptionStatusCancelled && status != SubscriptionStatusPaused {
 		return ErrInvalidState
 	}
@@ -147,15 +167,18 @@ func (s *Store) UpsertLevel(ctx context.Context, level Level) (Level, error) {
 	if level.Number <= 0 {
 		return Level{}, ErrInvalidState
 	}
-	if level.ID == 0 {
-		res, err := s.db.ExecContext(ctx, `
-			INSERT INTO levels(number, title_kk, title_ru, description_kk, description_ru, sort_order, is_active)
-			VALUES (?, ?, ?, ?, ?, ?, ?);
-		`, level.Number, level.TitleKK, level.TitleRU, level.DescriptionKK, level.DescriptionRU, level.SortOrder, boolInt(level.IsActive))
+	if level.SortOrder <= 0 {
+		level.SortOrder = level.Number
+	}
+	if strings.TrimSpace(level.ID) == "" {
+		level.ID = newID()
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO levels(id, number, title_kk, title_ru, description_kk, description_ru, sort_order, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+		`, level.ID, level.Number, level.TitleKK, level.TitleRU, level.DescriptionKK, level.DescriptionRU, level.SortOrder, boolInt(level.IsActive))
 		if err != nil {
 			return Level{}, err
 		}
-		level.ID, _ = res.LastInsertId()
 		return level, nil
 	}
 	_, err := s.db.ExecContext(ctx, `
@@ -165,62 +188,171 @@ func (s *Store) UpsertLevel(ctx context.Context, level Level) (Level, error) {
 	return level, err
 }
 
-func (s *Store) DeleteLevel(ctx context.Context, levelID int64) error {
+func (s *Store) ListAdminLevels(ctx context.Context) ([]Level, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, number, title_kk, title_ru, COALESCE(description_kk, ''), COALESCE(description_ru, ''), sort_order, is_active
+		FROM levels
+		ORDER BY sort_order ASC, number ASC;
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var levels []Level
+	for rows.Next() {
+		var level Level
+		var active int
+		if err := rows.Scan(&level.ID, &level.Number, &level.TitleKK, &level.TitleRU, &level.DescriptionKK, &level.DescriptionRU, &level.SortOrder, &active); err != nil {
+			return nil, err
+		}
+		level.IsActive = active == 1
+		levels = append(levels, level)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return levels, nil
+}
+
+func (s *Store) DeleteLevel(ctx context.Context, levelID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE levels SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, levelID)
 	return err
 }
 
 func (s *Store) UpsertLesson(ctx context.Context, lesson Lesson) (Lesson, error) {
-	if lesson.ID == 0 {
-		res, err := s.db.ExecContext(ctx, `
-			INSERT INTO lessons(level_id, title_kk, title_ru, description_kk, description_ru, video_url, sort_order, is_active)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-		`, lesson.LevelID, lesson.TitleKK, lesson.TitleRU, lesson.DescriptionKK, lesson.DescriptionRU, lesson.VideoURL, lesson.SortOrder, boolInt(lesson.IsActive))
-		if err != nil {
+	if strings.TrimSpace(lesson.LevelID) == "" || strings.TrimSpace(lesson.TitleKK) == "" || strings.TrimSpace(lesson.VideoURL) == "" {
+		return Lesson{}, ErrInvalidState
+	}
+	var levelExists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM levels WHERE id = ?`, lesson.LevelID).Scan(&levelExists); err != nil {
+		return Lesson{}, err
+	}
+	if levelExists == 0 {
+		return Lesson{}, ErrNotFound
+	}
+	if strings.TrimSpace(lesson.TitleRU) == "" {
+		lesson.TitleRU = lesson.TitleKK
+	}
+	if lesson.SortOrder <= 0 {
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort_order), 0) + 1 FROM lessons WHERE level_id = ?`, lesson.LevelID).Scan(&lesson.SortOrder); err != nil {
 			return Lesson{}, err
 		}
-		lesson.ID, _ = res.LastInsertId()
+	}
+	if strings.TrimSpace(lesson.ID) == "" {
+		lesson.ID = newID()
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO lessons(id, level_id, title_kk, title_ru, description_kk, description_ru, video_url, sort_order, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+		`, lesson.ID, lesson.LevelID, lesson.TitleKK, lesson.TitleRU, lesson.DescriptionKK, lesson.DescriptionRU, lesson.VideoURL, lesson.SortOrder, boolInt(lesson.IsActive))
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "constraint") {
+				return Lesson{}, ErrInvalidState
+			}
+			return Lesson{}, err
+		}
 		return lesson, nil
 	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE lessons SET level_id=?, title_kk=?, title_ru=?, description_kk=?, description_ru=?, video_url=?, sort_order=?, is_active=?, updated_at=CURRENT_TIMESTAMP
 		WHERE id=?;
 	`, lesson.LevelID, lesson.TitleKK, lesson.TitleRU, lesson.DescriptionKK, lesson.DescriptionRU, lesson.VideoURL, lesson.SortOrder, boolInt(lesson.IsActive), lesson.ID)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "constraint") {
+		return Lesson{}, ErrInvalidState
+	}
 	return lesson, err
 }
 
-func (s *Store) DeleteLesson(ctx context.Context, lessonID int64) error {
+func (s *Store) DeleteLesson(ctx context.Context, lessonID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE lessons SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, lessonID)
 	return err
 }
 
+func (s *Store) ListAdminLessons(ctx context.Context, filter AdminLessonFilter) ([]Lesson, error) {
+	args := []any{}
+	conditions := []string{"1=1"}
+	if filter.Level > 0 {
+		conditions = append(conditions, "lv.number = ?")
+		args = append(args, filter.Level)
+	}
+	switch filter.Status {
+	case "active":
+		conditions = append(conditions, "l.is_active = 1")
+	case "inactive":
+		conditions = append(conditions, "l.is_active = 0")
+	}
+	if strings.TrimSpace(filter.Query) != "" {
+		like := sqlLike(filter.Query)
+		conditions = append(conditions, "(l.title_kk LIKE ? ESCAPE '\\' OR l.title_ru LIKE ? ESCAPE '\\' OR COALESCE(l.video_url, '') LIKE ? ESCAPE '\\')")
+		args = append(args, like, like, like)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT l.id, l.level_id, lv.number, l.title_kk, l.title_ru, COALESCE(l.description_kk, ''), COALESCE(l.description_ru, ''),
+			COALESCE(l.video_url, ''), l.sort_order, l.is_active, 0, NULL
+		FROM lessons l
+		JOIN levels lv ON lv.id = l.level_id
+		WHERE `+strings.Join(conditions, " AND ")+`
+		ORDER BY lv.number ASC, l.sort_order ASC, l.created_at DESC;
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	lessons := []Lesson{}
+	for rows.Next() {
+		var lesson Lesson
+		var active, watched int
+		var watchedAt sql.NullTime
+		if err := rows.Scan(&lesson.ID, &lesson.LevelID, &lesson.LevelNumber, &lesson.TitleKK, &lesson.TitleRU, &lesson.DescriptionKK, &lesson.DescriptionRU, &lesson.VideoURL, &lesson.SortOrder, &active, &watched, &watchedAt); err != nil {
+			return nil, err
+		}
+		lesson.IsActive = active == 1
+		lesson.Watched = watched == 1
+		lesson.WatchedAt = scanTime(watchedAt)
+		lesson.Access = true
+		lessons = append(lessons, lesson)
+	}
+	return lessons, rows.Err()
+}
+
 func (s *Store) UpsertTest(ctx context.Context, test Test) (Test, error) {
-	if test.LevelID == 0 {
+	if strings.TrimSpace(test.LevelID) == "" {
 		return Test{}, ErrInvalidState
 	}
-	if test.PassPercent == 0 {
-		test.PassPercent = 70
+	if strings.TrimSpace(test.Title) == "" {
+		return Test{}, ErrInvalidState
 	}
-	if test.Title == "" {
-		test.Title = "Level test"
+	if test.PassPercent < 1 || test.PassPercent > 100 {
+		return Test{}, ErrInvalidState
+	}
+	if len(test.Questions) == 0 {
+		return Test{}, ErrInvalidState
 	}
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		if test.ID == 0 {
-			res, err := tx.ExecContext(ctx, `
-				INSERT INTO tests(level_id, title, pass_percent, is_active)
-				VALUES (?, ?, ?, ?)
+		var levelExists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM levels WHERE id = ?`, test.LevelID).Scan(&levelExists); err != nil {
+			return err
+		}
+		if levelExists == 0 {
+			return ErrNotFound
+		}
+		if err := validateTestPayload(test); err != nil {
+			return err
+		}
+		if strings.TrimSpace(test.ID) == "" {
+			test.ID = newID()
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO tests(id, level_id, title, pass_percent, is_active)
+				VALUES (?, ?, ?, ?, ?)
 				ON CONFLICT(level_id) DO UPDATE SET title=excluded.title, pass_percent=excluded.pass_percent, is_active=excluded.is_active, updated_at=CURRENT_TIMESTAMP;
-			`, test.LevelID, test.Title, test.PassPercent, boolInt(test.IsActive))
-			if err != nil {
+			`, test.ID, test.LevelID, test.Title, test.PassPercent, boolInt(test.IsActive)); err != nil {
 				return err
 			}
-			id, _ := res.LastInsertId()
-			if id == 0 {
-				if err := tx.QueryRowContext(ctx, `SELECT id FROM tests WHERE level_id = ?`, test.LevelID).Scan(&id); err != nil {
-					return err
-				}
+			var persistedID string
+			if err := tx.QueryRowContext(ctx, `SELECT id FROM tests WHERE level_id = ?`, test.LevelID).Scan(&persistedID); err != nil {
+				return err
 			}
-			test.ID = id
+			test.ID = persistedID
 		} else {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE tests SET level_id=?, title=?, pass_percent=?, is_active=?, updated_at=CURRENT_TIMESTAMP
@@ -229,40 +361,35 @@ func (s *Store) UpsertTest(ctx context.Context, test Test) (Test, error) {
 				return err
 			}
 		}
-		for _, question := range test.Questions {
-			questionID := question.ID
-			if questionID == 0 {
-				res, err := tx.ExecContext(ctx, `
-					INSERT INTO test_questions(test_id, question_text_kk, question_text_ru, sort_order, is_active)
-					VALUES (?, ?, ?, ?, 1);
-				`, test.ID, question.QuestionTextKK, question.QuestionTextRU, question.SortOrder)
-				if err != nil {
-					return err
-				}
-				questionID, _ = res.LastInsertId()
-			} else {
-				if _, err := tx.ExecContext(ctx, `
-					UPDATE test_questions SET question_text_kk=?, question_text_ru=?, sort_order=?, is_active=1, updated_at=CURRENT_TIMESTAMP
-					WHERE id=? AND test_id=?;
-				`, question.QuestionTextKK, question.QuestionTextRU, question.SortOrder, questionID, test.ID); err != nil {
-					return err
-				}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM test_questions WHERE test_id = ?`, test.ID); err != nil {
+			return err
+		}
+		for qi, question := range test.Questions {
+			questionID := newID()
+			if question.SortOrder <= 0 {
+				question.SortOrder = qi + 1
 			}
-			for _, option := range question.Options {
-				if option.ID == 0 {
-					if _, err := tx.ExecContext(ctx, `
-						INSERT INTO test_options(question_id, option_text_kk, option_text_ru, is_correct, sort_order)
-						VALUES (?, ?, ?, ?, ?);
-					`, questionID, option.OptionTextKK, option.OptionTextRU, boolInt(option.IsCorrect), option.SortOrder); err != nil {
-						return err
-					}
-				} else {
-					if _, err := tx.ExecContext(ctx, `
-						UPDATE test_options SET option_text_kk=?, option_text_ru=?, is_correct=?, sort_order=?, updated_at=CURRENT_TIMESTAMP
-						WHERE id=? AND question_id=?;
-					`, option.OptionTextKK, option.OptionTextRU, boolInt(option.IsCorrect), option.SortOrder, option.ID, questionID); err != nil {
-						return err
-					}
+			if strings.TrimSpace(question.QuestionTextRU) == "" {
+				question.QuestionTextRU = question.QuestionTextKK
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO test_questions(id, test_id, question_text_kk, question_text_ru, sort_order, is_active)
+				VALUES (?, ?, ?, ?, ?, 1);
+			`, questionID, test.ID, question.QuestionTextKK, question.QuestionTextRU, question.SortOrder); err != nil {
+				return err
+			}
+			for oi, option := range question.Options {
+				if option.SortOrder <= 0 {
+					option.SortOrder = oi + 1
+				}
+				if strings.TrimSpace(option.OptionTextRU) == "" {
+					option.OptionTextRU = option.OptionTextKK
+				}
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO test_options(id, question_id, option_text_kk, option_text_ru, is_correct, sort_order)
+					VALUES (?, ?, ?, ?, ?, ?);
+				`, newID(), questionID, option.OptionTextKK, option.OptionTextRU, boolInt(option.IsCorrect), option.SortOrder); err != nil {
+					return err
 				}
 			}
 		}
@@ -274,12 +401,125 @@ func (s *Store) UpsertTest(ctx context.Context, test Test) (Test, error) {
 	return test, nil
 }
 
-func (s *Store) DeleteTest(ctx context.Context, testID int64) error {
+func validateTestPayload(test Test) error {
+	for _, question := range test.Questions {
+		if strings.TrimSpace(question.QuestionTextKK) == "" || len(question.Options) < 2 {
+			return ErrInvalidState
+		}
+		correct := 0
+		for _, option := range question.Options {
+			if strings.TrimSpace(option.OptionTextKK) == "" {
+				return ErrInvalidState
+			}
+			if option.IsCorrect {
+				correct++
+			}
+		}
+		if correct != 1 {
+			return ErrInvalidState
+		}
+	}
+	return nil
+}
+
+func (s *Store) DeleteTest(ctx context.Context, testID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tests SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, testID)
 	return err
 }
 
-func (s *Store) ReviewAssignmentSubmission(ctx context.Context, submissionID, adminID int64, status string) error {
+func (s *Store) ListAdminTests(ctx context.Context, filter AdminTestFilter) ([]Test, error) {
+	args := []any{}
+	conditions := []string{"1=1"}
+	if filter.Level > 0 {
+		conditions = append(conditions, "lv.number = ?")
+		args = append(args, filter.Level)
+	}
+	switch filter.Status {
+	case "active":
+		conditions = append(conditions, "t.is_active = 1")
+	case "inactive":
+		conditions = append(conditions, "t.is_active = 0")
+	}
+	if strings.TrimSpace(filter.Query) != "" {
+		conditions = append(conditions, "t.title LIKE ? ESCAPE '\\'")
+		args = append(args, sqlLike(filter.Query))
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT t.id, t.level_id, lv.number, t.title, t.pass_percent, t.is_active
+		FROM tests t
+		JOIN levels lv ON lv.id = t.level_id
+		WHERE `+strings.Join(conditions, " AND ")+`
+		ORDER BY lv.number ASC, t.created_at DESC;
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tests := []Test{}
+	for rows.Next() {
+		var test Test
+		var active int
+		if err := rows.Scan(&test.ID, &test.LevelID, &test.LevelNumber, &test.Title, &test.PassPercent, &active); err != nil {
+			return nil, err
+		}
+		test.IsActive = active == 1
+		tests = append(tests, test)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range tests {
+		tests[i].Questions, _ = s.loadTestQuestions(ctx, s.db, tests[i].ID, true)
+	}
+	return tests, nil
+}
+
+func (s *Store) loadTestQuestions(ctx context.Context, q queryer, testID string, includeCorrect bool) ([]TestQuestion, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT q.id, q.test_id, q.question_text_kk, q.question_text_ru, q.sort_order,
+			o.id, o.option_text_kk, o.option_text_ru, o.sort_order, o.is_correct
+		FROM test_questions q
+		JOIN test_options o ON o.question_id = q.id
+		WHERE q.test_id = ? AND q.is_active = 1
+		ORDER BY q.sort_order ASC, o.sort_order ASC;
+	`, testID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	questions := map[string]*TestQuestion{}
+	for rows.Next() {
+		var qn TestQuestion
+		var opt TestOption
+		var correct int
+		if err := rows.Scan(&qn.ID, &qn.TestID, &qn.QuestionTextKK, &qn.QuestionTextRU, &qn.SortOrder, &opt.ID, &opt.OptionTextKK, &opt.OptionTextRU, &opt.SortOrder, &correct); err != nil {
+			return nil, err
+		}
+		if _, ok := questions[qn.ID]; !ok {
+			copy := qn
+			questions[qn.ID] = &copy
+		}
+		opt.QuestionID = qn.ID
+		if includeCorrect {
+			opt.IsCorrect = correct == 1
+		}
+		questions[qn.ID].Options = append(questions[qn.ID].Options, opt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	list := make([]TestQuestion, 0, len(questions))
+	for _, question := range questions {
+		list = append(list, *question)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].SortOrder < list[j].SortOrder })
+	return list, nil
+}
+
+func (s *Store) ReviewAssignmentSubmission(ctx context.Context, submissionID string, adminID int64, status string) error {
 	if status == "" {
 		status = "reviewed"
 	}
@@ -296,15 +536,15 @@ func (s *Store) ReviewAssignmentSubmission(ctx context.Context, submissionID, ad
 
 func (s *Store) UpsertTariff(ctx context.Context, tariff Tariff) (Tariff, error) {
 	features, _ := json.Marshal(tariff.Features)
-	if tariff.ID == 0 {
-		res, err := s.db.ExecContext(ctx, `
-			INSERT INTO tariffs(code, title, price_kzt, features_json, sort_order, is_active)
-			VALUES (?, ?, ?, ?, ?, ?);
-		`, strings.ToUpper(tariff.Code), tariff.Title, tariff.PriceKZT, string(features), tariff.SortOrder, boolInt(tariff.IsActive))
+	if strings.TrimSpace(tariff.ID) == "" {
+		tariff.ID = newID()
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO tariffs(id, code, title, price_kzt, features_json, sort_order, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?);
+		`, tariff.ID, strings.ToUpper(tariff.Code), tariff.Title, tariff.PriceKZT, string(features), tariff.SortOrder, boolInt(tariff.IsActive))
 		if err != nil {
 			return Tariff{}, err
 		}
-		tariff.ID, _ = res.LastInsertId()
 		return tariff, nil
 	}
 	_, err := s.db.ExecContext(ctx, `
@@ -314,7 +554,7 @@ func (s *Store) UpsertTariff(ctx context.Context, tariff Tariff) (Tariff, error)
 	return tariff, err
 }
 
-func (s *Store) ListChannels(ctx context.Context, userID int64, admin bool) ([]Channel, error) {
+func (s *Store) ListChannels(ctx context.Context, userID string, admin bool) ([]Channel, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, title, telegram_chat_id, invite_link_type, COALESCE(manual_invite_link, ''), tariff_requirement, level_requirement, is_active
 		FROM channels
@@ -342,7 +582,7 @@ func (s *Store) ListChannels(ctx context.Context, userID int64, admin bool) ([]C
 		return nil, err
 	}
 	for i := range channels {
-		if userID > 0 {
+		if userID != "" {
 			channels[i].Access, _ = s.CanAccessChannel(ctx, userID, channels[i])
 		}
 	}
@@ -356,7 +596,7 @@ func activeWhere(admin bool) string {
 	return "WHERE is_active = 1"
 }
 
-func (s *Store) CanAccessChannel(ctx context.Context, userID int64, channel Channel) (bool, error) {
+func (s *Store) CanAccessChannel(ctx context.Context, userID string, channel Channel) (bool, error) {
 	user, err := s.GetUserByID(ctx, userID)
 	if err != nil || user.AccessClosed {
 		return false, err
@@ -382,7 +622,7 @@ func tariffRank(code string) int {
 	}
 }
 
-func (s *Store) GetChannel(ctx context.Context, channelID int64) (Channel, error) {
+func (s *Store) GetChannel(ctx context.Context, channelID string) (Channel, error) {
 	var channel Channel
 	var active int
 	err := s.db.QueryRowContext(ctx, `
@@ -407,15 +647,15 @@ func (s *Store) UpsertChannel(ctx context.Context, channel Channel) (Channel, er
 	if channel.LevelRequirement <= 0 {
 		channel.LevelRequirement = 1
 	}
-	if channel.ID == 0 {
-		res, err := s.db.ExecContext(ctx, `
-			INSERT INTO channels(title, telegram_chat_id, invite_link_type, manual_invite_link, tariff_requirement, level_requirement, is_active)
-			VALUES (?, ?, ?, ?, ?, ?, ?);
-		`, channel.Title, channel.TelegramChatID, channel.InviteLinkType, nullableString(channel.ManualInviteLink), channel.TariffRequirement, channel.LevelRequirement, boolInt(channel.IsActive))
+	if strings.TrimSpace(channel.ID) == "" {
+		channel.ID = newID()
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO channels(id, title, telegram_chat_id, invite_link_type, manual_invite_link, tariff_requirement, level_requirement, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+		`, channel.ID, channel.Title, channel.TelegramChatID, channel.InviteLinkType, nullableString(channel.ManualInviteLink), channel.TariffRequirement, channel.LevelRequirement, boolInt(channel.IsActive))
 		if err != nil {
 			return Channel{}, err
 		}
-		channel.ID, _ = res.LastInsertId()
 		return channel, nil
 	}
 	_, err := s.db.ExecContext(ctx, `
@@ -425,16 +665,16 @@ func (s *Store) UpsertChannel(ctx context.Context, channel Channel) (Channel, er
 	return channel, err
 }
 
-func (s *Store) DeleteChannel(ctx context.Context, channelID int64) error {
+func (s *Store) DeleteChannel(ctx context.Context, channelID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE channels SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, channelID)
 	return err
 }
 
-func (s *Store) RecordInviteLink(ctx context.Context, userID, channelID int64, inviteLink string, expiresAt *string) error {
+func (s *Store) RecordInviteLink(ctx context.Context, userID, channelID string, inviteLink string, expiresAt *string) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO channel_invite_links(user_id, channel_id, invite_link, expires_at, status)
-		VALUES (?, ?, ?, ?, 'issued');
-	`, userID, channelID, inviteLink, nullableStringPtr(expiresAt))
+		INSERT INTO channel_invite_links(id, user_id, channel_id, invite_link, expires_at, status)
+		VALUES (?, ?, ?, ?, ?, 'issued');
+	`, newID(), userID, channelID, inviteLink, nullableStringPtr(expiresAt))
 	return err
 }
 
@@ -445,7 +685,7 @@ func nullableStringPtr(value *string) any {
 	return *value
 }
 
-func (s *Store) ListStreams(ctx context.Context, userID int64, admin bool) ([]LiveStream, error) {
+func (s *Store) ListStreams(ctx context.Context, userID string, admin bool) ([]LiveStream, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ls.id, ls.title, COALESCE(ls.description, ''), ls.starts_at, COALESCE(ls.stream_url, ''), ls.tariff_requirement, ls.status,
 			COALESCE((SELECT recording_url FROM live_stream_recordings r WHERE r.stream_id = ls.id ORDER BY r.id DESC LIMIT 1), '')
@@ -470,7 +710,7 @@ func (s *Store) ListStreams(ctx context.Context, userID int64, admin bool) ([]Li
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	if !admin && userID > 0 {
+	if !admin && userID != "" {
 		sub, _ := s.GetActiveSubscription(ctx, userID)
 		for i := range streams {
 			if sub == nil || tariffRank(sub.TariffCode) < tariffRank(streams[i].TariffRequirement) {
@@ -489,15 +729,15 @@ func (s *Store) UpsertStream(ctx context.Context, stream LiveStream) (LiveStream
 	if stream.Status == "" {
 		stream.Status = "scheduled"
 	}
-	if stream.ID == 0 {
-		res, err := s.db.ExecContext(ctx, `
-			INSERT INTO live_streams(title, description, starts_at, stream_url, tariff_requirement, status)
-			VALUES (?, ?, ?, ?, ?, ?);
-		`, stream.Title, stream.Description, stream.StartsAt, stream.StreamURL, stream.TariffRequirement, stream.Status)
+	if strings.TrimSpace(stream.ID) == "" {
+		stream.ID = newID()
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO live_streams(id, title, description, starts_at, stream_url, tariff_requirement, status)
+			VALUES (?, ?, ?, ?, ?, ?, ?);
+		`, stream.ID, stream.Title, stream.Description, stream.StartsAt, stream.StreamURL, stream.TariffRequirement, stream.Status)
 		if err != nil {
 			return LiveStream{}, err
 		}
-		stream.ID, _ = res.LastInsertId()
 		return stream, nil
 	}
 	_, err := s.db.ExecContext(ctx, `
@@ -507,24 +747,156 @@ func (s *Store) UpsertStream(ctx context.Context, stream LiveStream) (LiveStream
 	return stream, err
 }
 
-func (s *Store) DeleteStream(ctx context.Context, streamID int64) error {
+func (s *Store) DeleteStream(ctx context.Context, streamID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE live_streams SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, streamID)
 	return err
 }
 
-func (s *Store) Broadcast(ctx context.Context, actor AdminActor, title, body, target string) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO broadcasts(admin_id, title, body, target, status)
-		VALUES (?, ?, ?, ?, 'queued');
-	`, actor.ID, title, body, target)
+func (s *Store) Broadcast(ctx context.Context, actor AdminActor, title, body, target string) (string, error) {
+	target = normalizeBroadcastTarget(target)
+	id := newID()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO broadcasts(id, admin_id, title, body, target, status)
+		VALUES (?, ?, ?, ?, ?, 'queued');
+	`, id, actor.ID, title, body, target)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
-func (s *Store) CreateSupportMessage(ctx context.Context, userID int64, body string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO support_messages(user_id, body) VALUES (?, ?)`, userID, body)
+func normalizeBroadcastTarget(target string) string {
+	switch strings.TrimSpace(target) {
+	case "active", "inactive":
+		return target
+	default:
+		return "all"
+	}
+}
+
+func (s *Store) ListBroadcasts(ctx context.Context, limit int) ([]Broadcast, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT b.id, b.admin_id, COALESCE(b.title, ''), b.body, b.target, b.status, b.created_at, b.sent_at,
+			COALESCE(SUM(CASE WHEN bm.status = 'sent' THEN 1 ELSE 0 END), 0) AS sent_count,
+			COALESCE(SUM(CASE WHEN bm.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_count
+		FROM broadcasts b
+		LEFT JOIN broadcast_messages bm ON bm.broadcast_id = b.id
+		GROUP BY b.id
+		ORDER BY b.created_at DESC
+		LIMIT ?;
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var broadcasts []Broadcast
+	for rows.Next() {
+		var b Broadcast
+		var adminID sql.NullInt64
+		var sentAt sql.NullTime
+		if err := rows.Scan(&b.ID, &adminID, &b.Title, &b.Body, &b.Target, &b.Status, &b.CreatedAt, &sentAt, &b.SentCount, &b.FailedCount); err != nil {
+			return nil, err
+		}
+		b.AdminID = scanInt64(adminID)
+		b.SentAt = scanTime(sentAt)
+		broadcasts = append(broadcasts, b)
+	}
+	return broadcasts, rows.Err()
+}
+
+func (s *Store) ClaimQueuedBroadcast(ctx context.Context) (*Broadcast, error) {
+	var b Broadcast
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		var adminID sql.NullInt64
+		err := tx.QueryRowContext(ctx, `
+			SELECT id, admin_id, COALESCE(title, ''), body, target, status, created_at, sent_at
+			FROM broadcasts
+			WHERE status = 'queued'
+			ORDER BY created_at ASC
+			LIMIT 1;
+		`).Scan(&b.ID, &adminID, &b.Title, &b.Body, &b.Target, &b.Status, &b.CreatedAt, new(sql.NullTime))
+		if err != nil {
+			return rowErr(err)
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE broadcasts SET status = 'processing' WHERE id = ? AND status = 'queued'`, b.ID)
+		if err != nil {
+			return err
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			return ErrInvalidState
+		}
+		b.AdminID = scanInt64(adminID)
+		b.Status = "processing"
+		return nil
+	})
+	if err == ErrNotFound {
+		return nil, nil
+	}
+	return &b, err
+}
+
+func (s *Store) BroadcastRecipients(ctx context.Context, target string) ([]BroadcastRecipient, error) {
+	target = normalizeBroadcastTarget(target)
+	query := `
+		SELECT u.id, u.telegram_id, COALESCE(u.language, '')
+		FROM users u
+		WHERE u.telegram_id IS NOT NULL`
+	switch target {
+	case "active":
+		query += ` AND EXISTS (
+			SELECT 1 FROM subscriptions s
+			WHERE s.user_id = u.id AND s.status = 'active' AND s.expires_at > CURRENT_TIMESTAMP
+		)`
+	case "inactive":
+		query += ` AND NOT EXISTS (
+			SELECT 1 FROM subscriptions s
+			WHERE s.user_id = u.id AND s.status = 'active' AND s.expires_at > CURRENT_TIMESTAMP
+		)`
+	}
+	query += ` ORDER BY u.id ASC;`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var recipients []BroadcastRecipient
+	for rows.Next() {
+		var recipient BroadcastRecipient
+		if err := rows.Scan(&recipient.UserID, &recipient.TelegramID, &recipient.Language); err != nil {
+			return nil, err
+		}
+		recipients = append(recipients, recipient)
+	}
+	return recipients, rows.Err()
+}
+
+func (s *Store) RecordBroadcastMessage(ctx context.Context, broadcastID string, recipient BroadcastRecipient, status, errorText string) error {
+	var sentAt any
+	if status == "sent" {
+		sentAt = nowUTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO broadcast_messages(id, broadcast_id, user_id, telegram_id, status, error, sent_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?);
+	`, newID(), broadcastID, recipient.UserID, recipient.TelegramID, status, nullableString(errorText), sentAt)
+	return err
+}
+
+func (s *Store) FinishBroadcast(ctx context.Context, broadcastID string, failed bool) error {
+	status := "completed"
+	if failed {
+		status = "failed"
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE broadcasts SET status = ?, sent_at = CURRENT_TIMESTAMP WHERE id = ?`, status, broadcastID)
+	return err
+}
+
+func (s *Store) CreateSupportMessage(ctx context.Context, userID string, body string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO support_messages(id, user_id, body) VALUES (?, ?, ?)`, newID(), userID, body)
 	return err
 }
 
@@ -544,7 +916,7 @@ func (s *Store) ListAudit(ctx context.Context, limit, offset int) ([]map[string]
 	defer rows.Close()
 	var list []map[string]any
 	for rows.Next() {
-		var id int64
+		var id string
 		var adminID sql.NullInt64
 		var role, action, entityType, entityID, metadata string
 		var createdAt string

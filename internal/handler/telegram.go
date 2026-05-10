@@ -173,6 +173,10 @@ func (b *TelegramBot) handleUpdate(ctx context.Context, update telegramUpdate) e
 		return b.sendMainMenu(ctx, msg.Chat.ID, "ru")
 	}
 
+	if action := matchMainMenuAction(text, user.Language); action != "" {
+		return b.handleMainMenuAction(ctx, user, msg.Chat.ID, action)
+	}
+
 	if handled, err := b.handleDiagnosticsText(ctx, user, msg); handled || err != nil {
 		return err
 	}
@@ -195,15 +199,6 @@ func (b *TelegramBot) handleUpdate(ctx context.Context, update telegramUpdate) e
 		return b.startDiagnostics(ctx, user, msg.Chat.ID)
 	case "Login / Make payment", "Кіру / Төлем жасау", "Войти / Оплатить":
 		return b.sendMessage(ctx, msg.Chat.ID, "Mini App арқылы тариф таңдаңыз.", b.inlineMiniAppMarkup(user.Language))
-	case i18n.T(user.Language, "menu_referral"):
-		summary, _ := b.store.ReferralSummary(ctx, user.ID, "zhenisorda_bot")
-		return b.sendMessage(ctx, msg.Chat.ID, summary.ReferralLink, b.inlineMiniAppMarkup(user.Language))
-	case i18n.T(user.Language, "menu_payment"):
-		sub, _ := b.store.GetActiveSubscription(ctx, user.ID)
-		if sub == nil {
-			return b.sendMessage(ctx, msg.Chat.ID, "Актив подписка жоқ.", b.inlineMiniAppMarkup(user.Language))
-		}
-		return b.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("Подписка: %s\nМерзімі: %s", sub.TariffCode, sub.ExpiresAt.Format("2006-01-02")), b.inlineMiniAppMarkup(user.Language))
 	default:
 		return b.sendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "start"), b.inlineMiniAppMarkup(user.Language))
 	}
@@ -220,19 +215,140 @@ func (b *TelegramBot) sendLanguageSelection(ctx context.Context, chatID int64) e
 func (b *TelegramBot) sendMainMenu(ctx context.Context, chatID int64, language string) error {
 	text := i18n.T(language, "start")
 	reply := map[string]any{
-		"keyboard": [][]map[string]string{
-			{{"text": i18n.T(language, "menu_level")}, {"text": i18n.T(language, "menu_lessons")}},
-			{{"text": i18n.T(language, "menu_test")}, {"text": i18n.T(language, "menu_assignments")}},
-			{{"text": i18n.T(language, "menu_stream")}, {"text": i18n.T(language, "menu_referral")}},
-			{{"text": i18n.T(language, "menu_bonuses")}, {"text": i18n.T(language, "menu_payment")}},
-			{{"text": i18n.T(language, "menu_support")}, {"text": "Open Mini App"}},
+		"keyboard": [][]map[string]any{
+			{{"text": menuButtonLabel(language, "menu_level")}, {"text": menuButtonLabel(language, "menu_lessons")}},
+			{{"text": menuButtonLabel(language, "menu_test")}, {"text": menuButtonLabel(language, "menu_assignments")}},
+			{{"text": menuButtonLabel(language, "menu_stream")}, {"text": menuButtonLabel(language, "menu_referral")}},
+			{{"text": menuButtonLabel(language, "menu_bonuses")}, {"text": menuButtonLabel(language, "menu_payment")}},
+			{{"text": menuButtonLabel(language, "menu_support")}, {"text": menuButtonLabel(language, "open_mini_app"), "web_app": map[string]string{"url": b.miniAppURL}}},
 		},
 		"resize_keyboard": true,
+		"is_persistent":   true,
 	}
 	if err := b.sendMessage(ctx, chatID, text, reply); err != nil {
 		return err
 	}
 	return b.sendMessage(ctx, chatID, i18n.T(language, "open_mini_app"), b.inlineMiniAppMarkup(language))
+}
+
+func (b *TelegramBot) handleMainMenuAction(ctx context.Context, user repository.User, chatID int64, action string) error {
+	switch action {
+	case "level":
+		progress, _ := b.store.CurrentProgress(ctx, user.ID)
+		text := fmt.Sprintf("Сіздің деңгейіңіз: LEVEL %d", user.CurrentLevel)
+		if progress.NextRequirement != "" {
+			text += "\nКелесі талап: " + progress.NextRequirement
+		}
+		return b.sendMessage(ctx, chatID, text, b.inlineMiniAppMarkup(user.Language))
+	case "lessons":
+		return b.sendMessage(ctx, chatID, "Сабақтарыңызды Mini App ішінен көріңіз.", b.inlineMiniAppMarkup(user.Language))
+	case "test":
+		return b.sendMessage(ctx, chatID, "Тест Mini App ішінде ашылады.", b.inlineMiniAppMarkup(user.Language))
+	case "assignments":
+		return b.sendMessage(ctx, chatID, "Тапсырмаларыңызды Mini App ішінен көріңіз.", b.inlineMiniAppMarkup(user.Language))
+	case "stream":
+		return b.sendMessage(ctx, chatID, "Жабық эфирлер Mini App ішінде көрсетіледі.", b.inlineMiniAppMarkup(user.Language))
+	case "referral":
+		summary, _ := b.store.ReferralSummary(ctx, user.ID, "zhenisorda_bot")
+		return b.sendMessage(ctx, chatID, summary.ReferralLink, b.inlineMiniAppMarkup(user.Language))
+	case "bonuses":
+		balance, _ := b.store.CoinBalance(ctx, user.ID)
+		return b.sendMessage(ctx, chatID, fmt.Sprintf("ZHENIS Coin балансыңыз: %d", balance), b.inlineMiniAppMarkup(user.Language))
+	case "payment":
+		sub, _ := b.store.GetActiveSubscription(ctx, user.ID)
+		if sub == nil {
+			return b.sendMessage(ctx, chatID, "Актив подписка жоқ.", b.inlineMiniAppMarkup(user.Language))
+		}
+		return b.sendMessage(ctx, chatID, fmt.Sprintf("Подписка: %s\nМерзімі: %s", sub.TariffCode, sub.ExpiresAt.Format("2006-01-02")), b.inlineMiniAppMarkup(user.Language))
+	case "support":
+		return b.sendMessage(ctx, chatID, "Қолдау қызметіне сұрағыңызды Mini App арқылы жіберіңіз.", b.inlineMiniAppMarkup(user.Language))
+	case "miniapp":
+		return b.sendMessage(ctx, chatID, i18n.T(user.Language, "open_mini_app"), b.inlineMiniAppMarkup(user.Language))
+	default:
+		return b.sendMessage(ctx, chatID, i18n.T(user.Language, "start"), b.inlineMiniAppMarkup(user.Language))
+	}
+}
+
+func menuButtonLabel(language, key string) string {
+	if icon := menuButtonIcon(key); icon != "" {
+		return icon + " " + i18n.T(language, key)
+	}
+	return i18n.T(language, key)
+}
+
+func menuButtonIcon(key string) string {
+	switch key {
+	case "menu_level":
+		return "📍"
+	case "menu_lessons":
+		return "📚"
+	case "menu_test":
+		return "📝"
+	case "menu_assignments":
+		return "✅"
+	case "menu_stream":
+		return "🎥"
+	case "menu_referral":
+		return "🔗"
+	case "menu_bonuses":
+		return "🪙"
+	case "menu_payment":
+		return "⏳"
+	case "menu_support":
+		return "💬"
+	case "open_mini_app":
+		return "🚀"
+	default:
+		return ""
+	}
+}
+
+func matchMainMenuAction(text, language string) string {
+	actions := map[string][]string{
+		"level":       menuAliases(language, "menu_level"),
+		"lessons":     menuAliases(language, "menu_lessons"),
+		"test":        menuAliases(language, "menu_test"),
+		"assignments": menuAliases(language, "menu_assignments"),
+		"stream":      menuAliases(language, "menu_stream"),
+		"referral":    menuAliases(language, "menu_referral"),
+		"bonuses":     menuAliases(language, "menu_bonuses"),
+		"payment":     menuAliases(language, "menu_payment"),
+		"support":     menuAliases(language, "menu_support"),
+		"miniapp": append(
+			menuAliases(language, "open_mini_app"),
+			"Open Mini App",
+			"Mini App ашу",
+			"🚀 Mini App ашу",
+		),
+	}
+	normalized := normalizeMenuText(text)
+	for action, aliases := range actions {
+		for _, alias := range aliases {
+			if normalized == normalizeMenuText(alias) {
+				return action
+			}
+		}
+	}
+	return ""
+}
+
+func menuAliases(language, key string) []string {
+	return []string{
+		i18n.T(language, key),
+		menuButtonLabel(language, key),
+		i18n.T("kk", key),
+		menuButtonLabel("kk", key),
+		i18n.T("ru", key),
+		menuButtonLabel("ru", key),
+	}
+}
+
+func normalizeMenuText(text string) string {
+	normalized := strings.TrimSpace(text)
+	for _, icon := range []string{"📍", "📚", "📝", "✅", "🎥", "🔗", "🪙", "⏳", "💬", "🚀"} {
+		normalized = strings.TrimSpace(strings.TrimPrefix(normalized, icon))
+	}
+	return strings.ToLower(normalized)
 }
 
 func (b *TelegramBot) inlineMiniAppMarkup(language string) map[string]any {
@@ -293,16 +409,16 @@ type diagnosticsState struct {
 	Answers map[string]string `json:"answers"`
 }
 
-func diagnosticsKey(userID int64) string {
-	return fmt.Sprintf("diag:%d", userID)
+func diagnosticsKey(userID string) string {
+	return fmt.Sprintf("diag:%s", userID)
 }
 
-func (b *TelegramBot) saveDiagnosticsState(ctx context.Context, userID int64, state diagnosticsState) error {
+func (b *TelegramBot) saveDiagnosticsState(ctx context.Context, userID string, state diagnosticsState) error {
 	raw, _ := json.Marshal(state)
 	return b.kv.Set(ctx, diagnosticsKey(userID), string(raw), 24*time.Hour)
 }
 
-func (b *TelegramBot) getDiagnosticsState(ctx context.Context, userID int64) (diagnosticsState, error) {
+func (b *TelegramBot) getDiagnosticsState(ctx context.Context, userID string) (diagnosticsState, error) {
 	raw, err := b.kv.Get(ctx, diagnosticsKey(userID))
 	if err != nil {
 		return diagnosticsState{}, err
@@ -357,7 +473,7 @@ func (b *TelegramBot) handleReceiptUpload(ctx context.Context, user repository.U
 		return err
 	}
 	for _, adminID := range b.adminIDs {
-		text := fmt.Sprintf("New receipt uploaded\nPayment #%d\nUser: %s @%s\nAmount: %d KZT\nProvider: %s", payment.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, payment.AmountKZT, payment.Provider)
+		text := fmt.Sprintf("New receipt uploaded\nPayment #%s\nUser: %s @%s\nAmount: %d KZT\nProvider: %s", payment.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, payment.AmountKZT, payment.Provider)
 		_ = b.SendMessage(ctx, adminID, text)
 	}
 	return nil
@@ -372,7 +488,7 @@ func allowedReceiptExt(ext string) bool {
 	}
 }
 
-func (b *TelegramBot) downloadTelegramFile(ctx context.Context, fileID string, userID int64, ext string) (string, error) {
+func (b *TelegramBot) downloadTelegramFile(ctx context.Context, fileID string, userID string, ext string) (string, error) {
 	var fileResp struct {
 		OK     bool `json:"ok"`
 		Result struct {
@@ -407,7 +523,7 @@ func (b *TelegramBot) downloadTelegramFile(ctx context.Context, fileID string, u
 	if err := ensureUploadDir(dir); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, fmt.Sprintf("%d_%d%s", userID, now.UnixNano(), ext))
+	path := filepath.Join(dir, fmt.Sprintf("%s_%d%s", userID, now.UnixNano(), ext))
 	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", err

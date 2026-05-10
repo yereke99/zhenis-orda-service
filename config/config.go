@@ -23,6 +23,7 @@ type Config struct {
 	AdminIDs                  []int64
 	AdminPasswordHash         string
 	UploadDir                 string
+	PaymentDir                string
 	AllowedOrigins            []string
 	KaspiPayURL               string
 	KaspiQRImageURL           string
@@ -42,17 +43,18 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		Token:                     strings.TrimSpace(os.Getenv("TOKEN")),
+		Token:                     "8146044709:AAGljvxX5uoj1TkYcAA05XKkhgmOffHadtY",
 		Port:                      getEnv("PORT", "8088"),
 		Env:                       getEnv("ENV", "development"),
-		BaseURL:                   strings.TrimRight(getEnv("BASE_URL", "http://localhost:8088"), "/"),
-		MiniAppURL:                strings.TrimRight(getEnv("MINI_APP_URL", "http://localhost:8088"), "/"),
+		BaseURL:                   strings.TrimRight(getEnv("BASE_URL", "https://51a87ef1a9b826ba-176-64-24-204.serveousercontent.com"), "/"),
+		MiniAppURL:                strings.TrimRight(getEnv("MINI_APP_URL", "https://51a87ef1a9b826ba-176-64-24-204.serveousercontent.com"), "/"),
 		DBPath:                    getEnv("DB_PATH", "data/zhenis_orda.sqlite"),
 		RedisAddr:                 getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:             os.Getenv("REDIS_PASSWORD"),
 		AdminPasswordHash:         strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
 		UploadDir:                 getEnv("UPLOAD_DIR", "uploads"),
-		AllowedOrigins:            splitCSV(getEnv("ALLOWED_ORIGINS", "http://localhost:8080")),
+		PaymentDir:                getEnv("PAYMENT_DIR", "payment"),
+		AllowedOrigins:            splitCSV(getEnv("ALLOWED_ORIGINS", "https://51a87ef1a9b826ba-176-64-24-204.serveousercontent.com")),
 		KaspiPayURL:               os.Getenv("KASPI_PAY_URL"),
 		KaspiQRImageURL:           os.Getenv("KASPI_QR_IMAGE_URL"),
 		HalykPaymentURL:           os.Getenv("HALYK_PAYMENT_URL"),
@@ -98,6 +100,9 @@ func (c Config) Validate() error {
 	}
 	if c.DBPath == "" {
 		problems = append(problems, "DB_PATH is required")
+	}
+	if c.PaymentDir == "" {
+		problems = append(problems, "PAYMENT_DIR is required")
 	}
 	if c.SubscriptionDefaultDays <= 0 {
 		problems = append(problems, "SUBSCRIPTION_DEFAULT_DAYS must be positive")

@@ -79,6 +79,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/tariffs", s.withMiniAppAuth(http.HandlerFunc(s.handleTariffs)))
 	mux.Handle("POST /api/payments", s.withMiniAppAuth(http.HandlerFunc(s.handleCreatePayment)))
 	mux.Handle("GET /api/payments/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handlePayment)))
+	mux.Handle("POST /api/payments/{id}/receipt", s.withMiniAppAuth(http.HandlerFunc(s.handlePaymentReceiptUpload)))
 	mux.Handle("GET /api/subscription", s.withMiniAppAuth(http.HandlerFunc(s.handleSubscription)))
 	mux.Handle("GET /api/levels", s.withMiniAppAuth(http.HandlerFunc(s.handleLevels)))
 	mux.Handle("GET /api/levels/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handleLevel)))
@@ -107,6 +108,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/admin/users/{id}/bonus", admin(s.handleAdminUserBonus, repository.RoleSuperAdmin, repository.RoleSupport))
 	mux.Handle("GET /api/admin/payments", admin(s.handleAdminPayments, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
 	mux.Handle("GET /api/admin/payments/{id}", admin(s.handleAdminPayment, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("GET /api/admin/receipts/{id}/file", admin(s.handleAdminReceiptFile, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
 	mux.Handle("POST /api/admin/payments/{id}/approve", admin(s.handleAdminApprovePayment, repository.RoleSuperAdmin, repository.RoleSupport))
 	mux.Handle("POST /api/admin/payments/{id}/reject", admin(s.handleAdminRejectPayment, repository.RoleSuperAdmin, repository.RoleSupport))
 	mux.Handle("GET /api/admin/subscriptions", admin(s.handleAdminSubscriptions, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
@@ -119,7 +121,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/admin/lessons", admin(s.handleAdminPostLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("PATCH /api/admin/lessons/{id}", admin(s.handleAdminPostLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("DELETE /api/admin/lessons/{id}", admin(s.handleAdminDeleteLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
-	mux.Handle("GET /api/admin/tests", admin(s.handleAdminPlaceholder("tests"), repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
+	mux.Handle("GET /api/admin/tests", admin(s.handleAdminTests, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
 	mux.Handle("POST /api/admin/tests", admin(s.handleAdminPostTest, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("PATCH /api/admin/tests/{id}", admin(s.handleAdminPostTest, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("DELETE /api/admin/tests/{id}", admin(s.handleAdminDeleteTest, repository.RoleSuperAdmin, repository.RoleContentManager))
@@ -139,6 +141,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("PATCH /api/admin/streams/{id}", admin(s.handleAdminPostStream, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("DELETE /api/admin/streams/{id}", admin(s.handleAdminDeleteStream, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("POST /api/admin/broadcast", admin(s.handleAdminBroadcast, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("GET /api/admin/broadcasts", admin(s.handleAdminBroadcasts, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
 	mux.Handle("GET /api/admin/settings", admin(s.handleAdminSettings, repository.RoleSuperAdmin, repository.RoleAnalyst))
 	mux.Handle("PATCH /api/admin/settings", admin(s.handleAdminPatchSettings, repository.RoleSuperAdmin))
 	mux.Handle("GET /api/admin/audit", admin(s.handleAdminAudit, repository.RoleSuperAdmin, repository.RoleAnalyst))
@@ -161,7 +164,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Telegram-Init-Data, X-Miniapp-Dev")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Telegram-Init-Data, X-Miniapp-Dev, X-Dev-Telegram-ID, X-Dev-Username, X-Dev-First-Name, X-Dev-Last-Name, X-Dev-Photo-URL")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {
@@ -200,6 +203,7 @@ func (s *Server) withMiniAppAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, err := s.userFromMiniApp(r)
 		if err != nil {
+			s.logMiniAppAuthFailure(r, err)
 			writeError(w, http.StatusUnauthorized, "telegram auth required")
 			return
 		}
@@ -220,10 +224,15 @@ func (s *Server) userFromMiniApp(r *http.Request) (repository.User, error) {
 		if username == "" {
 			username = "dev_preview"
 		}
-		user, _, err := s.store.RegisterOrUpdateTelegramUser(r.Context(), repository.TelegramUserInput{TelegramID: telegramID, Username: username, FirstName: "Dev", LastName: "Preview", Language: "kk"})
+		firstName := firstNonEmpty(r.URL.Query().Get("first_name"), r.Header.Get("X-Dev-First-Name"), "Dev")
+		lastName := firstNonEmpty(r.URL.Query().Get("last_name"), r.Header.Get("X-Dev-Last-Name"), "Preview")
+		photoURL := firstNonEmpty(r.URL.Query().Get("photo_url"), r.Header.Get("X-Dev-Photo-URL"))
+		user, _, err := s.store.RegisterOrUpdateTelegramUser(r.Context(), repository.TelegramUserInput{TelegramID: telegramID, Username: username, FirstName: firstName, LastName: lastName, PhotoURL: photoURL, Language: "kk"})
 		return user, err
 	}
-	initData, err := s.validator.Validate(r.Header.Get("X-Telegram-Init-Data"), time.Now())
+	rawInitData := telegramInitDataFromRequest(r)
+	s.logMiniAppAuthAttempt(r, rawInitData)
+	initData, err := s.validator.Validate(rawInitData, time.Now())
 	if err != nil {
 		return repository.User{}, err
 	}
@@ -236,10 +245,55 @@ func (s *Server) userFromMiniApp(r *http.Request) (repository.User, error) {
 		Username:   initData.User.Username,
 		FirstName:  initData.User.FirstName,
 		LastName:   initData.User.LastName,
+		PhotoURL:   initData.User.PhotoURL,
 		Language:   language,
 		StartParam: initData.StartParam,
 	})
+	if err == nil {
+		s.logMiniAppAuthSuccess(initData.User.ID)
+	}
 	return user, err
+}
+
+func telegramInitDataFromRequest(r *http.Request) string {
+	initData := strings.TrimSpace(r.Header.Get("X-Telegram-Init-Data"))
+	if initData != "" {
+		return initData
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(auth) >= 4 && strings.EqualFold(auth[:4], "tma ") {
+		return strings.TrimSpace(auth[4:])
+	}
+	return ""
+}
+
+func (s *Server) logMiniAppAuthAttempt(r *http.Request, initData string) {
+	if s.cfg.Env != "development" || s.logger == nil {
+		return
+	}
+	s.logger.Debug("mini app auth attempt",
+		zap.String("path", r.URL.Path),
+		zap.Bool("has_init_data", initData != ""),
+		zap.Int("init_data_length", len(initData)))
+}
+
+func (s *Server) logMiniAppAuthFailure(r *http.Request, err error) {
+	if s.cfg.Env != "development" || s.logger == nil {
+		return
+	}
+	initData := telegramInitDataFromRequest(r)
+	s.logger.Debug("mini app auth failed",
+		zap.String("path", r.URL.Path),
+		zap.Bool("has_init_data", initData != ""),
+		zap.Int("init_data_length", len(initData)),
+		zap.Error(err))
+}
+
+func (s *Server) logMiniAppAuthSuccess(telegramID int64) {
+	if s.cfg.Env != "development" || s.logger == nil {
+		return
+	}
+	s.logger.Debug("mini app auth validated", zap.Int64("telegram_id", telegramID))
 }
 
 func firstNonEmpty(values ...string) string {
@@ -311,8 +365,12 @@ func decodeJSON(r *http.Request, dest any) error {
 	return decoder.Decode(dest)
 }
 
-func parsePathID(r *http.Request, key string) (int64, error) {
-	return strconv.ParseInt(r.PathValue(key), 10, 64)
+func parsePathID(r *http.Request, key string) (string, error) {
+	value := strings.TrimSpace(r.PathValue(key))
+	if !repository.IsUUID(value) {
+		return "", fmt.Errorf("bad uuid")
+	}
+	return value, nil
 }
 
 func parsePathInt(r *http.Request, key string) (int, error) {

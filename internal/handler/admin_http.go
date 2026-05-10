@@ -58,7 +58,7 @@ func (s *Server) handleAdminUserAccess(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SetUserAccessClosed(r.Context(), id, req.Closed); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "user_access", "user", strconv.FormatInt(id, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "user_access", "user", id, req)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -95,7 +95,7 @@ func (s *Server) handleAdminUserBonus(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_ = s.store.Audit(r.Context(), actor, "user_bonus", "user", strconv.FormatInt(id, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "user_bonus", "user", id, req)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -105,7 +105,12 @@ func (s *Server) handleAdminPayments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range payments {
-		payments[i].ReceiptFilePath = safePublicUploadPath(s.cfg.UploadDir, payments[i].ReceiptFilePath)
+		if payments[i].Receipt != nil {
+			payments[i].Receipt.FilePath = "/api/admin/receipts/" + payments[i].Receipt.ID + "/file"
+			payments[i].ReceiptFilePath = payments[i].Receipt.FilePath
+		} else {
+			payments[i].ReceiptFilePath = ""
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"payments": payments})
 }
@@ -120,8 +125,27 @@ func (s *Server) handleAdminPayment(w http.ResponseWriter, r *http.Request) {
 	if mapRepoError(w, err) {
 		return
 	}
-	payment.ReceiptFilePath = safePublicUploadPath(s.cfg.UploadDir, payment.ReceiptFilePath)
+	if receipt, _ := s.store.LatestReceiptForPayment(r.Context(), payment.ID); receipt != nil {
+		receipt.FilePath = "/api/admin/receipts/" + receipt.ID + "/file"
+		payment.Receipt = receipt
+		payment.ReceiptFilePath = receipt.FilePath
+	} else {
+		payment.ReceiptFilePath = ""
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"payment": payment})
+}
+
+func (s *Server) handleAdminReceiptFile(w http.ResponseWriter, r *http.Request) {
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad receipt")
+		return
+	}
+	receipt, err := s.store.GetReceipt(r.Context(), id)
+	if mapRepoError(w, err) {
+		return
+	}
+	http.ServeFile(w, r, receipt.FilePath)
 }
 
 func (s *Server) handleAdminApprovePayment(w http.ResponseWriter, r *http.Request) {
@@ -132,17 +156,20 @@ func (s *Server) handleAdminApprovePayment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var req struct {
-		Days int `json:"days"`
+		Days            int    `json:"days"`
+		OverrideComment string `json:"override_comment"`
+		Comment         string `json:"comment"`
 	}
 	_ = decodeJSON(r, &req)
 	if req.Days == 0 {
 		req.Days = s.cfg.SubscriptionDefaultDays
 	}
-	payment, err := s.store.ApprovePayment(r.Context(), id, actor.ID, req.Days)
+	override := firstNonEmpty(req.OverrideComment, req.Comment)
+	payment, err := s.store.ApprovePaymentReviewed(r.Context(), id, actor, req.Days, override)
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "payment_approve", "payment", strconv.FormatInt(id, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "payment_approve", "payment", id, req)
 	if s.bot != nil {
 		if user, err := s.store.GetUserByID(r.Context(), payment.UserID); err == nil {
 			_ = s.bot.SendMessage(r.Context(), user.TelegramID, i18n.T(user.Language, "payment_approved"))
@@ -166,7 +193,7 @@ func (s *Server) handleAdminRejectPayment(w http.ResponseWriter, r *http.Request
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "payment_reject", "payment", strconv.FormatInt(id, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "payment_reject", "payment", id, req)
 	if s.bot != nil {
 		if user, err := s.store.GetUserByID(r.Context(), payment.UserID); err == nil {
 			_ = s.bot.SendMessage(r.Context(), user.TelegramID, formatRejectMessage(user.Language, req.Comment))
@@ -200,12 +227,12 @@ func (s *Server) handleAdminPatchSubscription(w http.ResponseWriter, r *http.Req
 	if err := s.store.UpdateSubscriptionStatus(r.Context(), id, req.Status); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "subscription_update", "subscription", strconv.FormatInt(id, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "subscription_update", "subscription", id, req)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleAdminLevels(w http.ResponseWriter, r *http.Request) {
-	levels, err := s.store.ListLevels(r.Context(), 0)
+	levels, err := s.store.ListAdminLevels(r.Context())
 	if mapRepoError(w, err) {
 		return
 	}
@@ -214,22 +241,50 @@ func (s *Server) handleAdminLevels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminPostLevel(w http.ResponseWriter, r *http.Request) {
 	actor := adminFromContext(r.Context())
-	var level repository.Level
-	if err := decodeJSON(r, &level); err != nil {
+	var req struct {
+		ID            string              `json:"id"`
+		Number        int                 `json:"number"`
+		TitleKK       string              `json:"title_kk"`
+		TitleRU       string              `json:"title_ru"`
+		DescriptionKK string              `json:"description_kk"`
+		DescriptionRU string              `json:"description_ru"`
+		SortOrder     int                 `json:"sort_order"`
+		IsActive      *bool               `json:"is_active"`
+		Access        bool                `json:"access"`
+		Completed     bool                `json:"completed"`
+		Progress      repository.Progress `json:"progress"`
+		Lessons       []repository.Lesson `json:"lessons"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if raw := r.PathValue("id"); raw != "" {
-		level.ID, _ = strconv.ParseInt(raw, 10, 64)
+	active := true
+	if req.IsActive != nil {
+		active = *req.IsActive
 	}
-	if !level.IsActive {
-		level.IsActive = true
+	level := repository.Level{
+		ID:            req.ID,
+		Number:        req.Number,
+		TitleKK:       req.TitleKK,
+		TitleRU:       req.TitleRU,
+		DescriptionKK: req.DescriptionKK,
+		DescriptionRU: req.DescriptionRU,
+		SortOrder:     req.SortOrder,
+		IsActive:      active,
+	}
+	if raw := r.PathValue("id"); raw != "" {
+		if !repository.IsUUID(raw) {
+			writeError(w, http.StatusBadRequest, "bad id")
+			return
+		}
+		level.ID = raw
 	}
 	out, err := s.store.UpsertLevel(r.Context(), level)
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "level_upsert", "level", strconv.FormatInt(out.ID, 10), out)
+	_ = s.store.Audit(r.Context(), actor, "level_upsert", "level", out.ID, out)
 	writeJSON(w, http.StatusOK, map[string]any{"level": out})
 }
 
@@ -243,16 +298,34 @@ func (s *Server) handleAdminDeleteLevel(w http.ResponseWriter, r *http.Request) 
 	if err := s.store.DeleteLevel(r.Context(), id); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "level_delete", "level", strconv.FormatInt(id, 10), nil)
+	_ = s.store.Audit(r.Context(), actor, "level_delete", "level", id, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleAdminLessons(w http.ResponseWriter, r *http.Request) {
-	lessons, err := s.store.ListLessons(r.Context(), 0, 0)
+	level, _ := strconv.Atoi(r.URL.Query().Get("level"))
+	lessons, err := s.store.ListAdminLessons(r.Context(), repository.AdminLessonFilter{
+		Query:  r.URL.Query().Get("q"),
+		Level:  level,
+		Status: r.URL.Query().Get("status"),
+	})
 	if mapRepoError(w, err) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"lessons": lessons})
+}
+
+func (s *Server) handleAdminTests(w http.ResponseWriter, r *http.Request) {
+	level, _ := strconv.Atoi(r.URL.Query().Get("level"))
+	tests, err := s.store.ListAdminTests(r.Context(), repository.AdminTestFilter{
+		Query:  r.URL.Query().Get("q"),
+		Level:  level,
+		Status: r.URL.Query().Get("status"),
+	})
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tests": tests})
 }
 
 func (s *Server) handleAdminPostLesson(w http.ResponseWriter, r *http.Request) {
@@ -263,16 +336,21 @@ func (s *Server) handleAdminPostLesson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if raw := r.PathValue("id"); raw != "" {
-		lesson.ID, _ = strconv.ParseInt(raw, 10, 64)
-	}
-	if !lesson.IsActive {
-		lesson.IsActive = true
+		if !repository.IsUUID(raw) {
+			writeError(w, http.StatusBadRequest, "bad id")
+			return
+		}
+		lesson.ID = raw
 	}
 	out, err := s.store.UpsertLesson(r.Context(), lesson)
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "lesson_upsert", "lesson", strconv.FormatInt(out.ID, 10), out)
+	action := "lesson_create"
+	if r.Method == http.MethodPatch {
+		action = "lesson_update"
+	}
+	_ = s.store.Audit(r.Context(), actor, action, "lesson", out.ID, out)
 	writeJSON(w, http.StatusOK, map[string]any{"lesson": out})
 }
 
@@ -286,7 +364,7 @@ func (s *Server) handleAdminDeleteLesson(w http.ResponseWriter, r *http.Request)
 	if err := s.store.DeleteLesson(r.Context(), id); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "lesson_delete", "lesson", strconv.FormatInt(id, 10), nil)
+	_ = s.store.Audit(r.Context(), actor, "lesson_delete", "lesson", id, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -298,16 +376,21 @@ func (s *Server) handleAdminPostTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if raw := r.PathValue("id"); raw != "" {
-		test.ID, _ = strconv.ParseInt(raw, 10, 64)
-	}
-	if !test.IsActive {
-		test.IsActive = true
+		if !repository.IsUUID(raw) {
+			writeError(w, http.StatusBadRequest, "bad id")
+			return
+		}
+		test.ID = raw
 	}
 	out, err := s.store.UpsertTest(r.Context(), test)
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "test_upsert", "test", strconv.FormatInt(out.ID, 10), out)
+	action := "test_create"
+	if r.Method == http.MethodPatch {
+		action = "test_update"
+	}
+	_ = s.store.Audit(r.Context(), actor, action, "test", out.ID, out)
 	writeJSON(w, http.StatusOK, map[string]any{"test": out})
 }
 
@@ -321,7 +404,7 @@ func (s *Server) handleAdminDeleteTest(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteTest(r.Context(), id); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "test_delete", "test", strconv.FormatInt(id, 10), nil)
+	_ = s.store.Audit(r.Context(), actor, "test_delete", "test", id, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -342,7 +425,7 @@ func (s *Server) handleAdminReviewAssignmentSubmission(w http.ResponseWriter, r 
 	if err := s.store.ReviewAssignmentSubmission(r.Context(), id, actor.ID, req.Status); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "assignment_submission_review", "assignment_submission", strconv.FormatInt(id, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "assignment_submission_review", "assignment_submission", id, req)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -359,11 +442,11 @@ func (s *Server) handleAdminPlaceholder(name string) http.HandlerFunc {
 func (s *Server) handleAdminAdjustCoins(w http.ResponseWriter, r *http.Request) {
 	actor := adminFromContext(r.Context())
 	var req struct {
-		UserID int64  `json:"user_id"`
+		UserID string `json:"user_id"`
 		Amount int    `json:"amount"`
 		Reason string `json:"reason"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.UserID == 0 || req.Amount == 0 {
+	if err := decodeJSON(r, &req); err != nil || !repository.IsUUID(req.UserID) || req.Amount == 0 {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -373,12 +456,12 @@ func (s *Server) handleAdminAdjustCoins(w http.ResponseWriter, r *http.Request) 
 	if err := s.store.ManualAdjustCoins(r.Context(), req.UserID, req.Amount, req.Reason, actor.ID); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "coin_adjust", "user", strconv.FormatInt(req.UserID, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "coin_adjust", "user", req.UserID, req)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleAdminChannels(w http.ResponseWriter, r *http.Request) {
-	channels, err := s.store.ListChannels(r.Context(), 0, true)
+	channels, err := s.store.ListChannels(r.Context(), "", true)
 	if mapRepoError(w, err) {
 		return
 	}
@@ -393,7 +476,11 @@ func (s *Server) handleAdminPostChannel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if raw := r.PathValue("id"); raw != "" {
-		channel.ID, _ = strconv.ParseInt(raw, 10, 64)
+		if !repository.IsUUID(raw) {
+			writeError(w, http.StatusBadRequest, "bad id")
+			return
+		}
+		channel.ID = raw
 	}
 	if !channel.IsActive {
 		channel.IsActive = true
@@ -402,7 +489,7 @@ func (s *Server) handleAdminPostChannel(w http.ResponseWriter, r *http.Request) 
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "channel_upsert", "channel", strconv.FormatInt(out.ID, 10), out)
+	_ = s.store.Audit(r.Context(), actor, "channel_upsert", "channel", out.ID, out)
 	writeJSON(w, http.StatusOK, map[string]any{"channel": out})
 }
 
@@ -416,7 +503,7 @@ func (s *Server) handleAdminDeleteChannel(w http.ResponseWriter, r *http.Request
 	if err := s.store.DeleteChannel(r.Context(), id); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "channel_delete", "channel", strconv.FormatInt(id, 10), nil)
+	_ = s.store.Audit(r.Context(), actor, "channel_delete", "channel", id, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -428,9 +515,9 @@ func (s *Server) handleAdminIssueInvite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		UserID int64 `json:"user_id"`
+		UserID string `json:"user_id"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.UserID == 0 {
+	if err := decodeJSON(r, &req); err != nil || !repository.IsUUID(req.UserID) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -451,12 +538,12 @@ func (s *Server) handleAdminIssueInvite(w http.ResponseWriter, r *http.Request) 
 	}
 	exp := expiresAt.Format(time.RFC3339)
 	_ = s.store.RecordInviteLink(r.Context(), req.UserID, channel.ID, link, &exp)
-	_ = s.store.Audit(r.Context(), actor, "channel_invite_issue", "channel", strconv.FormatInt(channelID, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "channel_invite_issue", "channel", channelID, req)
 	writeJSON(w, http.StatusOK, map[string]any{"invite_link": link, "expires_at": exp})
 }
 
 func (s *Server) handleAdminStreams(w http.ResponseWriter, r *http.Request) {
-	streams, err := s.store.ListStreams(r.Context(), 0, true)
+	streams, err := s.store.ListStreams(r.Context(), "", true)
 	if mapRepoError(w, err) {
 		return
 	}
@@ -471,7 +558,11 @@ func (s *Server) handleAdminPostStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if raw := r.PathValue("id"); raw != "" {
-		stream.ID, _ = strconv.ParseInt(raw, 10, 64)
+		if !repository.IsUUID(raw) {
+			writeError(w, http.StatusBadRequest, "bad id")
+			return
+		}
+		stream.ID = raw
 	}
 	if stream.StartsAt.IsZero() {
 		stream.StartsAt = time.Now().Add(7 * 24 * time.Hour)
@@ -480,7 +571,7 @@ func (s *Server) handleAdminPostStream(w http.ResponseWriter, r *http.Request) {
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "stream_upsert", "stream", strconv.FormatInt(out.ID, 10), out)
+	_ = s.store.Audit(r.Context(), actor, "stream_upsert", "stream", out.ID, out)
 	writeJSON(w, http.StatusOK, map[string]any{"stream": out})
 }
 
@@ -494,7 +585,7 @@ func (s *Server) handleAdminDeleteStream(w http.ResponseWriter, r *http.Request)
 	if err := s.store.DeleteStream(r.Context(), id); mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "stream_delete", "stream", strconv.FormatInt(id, 10), nil)
+	_ = s.store.Audit(r.Context(), actor, "stream_delete", "stream", id, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -516,8 +607,16 @@ func (s *Server) handleAdminBroadcast(w http.ResponseWriter, r *http.Request) {
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "broadcast_create", "broadcast", strconv.FormatInt(id, 10), req)
+	_ = s.store.Audit(r.Context(), actor, "broadcast_create", "broadcast", id, req)
 	writeJSON(w, http.StatusOK, map[string]any{"broadcast_id": id})
+}
+
+func (s *Server) handleAdminBroadcasts(w http.ResponseWriter, r *http.Request) {
+	broadcasts, err := s.store.ListBroadcasts(r.Context(), 100)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"broadcasts": broadcasts})
 }
 
 func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {

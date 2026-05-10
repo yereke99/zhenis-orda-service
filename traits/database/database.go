@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -45,24 +46,79 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 }
 
 func Migrate(ctx context.Context, db *sql.DB) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS schema_migrations (
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 			version INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
 			applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);`,
-		schemaV1,
-		indexesV1,
+		);`); err != nil {
+		return err
 	}
+	if err := guardLegacyIntegerIDs(ctx, db); err != nil {
+		return err
+	}
+	statements := []string{schemaV1, indexesV1}
 	for i, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("migration statement %d: %w", i+1, err)
 		}
 	}
+	if err := addColumnIfMissing(ctx, db, "users", "photo_url", "TEXT"); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, name) VALUES (1, 'initial_zhenis_orda_schema');`); err != nil {
 		return err
 	}
 	return Seed(ctx, db)
+}
+
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, definition string) error {
+	var exists int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if exists > 0 {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
+}
+
+func guardLegacyIntegerIDs(ctx context.Context, db *sql.DB) error {
+	var idType string
+	err := db.QueryRowContext(ctx, `SELECT type FROM pragma_table_info('users') WHERE name = 'id'`).Scan(&idType)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(idType, "TEXT") {
+		return nil
+	}
+	if os.Getenv("RESET_LEGACY_INTEGER_IDS") != "1" {
+		return fmt.Errorf("legacy integer-id database detected; set RESET_LEGACY_INTEGER_IDS=1 in development to recreate UUID tables after backup")
+	}
+	tables := []string{
+		"test_answers", "test_attempts", "test_options", "test_questions", "tests",
+		"lesson_progress", "lessons", "assignment_submissions", "assignments",
+		"payment_receipts", "payments", "subscriptions", "diagnostics",
+		"referral_rewards", "referrals", "coin_transactions",
+		"channel_invite_links", "channels",
+		"user_stream_attendance", "live_stream_recordings", "live_stream_reminders", "live_streams",
+		"broadcast_messages", "broadcasts", "support_messages", "admin_actions",
+		"levels", "tariffs", "users",
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF;`); err != nil {
+		return err
+	}
+	for _, table := range tables {
+		if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
+			return err
+		}
+	}
+	_, err = db.ExecContext(ctx, `PRAGMA foreign_keys=ON;`)
+	return err
 }
 
 func Seed(ctx context.Context, db *sql.DB) error {
@@ -99,8 +155,8 @@ func seedTariffs(ctx context.Context, tx *sql.Tx) error {
 	for _, tariff := range tariffs {
 		features, _ := json.Marshal(tariff.Features)
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO tariffs(code, title, price_kzt, features_json, sort_order, is_active)
-			VALUES (?, ?, ?, ?, ?, 1)
+			INSERT INTO tariffs(id, code, title, price_kzt, features_json, sort_order, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, 1)
 			ON CONFLICT(code) DO UPDATE SET
 				title=excluded.title,
 				price_kzt=excluded.price_kzt,
@@ -108,7 +164,7 @@ func seedTariffs(ctx context.Context, tx *sql.Tx) error {
 				sort_order=excluded.sort_order,
 				is_active=1,
 				updated_at=CURRENT_TIMESTAMP;
-		`, tariff.Code, tariff.Title, tariff.Price, string(features), tariff.Order); err != nil {
+		`, uuid.NewString(), tariff.Code, tariff.Title, tariff.Price, string(features), tariff.Order); err != nil {
 			return err
 		}
 	}
@@ -134,6 +190,7 @@ func seedSettings(ctx context.Context, tx *sql.Tx) error {
 }
 
 func seedLevels(ctx context.Context, tx *sql.Tx) error {
+	seedDemoContent := os.Getenv("SEED_DEMO_CONTENT") == "1"
 	levels := []struct {
 		Number     int
 		TitleKK    string
@@ -158,8 +215,8 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 
 	for _, level := range levels {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO levels(number, title_kk, title_ru, description_kk, description_ru, sort_order, is_active)
-			VALUES (?, ?, ?, ?, ?, ?, 1)
+			INSERT INTO levels(id, number, title_kk, title_ru, description_kk, description_ru, sort_order, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 1)
 			ON CONFLICT(number) DO UPDATE SET
 				title_kk=excluded.title_kk,
 				title_ru=excluded.title_ru,
@@ -168,10 +225,13 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 				sort_order=excluded.sort_order,
 				is_active=1,
 				updated_at=CURRENT_TIMESTAMP;
-		`, level.Number, level.TitleKK, level.TitleRU, fmt.Sprintf("LEVEL %d / Month %d", level.Number, level.Number), fmt.Sprintf("LEVEL %d / Month %d", level.Number, level.Number), level.Number); err != nil {
+		`, uuid.NewString(), level.Number, level.TitleKK, level.TitleRU, fmt.Sprintf("LEVEL %d / Month %d", level.Number, level.Number), fmt.Sprintf("LEVEL %d / Month %d", level.Number, level.Number), level.Number); err != nil {
 			return err
 		}
-		var levelID int64
+		if !seedDemoContent {
+			continue
+		}
+		var levelID string
 		if err := tx.QueryRowContext(ctx, `SELECT id FROM levels WHERE number = ?`, level.Number).Scan(&levelID); err != nil {
 			return err
 		}
@@ -181,43 +241,43 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 				lessonRU = level.LessonsRU[i]
 			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO lessons(level_id, title_kk, title_ru, description_kk, description_ru, video_url, sort_order, is_active)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+				INSERT INTO lessons(id, level_id, title_kk, title_ru, description_kk, description_ru, video_url, sort_order, is_active)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
 				ON CONFLICT(level_id, sort_order) DO UPDATE SET
 					title_kk=excluded.title_kk,
 					title_ru=excluded.title_ru,
 					description_kk=excluded.description_kk,
 					description_ru=excluded.description_ru,
 					updated_at=CURRENT_TIMESTAMP;
-			`, levelID, lessonKK, lessonRU, "ZHENIS ORDA INSIDE", "ZHENIS ORDA INSIDE", fmt.Sprintf("https://t.me/zhenisorda_content/%d%d", level.Number, i+1), i+1); err != nil {
+			`, uuid.NewString(), levelID, lessonKK, lessonRU, "ZHENIS ORDA INSIDE", "ZHENIS ORDA INSIDE", fmt.Sprintf("https://t.me/zhenisorda_content/%d%d", level.Number, i+1), i+1); err != nil {
 				return err
 			}
 		}
 
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO tests(level_id, title, pass_percent, is_active)
-			VALUES (?, ?, 70, 1)
+			INSERT INTO tests(id, level_id, title, pass_percent, is_active)
+			VALUES (?, ?, ?, 70, 1)
 			ON CONFLICT(level_id) DO UPDATE SET title=excluded.title, pass_percent=70, is_active=1, updated_at=CURRENT_TIMESTAMP;
-		`, levelID, fmt.Sprintf("LEVEL %d test", level.Number)); err != nil {
+		`, uuid.NewString(), levelID, fmt.Sprintf("LEVEL %d test", level.Number)); err != nil {
 			return err
 		}
-		var testID int64
+		var testID string
 		if err := tx.QueryRowContext(ctx, `SELECT id FROM tests WHERE level_id = ?`, levelID).Scan(&testID); err != nil {
 			return err
 		}
 		for q := 1; q <= 10; q++ {
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO test_questions(test_id, question_text_kk, question_text_ru, sort_order, is_active)
-				VALUES (?, ?, ?, ?, 1)
+				INSERT INTO test_questions(id, test_id, question_text_kk, question_text_ru, sort_order, is_active)
+				VALUES (?, ?, ?, ?, ?, 1)
 				ON CONFLICT(test_id, sort_order) DO UPDATE SET
 					question_text_kk=excluded.question_text_kk,
 					question_text_ru=excluded.question_text_ru,
 					is_active=1,
 					updated_at=CURRENT_TIMESTAMP;
-			`, testID, fmt.Sprintf("LEVEL %d сұрақ %d", level.Number, q), fmt.Sprintf("LEVEL %d вопрос %d", level.Number, q), q); err != nil {
+			`, uuid.NewString(), testID, fmt.Sprintf("LEVEL %d сұрақ %d", level.Number, q), fmt.Sprintf("LEVEL %d вопрос %d", level.Number, q), q); err != nil {
 				return err
 			}
-			var questionID int64
+			var questionID string
 			if err := tx.QueryRowContext(ctx, `SELECT id FROM test_questions WHERE test_id = ? AND sort_order = ?`, testID, q).Scan(&questionID); err != nil {
 				return err
 			}
@@ -227,14 +287,14 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 					isCorrect = 1
 				}
 				if _, err := tx.ExecContext(ctx, `
-					INSERT INTO test_options(question_id, option_text_kk, option_text_ru, is_correct, sort_order)
-					VALUES (?, ?, ?, ?, ?)
+					INSERT INTO test_options(id, question_id, option_text_kk, option_text_ru, is_correct, sort_order)
+					VALUES (?, ?, ?, ?, ?, ?)
 					ON CONFLICT(question_id, sort_order) DO UPDATE SET
 						option_text_kk=excluded.option_text_kk,
 						option_text_ru=excluded.option_text_ru,
 						is_correct=excluded.is_correct,
 						updated_at=CURRENT_TIMESTAMP;
-				`, questionID, fmt.Sprintf("Жауап %d", option), fmt.Sprintf("Ответ %d", option), isCorrect, option); err != nil {
+				`, uuid.NewString(), questionID, fmt.Sprintf("Жауап %d", option), fmt.Sprintf("Ответ %d", option), isCorrect, option); err != nil {
 					return err
 				}
 			}
@@ -242,8 +302,8 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 
 		if level.Assignment != "" {
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO assignments(level_id, title_kk, title_ru, description_kk, description_ru, is_active)
-				VALUES (?, ?, ?, ?, ?, 1)
+				INSERT INTO assignments(id, level_id, title_kk, title_ru, description_kk, description_ru, is_active)
+				VALUES (?, ?, ?, ?, ?, ?, 1)
 				ON CONFLICT(level_id) DO UPDATE SET
 					title_kk=excluded.title_kk,
 					title_ru=excluded.title_ru,
@@ -251,7 +311,7 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 					description_ru=excluded.description_ru,
 					is_active=1,
 					updated_at=CURRENT_TIMESTAMP;
-			`, levelID, level.Assignment, level.Assignment, level.Assignment, level.Assignment); err != nil {
+			`, uuid.NewString(), levelID, level.Assignment, level.Assignment, level.Assignment, level.Assignment); err != nil {
 				return err
 			}
 		}

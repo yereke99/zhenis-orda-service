@@ -1,83 +1,256 @@
+/* ZHENIS ORDA INSIDE — premium Mini App + browser admin frontend.
+   Static SPA, no build system. Preserves all existing API contracts. */
+
 (function () {
-  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-  const isAdmin = window.location.pathname === "/admin";
-  const query = new URLSearchParams(window.location.search);
-  const isExplicitDevMiniApp = query.get("miniapp_dev") === "1";
-  const hasTelegramInitData = Boolean(tg && tg.initData && tg.initDataUnsafe && tg.initDataUnsafe.user);
-  const canRunMiniApp = hasTelegramInitData || isExplicitDevMiniApp;
+  "use strict";
+
+  /* ===========================================================
+     STATE
+     =========================================================== */
+
   const state = {
+    mode: "boot", // "miniapp" | "admin" | "landing" | "boot"
     me: null,
     platform: null,
     levels: [],
     lessons: [],
+    referral: null,
+    coins: null,
     currentScreen: "dashboard",
     selectedTariff: null,
     adminScreen: "dashboard",
     admin: null,
+    fullscreenRequested: false,
+    telegramViewportSetup: false,
+    bootedAt: 0,
   };
 
-  setupTelegramViewport();
+  const TELEGRAM_INIT_WAIT_MS = 2200;
+  const TELEGRAM_INIT_RETRY_MS = 1200;
+  const TELEGRAM_AUTH_REQUIRED_MESSAGE =
+    "Telegram авторизациясы қажет. Mini App-ты Telegram ішінен ашыңыз.";
+  const TELEGRAM_AUTH_FAILED_MESSAGE =
+    "Telegram авторизациясы сәтсіз аяқталды. Mini App-ты бот ішіндегі батырма арқылы қайта ашыңыз.";
 
-  document.addEventListener("DOMContentLoaded", () => {
-    if (isAdmin) {
-      document.body.classList.add("admin-body");
-      document.getElementById("miniApp").classList.add("hidden");
-      document.getElementById("adminApp").classList.remove("hidden");
-      initAdmin();
+  /* ===========================================================
+     DOM ELEMENT REGISTRY
+     =========================================================== */
+
+  const els = {};
+
+  function cacheElements() {
+    [
+      "miniApp",
+      "userHeader",
+      "tgAvatar",
+      "tgAvatarFallback",
+      "tgName",
+      "tgLogin",
+      "profileAction",
+      "appContent",
+      "bottomCta",
+      "adminAuth",
+      "adminLoginForm",
+      "adminPassword",
+      "adminLoginError",
+      "adminLoginSubmit",
+      "adminLoginHint",
+      "togglePassword",
+      "adminApp",
+      "adminSidebar",
+      "adminNav",
+      "adminNavToggle",
+      "adminTitle",
+      "adminWho",
+      "adminLogout",
+      "adminLogoutTop",
+      "adminContent",
+      "landing",
+      "landingTelegramLink",
+      "toastStack",
+      "modalRoot",
+    ].forEach((id) => {
+      els[id] = document.getElementById(id);
+    });
+  }
+
+  /* ===========================================================
+     TELEGRAM HELPERS
+     =========================================================== */
+
+  function getTelegram() {
+    return window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  }
+
+  function getTelegramInitData() {
+    const tg = getTelegram();
+    return tg && typeof tg.initData === "string" ? tg.initData : "";
+  }
+
+  function hasTelegramInitData() {
+    return getTelegramInitData().trim().length > 0;
+  }
+
+  function hasTelegramUnsafeUser(tg) {
+    return Boolean(tg && tg.initDataUnsafe && tg.initDataUnsafe.user);
+  }
+
+  function isTelegramMiniAppLaunch() {
+    const tg = getTelegram();
+    return Boolean(tg && tg.initData);
+  }
+
+  function isDevMiniAppLaunch() {
+    return new URLSearchParams(window.location.search).get("miniapp_dev") === "1";
+  }
+
+  function isDevelopmentDebug() {
+    const host = window.location.hostname;
+    return (
+      isDevMiniAppLaunch() ||
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "" ||
+      new URLSearchParams(window.location.search).get("tg_debug") === "1"
+    );
+  }
+
+  function logTelegramDebug(stage) {
+    if (!isDevelopmentDebug() || !window.console || typeof window.console.debug !== "function") {
       return;
     }
-    document.body.classList.add("mini-body");
-    if (!canRunMiniApp) {
-      document.getElementById("userHeader").classList.add("hidden");
-      document.getElementById("bottomCta").classList.add("hidden");
-      renderBrowserGate();
-      return;
+    const tg = getTelegram();
+    window.console.debug("[ZHENIS ORDA Telegram]", stage, {
+      hasTelegram: Boolean(window.Telegram),
+      hasWebApp: Boolean(tg),
+      hasUnsafeUser: hasTelegramUnsafeUser(tg),
+      initDataLength: getTelegramInitData().length,
+      platform: (tg && tg.platform) || "",
+      version: (tg && tg.version) || "",
+      viewportHeight: (tg && tg.viewportHeight) || 0,
+      viewportStableHeight: (tg && tg.viewportStableHeight) || 0,
+      colorScheme: (tg && tg.colorScheme) || "",
+    });
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  async function waitForTelegramInitData(timeoutMs) {
+    const started = Date.now();
+    let lastTg = getTelegram();
+    let sawWebApp = Boolean(lastTg);
+
+    while (Date.now() - started <= timeoutMs) {
+      lastTg = getTelegram();
+      if (lastTg) {
+        sawWebApp = true;
+        try {
+          if (typeof lastTg.ready === "function") lastTg.ready();
+        } catch (_) {}
+        try {
+          if (typeof lastTg.expand === "function") lastTg.expand();
+        } catch (_) {}
+      }
+      if (hasTelegramInitData()) {
+        logTelegramDebug("initData ready");
+        return { hasInitData: true, sawWebApp, tg: lastTg };
+      }
+      await sleep(80);
     }
-    renderUserHeader();
-    initMiniApp();
-  });
+
+    logTelegramDebug("initData missing after wait");
+    return { hasInitData: false, sawWebApp, tg: lastTg };
+  }
+
+  function onTelegramEvent(name, handler) {
+    const tg = getTelegram();
+    if (!tg || typeof tg.onEvent !== "function") return;
+    try {
+      tg.onEvent(name, handler);
+    } catch (_) {
+      // not supported in this Telegram version
+    }
+  }
+
+  /* ===========================================================
+     VIEWPORT / FORCE EXPAND
+     =========================================================== */
 
   function setupTelegramViewport() {
-    updateViewportVars();
-    if (tg) {
-      try {
-        tg.ready();
-      } catch (_) {}
-      forceExpand();
-      ["viewportChanged", "safeAreaChanged", "contentSafeAreaChanged", "fullscreenChanged", "fullscreenFailed"].forEach((eventName) => {
-        try {
-          tg.onEvent(eventName, syncTelegramFrame);
-        } catch (_) {}
-      });
+    forceExpand();
+
+    onTelegramEvent("viewportChanged", syncTelegramFrame);
+    onTelegramEvent("safeAreaChanged", updateViewportVars);
+    onTelegramEvent("contentSafeAreaChanged", updateViewportVars);
+    onTelegramEvent("fullscreenChanged", () => {
+      const tg = getTelegram();
+      if (tg && tg.isFullscreen) {
+        document.documentElement.classList.add("telegram-fullscreen");
+      } else {
+        document.documentElement.classList.remove("telegram-fullscreen");
+      }
+      updateViewportVars();
+    });
+    onTelegramEvent("fullscreenFailed", syncTelegramFrame);
+    onTelegramEvent("activated", syncTelegramFrame);
+
+    window.addEventListener("resize", syncTelegramFrame, { passive: true });
+    window.addEventListener("orientationchange", syncTelegramFrame, { passive: true });
+    window.addEventListener("focus", syncTelegramFrame);
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", syncTelegramFrame);
+      window.visualViewport.addEventListener("scroll", syncTelegramFrame);
     }
-    ["resize", "orientationchange", "focus", "visibilitychange"].forEach((eventName) => {
-      window.addEventListener(eventName, syncTelegramFrame, { passive: true });
+
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) syncTelegramFrame();
     });
   }
 
   function forceExpand() {
-    [0, 120, 450, 900].forEach((delay) => {
-      setTimeout(() => {
-        if (!tg) return;
-        try {
-          tg.ready();
-        } catch (_) {}
-        try {
-          tg.expand();
-        } catch (_) {}
-        try {
-          if (typeof tg.requestFullscreen === "function") tg.requestFullscreen();
-        } catch (_) {}
-        try {
-          if (typeof tg.disableVerticalSwipes === "function") tg.disableVerticalSwipes();
-        } catch (_) {}
-        syncTelegramFrame();
-      }, delay);
-    });
+    const webApp = getTelegram();
+
+    if (!webApp) {
+      updateViewportVars();
+      return;
+    }
+
+    try {
+      webApp.ready();
+    } catch (_) {}
+    try {
+      webApp.expand();
+    } catch (_) {}
+    try {
+      if (typeof webApp.setBackgroundColor === "function") webApp.setBackgroundColor("#050403");
+      if (typeof webApp.setHeaderColor === "function") webApp.setHeaderColor("#050403");
+    } catch (_) {}
+    try {
+      if (typeof webApp.disableVerticalSwipes === "function") webApp.disableVerticalSwipes();
+    } catch (_) {}
+
+    if (typeof webApp.requestFullscreen === "function" && !webApp.isFullscreen) {
+      try {
+        webApp.requestFullscreen();
+        state.fullscreenRequested = true;
+        document.documentElement.classList.add("telegram-fullscreen");
+      } catch (_) {
+        /* fallback to expand only */
+      }
+    }
+
+    syncTelegramFrame();
+    window.setTimeout(syncTelegramFrame, 120);
+    window.setTimeout(syncTelegramFrame, 450);
+    window.setTimeout(syncTelegramFrame, 900);
   }
 
   function syncTelegramFrame() {
     updateViewportVars();
+    const tg = getTelegram();
     if (tg) {
       try {
         tg.expand();
@@ -86,128 +259,708 @@
   }
 
   function updateViewportVars() {
-    const viewportHeight = tg && tg.viewportHeight ? tg.viewportHeight : window.innerHeight;
+    const tg = getTelegram();
+    const browserHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const viewportWidth =
+      (window.visualViewport && window.visualViewport.width) ||
+      window.innerWidth ||
+      document.documentElement.clientWidth ||
+      0;
+    const viewportHeight = tg && tg.viewportHeight ? tg.viewportHeight : browserHeight;
     const stableHeight = tg && tg.viewportStableHeight ? tg.viewportStableHeight : viewportHeight;
+
     const safe = (tg && tg.safeAreaInset) || {};
     const contentSafe = (tg && tg.contentSafeAreaInset) || {};
-    const top = Math.max(14, Number(safe.top || 0) + Number(contentSafe.top || 0) + 14);
-    const bottom = Math.max(12, Number(safe.bottom || 0) + Number(contentSafe.bottom || 0) + 10);
+
+    const safeTop = Number(safe.top) || 0;
+    const safeBottom = Number(safe.bottom) || 0;
+    const contentTop = Number(contentSafe.top) || 0;
+    const contentBottom = Number(contentSafe.bottom) || 0;
+
+    const top = getAppTopPadding(stableHeight, safeTop, contentTop);
+    const bottom = Math.max(14, safeBottom + contentBottom + 12);
+
     const root = document.documentElement;
+    root.style.setProperty("--viewport-width", `${Math.round(viewportWidth)}px`);
+    root.style.setProperty("--browser-viewport-height", `${Math.round(browserHeight)}px`);
     root.style.setProperty("--viewport-height", `${Math.round(viewportHeight)}px`);
     root.style.setProperty("--viewport-stable-height", `${Math.round(stableHeight)}px`);
-    root.style.setProperty("--tg-safe-area-inset-top", `${Number(safe.top || 0)}px`);
-    root.style.setProperty("--tg-safe-area-inset-bottom", `${Number(safe.bottom || 0)}px`);
-    root.style.setProperty("--tg-content-safe-area-inset-top", `${Number(contentSafe.top || 0)}px`);
-    root.style.setProperty("--tg-content-safe-area-inset-bottom", `${Number(contentSafe.bottom || 0)}px`);
+    root.style.setProperty("--tg-safe-area-inset-top", `${safeTop}px`);
+    root.style.setProperty("--tg-safe-area-inset-bottom", `${safeBottom}px`);
+    root.style.setProperty("--tg-content-safe-area-inset-top", `${contentTop}px`);
+    root.style.setProperty("--tg-content-safe-area-inset-bottom", `${contentBottom}px`);
     root.style.setProperty("--app-top-padding", `${top}px`);
     root.style.setProperty("--app-bottom-padding", `${bottom}px`);
   }
 
-  function renderUserHeader() {
-    const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || {};
-    const name = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") || "DEV Mini App";
-    const login = tgUser.username ? `@${tgUser.username}` : tgUser.id ? `ID ${tgUser.id}` : "@dev_preview";
-    const avatar = document.getElementById("tgAvatar");
-    const fallback = document.getElementById("tgAvatarFallback");
-    document.getElementById("tgName").textContent = name;
-    document.getElementById("tgLogin").textContent = login;
-    fallback.textContent = name.trim().charAt(0).toUpperCase() || "Z";
-    if (tgUser.photo_url) {
-      avatar.src = tgUser.photo_url;
-      avatar.onload = () => {
-        avatar.style.display = "block";
-        fallback.style.display = "none";
+  function getAppTopPadding(stableHeight, safeTop, contentTop) {
+    const webApp = getTelegram();
+    if (!webApp) return Math.max(16, safeTop + 12, contentTop + 12);
+
+    const platform = String(webApp.platform || "").toLowerCase();
+    const coarse =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: coarse)").matches;
+
+    const looksMobile =
+      /ios|android|mobile/.test(platform) ||
+      (window.innerWidth <= 640 && coarse);
+
+    const fullscreen = Boolean(webApp.isFullscreen || state.fullscreenRequested);
+    const contentReserve = contentTop > 0 ? contentTop + 12 : 0;
+    const safeReserve = safeTop + 14;
+
+    const systemButtonReserve = looksMobile ? Math.max(72, safeTop + 44) : 18;
+
+    const fullscreenReserve =
+      looksMobile && fullscreen
+        ? Math.min(118, Math.max(82, Math.round(stableHeight * 0.1)))
+        : 0;
+
+    return Math.max(16, safeReserve, contentReserve, systemButtonReserve, fullscreenReserve);
+  }
+
+  /* ===========================================================
+     PROFILE / HEADER RENDERING
+     =========================================================== */
+
+  function readTelegramUser() {
+    const tg = getTelegram();
+    return (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || {};
+  }
+
+  function pick(...values) {
+    for (const v of values) {
+      if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+    }
+    return "";
+  }
+
+  function mergeDisplayUser(tgUser, apiUser) {
+    const user = Object.assign({}, apiUser || {});
+    Object.entries(tgUser || {}).forEach(([key, value]) => {
+      if (pick(value)) user[key] = value;
+    });
+    return user;
+  }
+
+  function buildDisplayName(tgUser, apiUser) {
+    const user = mergeDisplayUser(tgUser, apiUser);
+    const first = pick(
+      user.first_name,
+      user.firstName,
+    );
+    const last = pick(
+      user.last_name,
+      user.lastName,
+    );
+    const username = pick(
+      user.username,
+      user.user_name,
+      user.telegram_username,
+    );
+    const composed = `${first} ${last}`.trim();
+    if (composed) return composed;
+    if (username) return username;
+    return "ZHENIS ORDA";
+  }
+
+  function buildLogin(tgUser, apiUser) {
+    const user = mergeDisplayUser(tgUser, apiUser);
+    const username = pick(
+      user.username,
+      user.user_name,
+      user.telegram_username,
+    );
+    if (username) return `@${String(username).replace(/^@/, "")}`;
+
+    const tid = pick(
+      user.id,
+      user.telegram_id,
+      user.telegramId,
+    );
+    if (tid) return `ID ${tid}`;
+
+    return "Telegram user";
+  }
+
+  function buildPhotoUrl(tgUser, apiUser) {
+    const user = mergeDisplayUser(tgUser, apiUser);
+    return (
+      pick(
+        user.photo_url,
+        user.photoUrl,
+      ) || ""
+    );
+  }
+
+  function renderHeader() {
+    if (!els.userHeader) return;
+    const tgUser = readTelegramUser();
+    const apiUser = state.me && state.me.user ? state.me.user : null;
+
+    const name = buildDisplayName(tgUser, apiUser);
+    const login = buildLogin(tgUser, apiUser);
+    const photo = buildPhotoUrl(tgUser, apiUser);
+
+    els.tgName.textContent = name;
+    els.tgLogin.textContent = login;
+
+    const initial = (name || "ZO").trim().charAt(0).toUpperCase() || "Z";
+    els.tgAvatarFallback.textContent = initial === "Z" ? "ZO" : initial;
+
+    if (photo) {
+      els.tgAvatar.src = photo;
+      els.tgAvatar.onload = () => {
+        els.tgAvatar.classList.remove("hidden");
+        els.tgAvatarFallback.classList.add("hidden");
       };
-      avatar.onerror = () => {
-        avatar.style.display = "none";
-        fallback.style.display = "grid";
+      els.tgAvatar.onerror = () => {
+        els.tgAvatar.classList.add("hidden");
+        els.tgAvatarFallback.classList.remove("hidden");
       };
+    } else {
+      els.tgAvatar.classList.add("hidden");
+      els.tgAvatar.removeAttribute("src");
+      els.tgAvatarFallback.classList.remove("hidden");
     }
   }
 
-  async function initMiniApp() {
-    renderShellLoading();
-    try {
-      const [me, platform, levels] = await Promise.all([api("/api/me"), api("/api/platform"), api("/api/levels")]);
-      state.me = me;
-      state.platform = platform;
-      state.levels = levels.levels || [];
-      state.currentScreen = me.user && me.user.current_level > 0 ? "dashboard" : "onboarding";
-      renderMini();
-    } catch (error) {
-      renderError(error.message || "Mini App auth failed");
+  /* ===========================================================
+     API
+     =========================================================== */
+
+  function api(path, options) {
+    options = options || {};
+    const initData = getTelegramInitData();
+    const isMultipart = typeof FormData !== "undefined" && options.body instanceof FormData;
+    const headers = new Headers(options.headers || {});
+    if (!isMultipart && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (initData) headers.set("X-Telegram-Init-Data", initData);
+    if (isDevMiniAppLaunch()) {
+      const query = new URLSearchParams(window.location.search);
+      headers.set("X-Miniapp-Dev", "1");
+      if (query.get("telegram_id")) headers.set("X-Dev-Telegram-ID", query.get("telegram_id"));
+      if (query.get("username")) headers.set("X-Dev-Username", query.get("username"));
+      if (query.get("first_name")) headers.set("X-Dev-First-Name", query.get("first_name"));
+      if (query.get("last_name")) headers.set("X-Dev-Last-Name", query.get("last_name"));
+      if (query.get("photo_url")) headers.set("X-Dev-Photo-URL", query.get("photo_url"));
     }
+    const finalOpts = Object.assign({}, options, {
+      headers,
+      credentials: "include",
+    });
+    return fetch(path, finalOpts).then((res) => {
+      if (path === "/api/me" && isDevelopmentDebug() && window.console) {
+        window.console.debug("[ZHENIS ORDA Telegram]", "/api/me", { status: res.status });
+      }
+      return res
+        .json()
+        .catch(() => ({}))
+        .then((body) => {
+          if (!res.ok) {
+            const err = new Error(body.error || `HTTP ${res.status}`);
+            err.status = res.status;
+            err.body = body;
+            throw err;
+          }
+          return body;
+        });
+    });
   }
 
-  async function api(path, options = {}) {
-    const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
-    if (tg && tg.initData) headers["X-Telegram-Init-Data"] = tg.initData;
-    if (isExplicitDevMiniApp) {
-      headers["X-Miniapp-Dev"] = "1";
-      headers["X-Dev-Telegram-ID"] = query.get("telegram_id") || "777000";
-      headers["X-Dev-Username"] = query.get("username") || "dev_preview";
-    }
-    const response = await fetch(path, Object.assign({}, options, { headers, credentials: "include" }));
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    return data;
+  /* ===========================================================
+     UTILITIES
+     =========================================================== */
+
+  function esc(value) {
+    const map = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => map[ch]);
   }
 
-  function renderMini() {
-    renderFooter();
-    const screen = state.currentScreen;
-    if (screen === "onboarding") return renderOnboarding();
-    if (screen === "diagnostics") return renderDiagnostics();
-    if (screen === "tariffs") return renderTariffs();
-    if (screen === "payment") return renderPayment();
-    if (screen === "dashboard") return renderDashboard();
-    if (screen === "levels") return renderLevels();
-    if (screen === "lessons") return renderLessons();
-    if (screen === "test") return renderTest();
-    if (screen === "assignment") return renderAssignment();
-    if (screen === "referral") return renderReferral();
-    if (screen === "coins") return renderCoins();
-    if (screen === "streams") return renderStreams();
-    if (screen === "channels") return renderChannels();
-    if (screen === "profile") return renderProfile();
-    if (screen === "support") return renderSupport();
+  function num(value) {
+    return Number(value || 0);
   }
 
-  function renderBrowserGate() {
-    document.getElementById("appContent").innerHTML = `
-      <section class="screen browser-gate">
-        <div class="hero">
-          <p class="eyebrow">ZHENIS ORDA INSIDE</p>
-          <h1>Mini App тек Telegram ішінде ашылады.</h1>
-          <p class="muted">Қауіпсіздік үшін Telegram профилі браузерде көрсетілмейді. Mini App-ты Telegram боттағы батырма арқылы ашыңыз.</p>
-          <div class="pill-row"><span class="pill">Telegram initData required</span><span class="pill">Profile hidden</span></div>
+  function money(value) {
+    return num(value).toLocaleString("ru-RU");
+  }
+
+  function shortId(value) {
+    const str = String(value || "");
+    return str.length > 10 ? `${str.slice(0, 8)}…` : str || "—";
+  }
+
+  function clean(value) {
+    if (value == null) return "";
+    return String(value);
+  }
+
+  function html(markup) {
+    if (els.appContent) els.appContent.innerHTML = markup;
+  }
+
+  function on(idOrEl, handler, evt) {
+    const el = typeof idOrEl === "string" ? document.getElementById(idOrEl) : idOrEl;
+    if (el) el.addEventListener(evt || "click", handler);
+  }
+
+  function delegate(root, selector, evt, handler) {
+    if (!root) return;
+    root.addEventListener(evt, (e) => {
+      const target = e.target.closest(selector);
+      if (target && root.contains(target)) handler(e, target);
+    });
+  }
+
+  function formatDate(value) {
+    if (!value) return "—";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "short", year: "numeric" });
+  }
+
+  function formatDateTime(value) {
+    if (!value) return "—";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  const adminLabels = {
+    id: "ID",
+    user_id: "Қолданушы",
+    telegram_id: "Telegram ID",
+    username: "Username",
+    first_name: "Аты",
+    current_level: "Деңгей",
+    coin_balance: "Coin",
+    access_closed: "Доступ",
+    tariff_code: "Тариф",
+    amount_kzt: "Сома",
+    provider: "Провайдер",
+    status: "Статус",
+    receipt_file_path: "Чек",
+    expires_at: "Аяқталуы",
+    number: "Деңгей",
+    title_kk: "Қазақша атауы",
+    title_ru: "Орысша атауы",
+    level_number: "Деңгей",
+    lesson_link: "Сабақ сілтемесі",
+    video_url: "Сілтеме",
+    sort_order: "Реті",
+    is_active: "Статус",
+    title: "Атауы",
+    telegram_chat_id: "Telegram chat ID",
+    level_requirement: "Деңгей талабы",
+    starts_at: "Басталуы",
+    tariff_requirement: "Тариф талабы",
+    role: "Рөл",
+    action: "Әрекет",
+    entity_type: "Объект",
+    created_at: "Құрылған уақыты",
+    pass_percent: "Өту пайызы",
+    question_count: "Сұрақ саны",
+    sent_count: "Жіберілді",
+    failed_count: "Қате",
+    target: "Аудитория",
+  };
+
+  const statusText = {
+    active: "Белсенді",
+    inactive: "Белсенді емес",
+    pending: "Кезекте",
+    uploaded_receipt: "Чек жүктелді",
+    approved: "Қабылданды",
+    rejected: "Қабылданбады",
+    expired: "Мерзімі өтті",
+    cancelled: "Болдырмады",
+    queued: "Кезекте",
+    processing: "Жіберіліп жатыр",
+    completed: "Аяқталды",
+    failed: "Қате",
+    valid_candidate: "Тексеруге дайын",
+    parse_partial: "Қолмен тексеру қажет",
+    parse_failed: "Қолмен тексеру қажет",
+    suspicious: "Күдікті чек",
+    duplicate: "Қайталанған чек",
+    uploaded: "Жүктелді",
+    sent: "Жіберілді",
+  };
+
+  function statusBadge(value) {
+    const raw = String(value == null ? "" : value);
+    const label = statusText[raw] || (raw === "true" ? "Белсенді" : raw === "false" ? "Жабық" : raw || "—");
+    const kind =
+      ["active", "approved", "completed", "sent", "valid_candidate", "true"].includes(raw)
+        ? "ok"
+        : ["rejected", "expired", "cancelled", "failed", "duplicate", "false"].includes(raw)
+          ? "bad"
+          : "warn";
+    return `<span class="status ${kind}">${esc(label)}</span>`;
+  }
+
+  function adminLabel(key) {
+    return adminLabels[key] || String(key).replace(/_/g, " ");
+  }
+
+  /* ===========================================================
+     TOAST / MODAL
+     =========================================================== */
+
+  function toast(message, kind) {
+    if (!els.toastStack) return;
+    const node = document.createElement("div");
+    node.className = `toast ${kind || ""}`.trim();
+    node.innerHTML = `<span class="toast-dot"></span><span>${esc(message)}</span>`;
+    els.toastStack.appendChild(node);
+    setTimeout(() => {
+      node.style.opacity = "0";
+      node.style.transition = "opacity 220ms ease";
+      setTimeout(() => node.remove(), 240);
+    }, 3200);
+  }
+
+  function modal({ title, body, actions }) {
+    return new Promise((resolve) => {
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+
+      const container = document.createElement("div");
+      container.className = "modal";
+      container.innerHTML = `
+        <div class="modal-head">
+          <h2>${esc(title || "")}</h2>
         </div>
-        <div class="grid two">
-          <a class="gold-btn browser-link" href="/admin">Admin panel</a>
-          <a class="ghost-btn browser-link" href="?miniapp_dev=1">Dev preview</a>
-        </div>
-      </section>
+        <div class="modal-body">${body || ""}</div>
+        <div class="modal-foot"></div>
+      `;
+
+      const foot = container.querySelector(".modal-foot");
+      (actions || [{ label: "OK", value: "ok", primary: true }]).forEach((action) => {
+        const btn = document.createElement("button");
+        btn.className = action.primary ? "gold-btn" : action.danger ? "danger-btn" : "ghost-btn";
+        btn.type = "button";
+        btn.textContent = action.label;
+        btn.addEventListener("click", () => {
+          backdrop.remove();
+          resolve(action.value);
+        });
+        foot.appendChild(btn);
+      });
+
+      backdrop.appendChild(container);
+      backdrop.addEventListener("click", (e) => {
+        if (e.target === backdrop) {
+          backdrop.remove();
+          resolve(null);
+        }
+      });
+      els.modalRoot.appendChild(backdrop);
+    });
+  }
+
+  function openModalShell(title, body) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    const container = document.createElement("div");
+    container.className = "modal modal-wide";
+    container.innerHTML = `
+      <div class="modal-head">
+        <h2>${esc(title || "")}</h2>
+      </div>
+      <div class="modal-body">${body || ""}</div>
     `;
+    backdrop.appendChild(container);
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) backdrop.remove();
+    });
+    els.modalRoot.appendChild(backdrop);
+    return {
+      backdrop,
+      body: container.querySelector(".modal-body"),
+      close: () => backdrop.remove(),
+    };
   }
+
+  /* ===========================================================
+     BOOT / ROUTING
+     =========================================================== */
+
+  async function boot() {
+    state.bootedAt = Date.now();
+    cacheElements();
+
+    const path = window.location.pathname || "/";
+    const isAdminPath = path === "/admin" || path.startsWith("/admin/");
+
+    setupGlobalUi();
+
+    if (isAdminPath) {
+      document.documentElement.classList.add("browser-admin-mode");
+      document.body.classList.add("browser-admin-mode");
+      state.mode = "admin";
+      bootBrowserAdmin();
+      return;
+    }
+
+    const initialTelegram = getTelegram();
+    if (isTelegramMiniAppLaunch()) {
+      enterMiniAppMode();
+      bootMiniApp();
+      return;
+    }
+
+    if (isDevMiniAppLaunch()) {
+      enterMiniAppMode();
+      document.documentElement.classList.add("dev-miniapp-mode");
+      document.body.classList.add("dev-miniapp-mode");
+      updateViewportVars();
+      bootMiniApp();
+      return;
+    }
+
+    if (initialTelegram) {
+      enterMiniAppMode();
+      showMiniApp();
+      renderHeader();
+      renderShellLoading();
+    }
+
+    const telegramLaunch = await waitForTelegramInitData(TELEGRAM_INIT_WAIT_MS);
+    if (telegramLaunch.hasInitData) {
+      enterMiniAppMode();
+      bootMiniApp(telegramLaunch);
+      return;
+    }
+    if (telegramLaunch.sawWebApp) {
+      enterMiniAppMode();
+      showMiniApp();
+      renderHeader();
+      renderError(TELEGRAM_AUTH_FAILED_MESSAGE);
+      return;
+    }
+
+    document.documentElement.classList.add("landing-mode");
+    document.body.classList.add("landing-mode");
+    state.mode = "landing";
+    renderLanding();
+  }
+
+  function enterMiniAppMode() {
+    document.documentElement.classList.add("telegram-miniapp-mode");
+    document.body.classList.add("telegram-miniapp-mode");
+    state.mode = "miniapp";
+    if (!state.telegramViewportSetup) {
+      setupTelegramViewport();
+      state.telegramViewportSetup = true;
+    } else {
+      syncTelegramFrame();
+    }
+  }
+
+  function setupGlobalUi() {
+    if (els.profileAction) {
+      els.profileAction.addEventListener("click", () => {
+        if (state.mode === "miniapp") setScreen("profile");
+      });
+    }
+    if (els.adminLogout) els.adminLogout.addEventListener("click", handleAdminLogout);
+    if (els.adminLogoutTop) els.adminLogoutTop.addEventListener("click", handleAdminLogout);
+    if (els.adminNavToggle) {
+      els.adminNavToggle.addEventListener("click", () => {
+        if (els.adminApp) els.adminApp.classList.toggle("nav-open");
+      });
+    }
+    if (els.togglePassword && els.adminPassword) {
+      els.togglePassword.addEventListener("click", () => {
+        const isPwd = els.adminPassword.type === "password";
+        els.adminPassword.type = isPwd ? "text" : "password";
+        els.togglePassword.textContent = isPwd ? "Жасыру" : "Көрсету";
+      });
+    }
+  }
+
+  /* ===========================================================
+     LANDING
+     =========================================================== */
+
+  function renderLanding() {
+    if (!els.landing) return;
+    els.landing.classList.remove("hidden");
+    els.landing.setAttribute("aria-hidden", "false");
+    if (els.landingTelegramLink) {
+      els.landingTelegramLink.href = "https://t.me/zhenisorda_bot";
+    }
+  }
+
+  /* ===========================================================
+     MINI APP BOOT
+     =========================================================== */
+
+  function showMiniApp() {
+    els.miniApp.classList.remove("hidden");
+    els.miniApp.setAttribute("aria-hidden", "false");
+  }
+
+  async function bootMiniApp(telegramLaunch) {
+    showMiniApp();
+    renderHeader();
+    renderShellLoading();
+
+    if (!isDevMiniAppLaunch()) {
+      let launch = telegramLaunch;
+      if (!hasTelegramInitData()) {
+        launch = await waitForTelegramInitData(TELEGRAM_INIT_WAIT_MS);
+      }
+      if (!hasTelegramInitData()) {
+        renderError(launch && launch.sawWebApp ? TELEGRAM_AUTH_FAILED_MESSAGE : TELEGRAM_AUTH_REQUIRED_MESSAGE);
+        return;
+      }
+    }
+
+    try {
+      await loadMiniAppData();
+    } catch (error) {
+      if (error.status === 401 && !isDevMiniAppLaunch()) {
+        const retryLaunch = await waitForTelegramInitData(TELEGRAM_INIT_RETRY_MS);
+        if (retryLaunch.hasInitData) {
+          try {
+            await loadMiniAppData();
+            return;
+          } catch (retryError) {
+            error = retryError;
+          }
+        }
+      }
+      renderError(
+        error.status === 401
+          ? TELEGRAM_AUTH_FAILED_MESSAGE
+          : error.message || "Mini App-ты жүктеу мүмкін болмады.",
+      );
+    }
+  }
+
+  async function loadMiniAppData() {
+    const [me, platform, levels] = await Promise.all([
+      api("/api/me"),
+      api("/api/platform").catch(() => null),
+      api("/api/levels").catch(() => ({ levels: [] })),
+    ]);
+    state.me = me;
+    state.platform = platform;
+    state.levels = (levels && levels.levels) || [];
+
+    const user = me && me.user ? me.user : {};
+    const sub = user.subscription || {};
+    const hasActiveSub = sub && sub.status === "active";
+    state.currentScreen =
+      user.current_level && user.current_level > 0 ? "dashboard" : hasActiveSub ? "dashboard" : "onboarding";
+
+    renderHeader();
+    renderMini();
+  }
+
+  /* ===========================================================
+     MINI APP NAVIGATION
+     =========================================================== */
 
   function setScreen(screen) {
     state.currentScreen = screen;
     renderMini();
-    document.getElementById("appContent").scrollTo({ top: 0, behavior: "smooth" });
+    if (els.appContent) els.appContent.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function renderMini() {
+    renderFooter();
+    const map = {
+      onboarding: renderOnboarding,
+      dashboard: renderDashboard,
+      diagnostics: renderDiagnostics,
+      tariffs: renderTariffs,
+      payment: renderPayment,
+      levels: renderLevels,
+      lessons: renderLessons,
+      test: renderTest,
+      assignment: renderAssignment,
+      referral: renderReferral,
+      coins: renderCoins,
+      streams: renderStreams,
+      channels: renderChannels,
+      profile: renderProfile,
+      support: renderSupport,
+    };
+    const renderer = map[state.currentScreen] || renderDashboard;
+    Promise.resolve()
+      .then(() => renderer())
+      .catch((error) => renderError(error.message || "Қате орын алды"));
   }
 
   function renderFooter() {
+    if (!els.bottomCta) return;
     const tabs = [
-      ["dashboard", "D", "Басты"],
-      ["lessons", "L", "Сабақ"],
-      ["tariffs", "P", "Төлем"],
-      ["referral", "R", "Реф"],
-      ["profile", "M", "Профиль"],
+      ["dashboard", "◉", "Басты"],
+      ["lessons", "▤", "Сабақ"],
+      ["referral", "↗", "Реф"],
+      ["coins", "✦", "Coin"],
+      ["profile", "◐", "Профиль"],
     ];
-    document.getElementById("bottomCta").innerHTML = `<div class="tabbar">${tabs
-      .map(([screen, icon, label]) => `<button class="tab-btn ${state.currentScreen === screen ? "active" : ""}" data-screen="${screen}" type="button"><span>${icon}</span><span>${label}</span></button>`)
+    els.bottomCta.classList.remove("hidden");
+    els.bottomCta.innerHTML = `<div class="tabbar">${tabs
+      .map(
+        ([screen, icon, label]) => `
+        <button class="tab-btn ${state.currentScreen === screen ? "active" : ""}" data-screen="${screen}" type="button">
+          <span class="tab-icon">${icon}</span>
+          <span>${label}</span>
+        </button>`,
+      )
       .join("")}</div>`;
-    document.querySelectorAll("[data-screen]").forEach((button) => button.addEventListener("click", () => setScreen(button.dataset.screen)));
+    els.bottomCta.querySelectorAll("[data-screen]").forEach((button) => {
+      button.addEventListener("click", () => setScreen(button.dataset.screen));
+    });
+  }
+
+  /* ===========================================================
+     MINI APP SCREENS
+     =========================================================== */
+
+  function renderShellLoading() {
+    html(`
+      <section class="screen">
+        <div class="hero skeleton" style="min-height:220px"></div>
+        <div class="grid three">
+          <div class="metric skeleton"></div>
+          <div class="metric skeleton"></div>
+          <div class="metric skeleton"></div>
+        </div>
+        <div class="card skeleton" style="min-height:140px"></div>
+      </section>
+    `);
+  }
+
+  function renderError(message) {
+    html(`
+      <section class="screen">
+        <div class="error-card">
+          <p class="eyebrow">Қате · Error</p>
+          <h2>Жүктеу мүмкін болмады</h2>
+          <p>${esc(message || "Белгісіз қате")}</p>
+          <button class="ghost-btn" id="retryBoot" type="button">Қайталау</button>
+        </div>
+      </section>
+    `);
+    on("retryBoot", bootMiniApp);
   }
 
   function renderOnboarding() {
@@ -217,11 +970,20 @@
           <p class="eyebrow">ZHENIS ORDA INSIDE</p>
           <h1>Бұл жай курс емес. Бұл 12 айлық жүйелі өсу жолы.</h1>
           <p class="muted">Сіз ойлау, қаржы, бизнес, проработка және лидерлік бойынша саты-саты өтіп, өзіңізді жаңа деңгейге шығарасыз.</p>
-          <div class="pill-row"><span class="pill">Статус</span><span class="pill">Мақтаныш</span><span class="pill">Мотивация</span></div>
+          <div class="pill-row">
+            <span class="pill">Статус</span>
+            <span class="pill">Мақтаныш</span>
+            <span class="pill">Мотивация</span>
+          </div>
         </div>
         <div class="grid two">
-          <button class="gold-btn" id="goDiagnostics" type="button">Тегін диагностика</button>
-          <button class="ghost-btn" id="goTariffs" type="button">Тариф таңдау</button>
+          <button class="gold-btn lg" id="goDiagnostics" type="button">Тегін диагностика</button>
+          <button class="ghost-btn lg" id="goTariffs" type="button">Тариф таңдау</button>
+        </div>
+        <div class="card">
+          <p class="eyebrow">Premium private club</p>
+          <h2>Жабық membership</h2>
+          <p class="muted">Тек тариф ашқан клиенттер ғана сабақтарға, тестке, эфирге және жеке каналдарға қол жеткізе алады.</p>
         </div>
       </section>
     `);
@@ -230,153 +992,318 @@
   }
 
   function renderDashboard() {
-    const user = state.me.user;
-    const progress = state.me.progress || {};
+    const user = (state.me && state.me.user) || {};
+    const progress = (state.me && state.me.progress) || {};
     const sub = user.subscription || {};
+    const subStatus = sub.status || "inactive";
+    const subOk = subStatus === "active";
+    const currentLevel = user.current_level || 0;
+    const percent = Math.max(0, Math.min(100, num(progress.percent)));
+
     html(`
       <section class="screen">
         <div class="hero">
           <p class="eyebrow">Жүйелі өсу ордасы</p>
-          <h1>ZHENIS ORDA INSIDE жүйесіне қош келдіңіз.</h1>
-          <p class="muted">Бірінші саты — МЫШЛЕНИЕ. Осы фундамент дұрыс қаланса, қаржы мен бизнес те ретке келеді.</p>
-          <div class="progress-track"><div class="progress-fill" style="--progress:${num(progress.percent)}%"></div></div>
-          <strong>Сіздің прогрессіңіз: ${num(progress.percent)}%</strong>
+          <h1>ZHENIS ORDA INSIDE</h1>
+          <p class="muted">${esc(progress.next_requirement || "12 айлық жүйелі өсу жолы. Әр сатыны ашып, жаңа деңгейге өтіңіз.")}</p>
+          <div class="progress-track"><div class="progress-fill" style="--progress:${percent}%"></div></div>
+          <div class="progress-row">
+            <span>Сіздің прогресс</span>
+            <strong>${percent}%</strong>
+          </div>
         </div>
+
         <div class="grid three">
-          ${metric("Тариф", sub.tariff_code || "Жоқ", sub.status || "inactive")}
-          ${metric("Деңгей", `LEVEL ${user.current_level || 0}`, progress.next_requirement || "Төлем жасаңыз")}
-          ${metric("ZHENIS COIN", `${num(user.coin_balance)}`, "Ішкі валюта")}
+          ${metric("Тариф", sub.tariff_code || "Жоқ", subOk ? "active" : subStatus, subOk ? "ok" : subStatus === "expired" ? "bad" : "warn")}
+          ${metric("Деңгей", `LEVEL ${currentLevel}`, currentLevel ? "open" : "locked", currentLevel ? "ok" : "warn")}
+          ${metric("ZHENIS Coin", money(user.coin_balance), "ішкі валюта")}
         </div>
+
         <div class="card">
           <div class="card-header">
-            <div><p class="eyebrow">Unlock</p><h2>Келесі талап</h2></div>
-            <span class="status ${progress.can_unlock_next ? "ok" : ""}">${progress.can_unlock_next ? "Ready" : "Locked"}</span>
+            <div>
+              <p class="eyebrow">Unlock</p>
+              <h2>Келесі талап</h2>
+            </div>
+            <span class="status ${progress.can_unlock_next ? "ok" : "warn"}">${progress.can_unlock_next ? "Ready" : "Locked"}</span>
           </div>
           <p class="muted">${esc(progress.next_requirement || "LEVEL 2 ашылуы үшін тест тапсырыңыз.")}</p>
+          <div class="grid two tight" style="margin-top:6px">
+            <button class="gold-btn" data-next="lessons" type="button">Сабақтарға өту</button>
+            <button class="ghost-btn" data-next="test" type="button">Тест тапсыру</button>
+          </div>
         </div>
-        ${renderLevelStrip()}
+
+        <div class="card">
+          <div class="section-head">
+            <h2>12 LEVEL JOURNEY</h2>
+            <button class="ghost-btn" data-next="levels" type="button">Барлығы</button>
+          </div>
+          ${renderLevelStrip()}
+        </div>
+
         <div class="grid two">
-          <button class="ghost-btn" data-next="lessons" type="button">Сабақтарым</button>
-          <button class="ghost-btn" data-next="test" type="button">Тест тапсыру</button>
-          <button class="ghost-btn" data-next="streams" type="button">Жабық эфир</button>
-          <button class="ghost-btn" data-next="channels" type="button">Жабық каналдар</button>
-          <button class="ghost-btn" data-next="coins" type="button">Бонустарым / Coin</button>
-          <button class="ghost-btn" data-next="support" type="button">Қолдау қызметі</button>
+          <button class="ghost-btn lg" data-next="tariffs" type="button">Тарифтер</button>
+          <button class="ghost-btn lg" data-next="referral" type="button">Реферал сілтемем</button>
+          <button class="ghost-btn lg" data-next="streams" type="button">Жабық эфир</button>
+          <button class="ghost-btn lg" data-next="channels" type="button">Жабық каналдар</button>
+          <button class="ghost-btn lg" data-next="assignment" type="button">Тапсырмаларым</button>
+          <button class="ghost-btn lg" data-next="support" type="button">Қолдау қызметі</button>
         </div>
       </section>
     `);
-    document.querySelectorAll("[data-next]").forEach((button) => button.addEventListener("click", () => setScreen(button.dataset.next)));
+    bindNext();
+  }
+
+  function metric(label, value, hint, statusKind) {
+    const status = statusKind ? `<span class="status ${statusKind}">${esc(hint)}</span>` : `<span class="muted">${esc(hint || "")}</span>`;
+    return `<div class="metric">
+      <p class="eyebrow">${esc(label)}</p>
+      <strong>${esc(String(value))}</strong>
+      ${status}
+    </div>`;
   }
 
   function renderLevelStrip() {
+    if (!state.levels.length) {
+      return `<div class="empty-state"><div class="icon">L</div><span>Деңгейлер жүктелуде</span></div>`;
+    }
+    const currentLevel = state.me && state.me.user ? state.me.user.current_level : 0;
     return `<div class="level-strip">${state.levels
-      .map((level) => `<button class="level-token ${level.access ? "open" : ""}" data-level="${level.number}" type="button">LEVEL ${level.number}<br>${esc(level.title_kk)}</button>`)
+      .map((level) => {
+        const cls = [
+          "level-token",
+          level.access ? "open" : "",
+          level.completed ? "completed" : "",
+          level.number === currentLevel ? "current" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return `<button class="${cls}" data-level="${level.number}" type="button">
+          LEVEL
+          <b>${esc(level.number)}</b>
+          <span style="font-size:10px;letter-spacing:0;text-transform:none;color:inherit;opacity:0.85">${esc(level.title_kk || "")}</span>
+        </button>`;
+      })
       .join("")}</div>`;
   }
 
-  async function renderLevels() {
-    const levels = state.levels;
-    html(`<section class="screen"><h1>Менің деңгейім</h1>${renderLevelStrip()}<div class="grid">${levels.map(levelCard).join("")}</div></section>`);
+  function renderLevels() {
+    const currentLevel = (state.me && state.me.user && state.me.user.current_level) || 0;
+    html(`
+      <section class="screen">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">12-month journey</p>
+            <h1>Менің деңгейім</h1>
+          </div>
+          <span class="pill">LEVEL ${currentLevel}</span>
+        </div>
+        <div class="card">${renderLevelStrip()}</div>
+        <div class="grid">${state.levels.map(levelCard).join("")}</div>
+      </section>
+    `);
   }
 
   function levelCard(level) {
     const progress = level.progress || {};
+    const percent = Math.max(0, Math.min(100, num(progress.percent)));
     return `<article class="card">
-      <div class="card-header"><div><p class="eyebrow">LEVEL ${level.number}</p><h2>${esc(level.title_kk)}</h2></div><span class="status ${level.access ? "ok" : "bad"}">${level.access ? "Open" : "Locked"}</span></div>
-      <div class="progress-track"><div class="progress-fill" style="--progress:${num(progress.percent)}%"></div></div>
+      <div class="card-header">
+        <div>
+          <p class="eyebrow">LEVEL ${esc(level.number)}</p>
+          <h2>${esc(level.title_kk || `Level ${level.number}`)}</h2>
+        </div>
+        <span class="status ${level.access ? "ok" : "bad"}">${level.access ? "Open" : "Locked"}</span>
+      </div>
+      <div class="progress-track thin"><div class="progress-fill" style="--progress:${percent}%"></div></div>
+      <div class="progress-row"><span>${progress.watched_lessons || 0}/${progress.total_lessons || 0} сабақ</span><strong>${percent}%</strong></div>
       <p class="muted">${esc(progress.next_requirement || "")}</p>
     </article>`;
   }
 
   async function renderLessons() {
-    const level = state.me.user.current_level || 1;
-    const data = await api(`/api/lessons?level=${level}`);
+    const level = (state.me && state.me.user && state.me.user.current_level) || 1;
+    html(`<section class="screen">
+      <div class="section-head">
+        <div><p class="eyebrow">LEVEL ${esc(level)}</p><h1>Сабақтарым</h1></div>
+        <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
+      </div>
+      <div class="grid">${skeletonRows(3)}</div>
+    </section>`);
+
+    let data;
+    try {
+      data = await api(`/api/lessons?level=${level}`);
+    } catch (error) {
+      html(`<section class="screen"><h1>Сабақтарым</h1>${emptyState(error.message)}</section>`);
+      return;
+    }
     state.lessons = data.lessons || [];
+
+    const cards = state.lessons.length
+      ? state.lessons.map(lessonCard).join("")
+      : emptyState("Бұл деңгейге сабақтар әлі қосылған жоқ.");
+
     html(`
       <section class="screen">
-        <div class="card-header"><div><p class="eyebrow">LEVEL ${level}</p><h1>Сабақтарым</h1></div><button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button></div>
-        <div class="grid">${state.lessons.map(lessonCard).join("") || empty("Сабақ жоқ")}</div>
+        <div class="section-head">
+          <div><p class="eyebrow">LEVEL ${esc(level)}</p><h1>Сабақтарым</h1></div>
+          <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
+        </div>
+        <div class="grid">${cards}</div>
       </section>
     `);
     on("refreshLessons", renderLessons);
-    document.querySelectorAll("[data-watch]").forEach((button) => button.addEventListener("click", () => markWatched(button.dataset.watch)));
+    document
+      .querySelectorAll("[data-watch]")
+      .forEach((btn) => btn.addEventListener("click", () => markWatched(btn.dataset.watch)));
   }
 
   function lessonCard(lesson) {
-    return `<article class="lesson-card ${lesson.access ? "" : "locked"}">
+    const watched = Boolean(lesson.watched);
+    const access = Boolean(lesson.access);
+    return `<article class="lesson-card ${access ? "" : "locked"}">
       <div class="card-header">
-        <div><p class="eyebrow">Сабақ ${lesson.sort_order}</p><h2>${esc(lesson.title_kk)}</h2></div>
-        <span class="status ${lesson.watched ? "ok" : ""}">${lesson.watched ? "Watched" : lesson.access ? "Open" : "Locked"}</span>
+        <div>
+          <p class="eyebrow">Сабақ ${esc(lesson.sort_order)}</p>
+          <h2>${esc(lesson.title_kk || "Lesson")}</h2>
+        </div>
+        <span class="status ${watched ? "ok" : access ? "" : "bad"}">${watched ? "Watched" : access ? "Open" : "Locked"}</span>
       </div>
       <p class="muted">${esc(lesson.description_kk || "ZHENIS ORDA INSIDE")}</p>
-      <button class="${lesson.watched ? "ghost-btn" : "gold-btn"}" data-watch="${lesson.id}" ${lesson.access ? "" : "disabled"} type="button">${lesson.watched ? "Қайта белгілеу" : "Сабақты өттім"}</button>
+      <div class="lesson-actions">
+        <button class="${watched ? "ghost-btn" : "gold-btn"}" data-watch="${lesson.id}" ${access ? "" : "disabled"} type="button">
+          ${watched ? "Қайта белгілеу" : "Сабақты өттім"}
+        </button>
+      </div>
     </article>`;
   }
 
   async function markWatched(id) {
-    await api(`/api/lessons/${id}/watched`, { method: "POST", body: "{}" });
-    state.me = await api("/api/me");
-    await refreshLevels();
-    setScreen("lessons");
+    try {
+      await api(`/api/lessons/${id}/watched`, { method: "POST", body: "{}" });
+      const me = await api("/api/me");
+      state.me = me;
+      await refreshLevels();
+      toast("Сабақ белгіленді", "success");
+      renderLessons();
+    } catch (error) {
+      toast(error.message || "Жаңарту мүмкін болмады", "error");
+    }
   }
 
   async function renderTest() {
-    const level = state.me.user.current_level || 1;
+    const level = (state.me && state.me.user && state.me.user.current_level) || 1;
     let data;
     try {
       data = await api(`/api/tests/${level}`);
     } catch (error) {
-      return html(`<section class="screen"><h1>Тест</h1>${empty(error.message)}</section>`);
+      html(`<section class="screen"><div class="section-head"><h1>Тест</h1></div>${emptyState(error.message || "Тест әлі ашылмаған")}</section>`);
+      return;
     }
     const test = data.test;
+    if (!test) {
+      html(`<section class="screen"><h1>Тест</h1>${emptyState("Бұл деңгейге тест әлі қосылған жоқ.")}</section>`);
+      return;
+    }
     html(`
       <section class="screen">
-        <div class="card"><p class="eyebrow">LEVEL ${level}</p><h1>${esc(test.title)}</h1><p class="muted">Өту шегі: ${test.pass_percent}%</p></div>
-        <form id="testForm" class="form">${test.questions.map(questionBlock).join("")}<button class="gold-btn" type="submit">Тест тапсыру</button></form>
+        <div class="card">
+          <p class="eyebrow">LEVEL ${esc(level)}</p>
+          <h1>${esc(test.title)}</h1>
+          <p class="muted">Өту шегі: ${esc(test.pass_percent)}%</p>
+        </div>
+        <form id="testForm" class="form">
+          ${(test.questions || []).map(questionBlock).join("")}
+          <button class="gold-btn lg" type="submit"><span class="btn-label">Тест тапсыру</span><span class="btn-spinner"></span></button>
+        </form>
       </section>
     `);
     document.getElementById("testForm").addEventListener("submit", async (event) => {
       event.preventDefault();
+      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+      submitBtn.classList.add("is-loading");
       const answers = {};
-      new FormData(event.currentTarget).forEach((value, key) => (answers[key] = Number(value)));
-      const result = await api(`/api/tests/${level}/submit`, { method: "POST", body: JSON.stringify({ answers }) });
-      state.me = await api("/api/me");
-      await refreshLevels();
-      alert(`Score: ${result.attempt.score_percent}%`);
-      setScreen("dashboard");
+      new FormData(event.currentTarget).forEach((value, key) => (answers[key] = String(value)));
+      try {
+        const result = await api(`/api/tests/${level}/submit`, {
+          method: "POST",
+          body: JSON.stringify({ answers }),
+        });
+        const me = await api("/api/me");
+        state.me = me;
+        await refreshLevels();
+        toast(`Score: ${result.attempt.score_percent}% — ${result.attempt.passed ? "Passed" : "Try again"}`, result.attempt.passed ? "success" : "error");
+        setScreen("dashboard");
+      } catch (error) {
+        toast(error.message || "Тест жіберу мүмкін болмады", "error");
+      } finally {
+        submitBtn.classList.remove("is-loading");
+      }
     });
   }
 
   function questionBlock(question) {
-    return `<fieldset class="card"><h3>${esc(question.question_text_kk)}</h3>${question.options
-      .map((option) => `<label class="test-option"><input name="${question.id}" value="${option.id}" type="radio" required /> <span>${esc(option.option_text_kk)}</span></label>`)
-      .join("")}</fieldset>`;
+    return `<fieldset class="card">
+      <h3>${esc(question.question_text_kk)}</h3>
+      ${(question.options || [])
+        .map(
+          (option) => `<label class="test-option">
+            <input name="${esc(question.id)}" value="${esc(option.id)}" type="radio" required />
+            <span>${esc(option.option_text_kk)}</span>
+          </label>`,
+        )
+        .join("")}
+    </fieldset>`;
   }
 
   async function renderAssignment() {
-    const level = state.me.user.current_level || 1;
+    const level = (state.me && state.me.user && state.me.user.current_level) || 1;
     let assignment;
     try {
       assignment = (await api(`/api/assignments/${level}`)).assignment;
     } catch (error) {
-      return html(`<section class="screen"><h1>Тапсырмаларым</h1>${empty("Бұл деңгейде тапсырма жоқ немесе әлі ашылмаған.")}</section>`);
+      html(`<section class="screen"><h1>Тапсырмаларым</h1>${emptyState("Бұл деңгейде тапсырма жоқ немесе әлі ашылмаған.")}</section>`);
+      return;
+    }
+    if (!assignment) {
+      html(`<section class="screen"><h1>Тапсырмаларым</h1>${emptyState("Бұл деңгейде тапсырма жоқ")}</section>`);
+      return;
     }
     html(`
       <section class="screen">
-        <div class="card"><p class="eyebrow">LEVEL ${level}</p><h1>${esc(assignment.title_kk)}</h1><p class="muted">${esc(assignment.description_kk || "")}</p></div>
+        <div class="card">
+          <p class="eyebrow">LEVEL ${esc(level)}</p>
+          <h1>${esc(assignment.title_kk)}</h1>
+          <p class="muted">${esc(assignment.description_kk || "")}</p>
+        </div>
         <form id="assignmentForm" class="form">
-          <label class="field"><span>Жауап</span><textarea name="answer_text" required></textarea></label>
+          <label class="field"><span>Жауап</span><textarea name="answer_text" required placeholder="Тапсырма жауабын жазыңыз..."></textarea></label>
           <label class="field"><span>Сілтеме</span><input name="link_url" placeholder="https://" /></label>
-          <button class="gold-btn" type="submit">Жіберу</button>
+          <button class="gold-btn lg" type="submit"><span class="btn-label">Жіберу</span><span class="btn-spinner"></span></button>
         </form>
       </section>
     `);
     document.getElementById("assignmentForm").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const body = Object.fromEntries(new FormData(event.currentTarget).entries());
-      await api(`/api/assignments/${level}/submit`, { method: "POST", body: JSON.stringify(body) });
-      state.me = await api("/api/me");
-      setScreen("dashboard");
+      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+      submitBtn.classList.add("is-loading");
+      try {
+        const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+        await api(`/api/assignments/${level}/submit`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        const me = await api("/api/me");
+        state.me = me;
+        toast("Тапсырма жіберілді", "success");
+        setScreen("dashboard");
+      } catch (error) {
+        toast(error.message || "Жіберу мүмкін болмады", "error");
+      } finally {
+        submitBtn.classList.remove("is-loading");
+      }
     });
   }
 
@@ -391,23 +1318,59 @@
       ["main_problem", "Негізгі проблемаңыз қандай?"],
       ["growth_area", "Қай салада өскіңіз келеді?"],
     ];
-    html(`<section class="screen"><div class="card"><p class="eyebrow">Free diagnostics</p><h1>Диагностика</h1><p class="muted">Нәтижеден кейін жүйе сізге бірінші фундаментті ұсынады.</p></div><form id="diagnosticsForm" class="form">${fields
-      .map(([key, label]) => `<label class="field"><span>${label}</span><input name="${key}" required /></label>`)
-      .join("")}<button class="gold-btn" type="submit">Жіберу</button></form></section>`);
+    html(`
+      <section class="screen">
+        <div class="card">
+          <p class="eyebrow">Free diagnostics</p>
+          <h1>Диагностика</h1>
+          <p class="muted">Нәтижеден кейін жүйе сізге бірінші фундаментті ұсынады.</p>
+        </div>
+        <form id="diagnosticsForm" class="form">
+          ${fields.map(([key, label]) => `<label class="field"><span>${esc(label)}</span><input name="${key}" required /></label>`).join("")}
+          <button class="gold-btn lg" type="submit"><span class="btn-label">Жіберу</span><span class="btn-spinner"></span></button>
+        </form>
+      </section>
+    `);
     document.getElementById("diagnosticsForm").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const answers = Object.fromEntries(new FormData(event.currentTarget).entries());
-      const res = await api("/api/diagnostics", { method: "POST", body: JSON.stringify({ answers }) });
-      alert(res.message);
-      setScreen("tariffs");
+      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+      submitBtn.classList.add("is-loading");
+      try {
+        const answers = Object.fromEntries(new FormData(event.currentTarget).entries());
+        const res = await api("/api/diagnostics", {
+          method: "POST",
+          body: JSON.stringify({ answers }),
+        });
+        toast(res.message || "Диагностика сақталды", "success");
+        setScreen("tariffs");
+      } catch (error) {
+        toast(error.message || "Жіберу мүмкін болмады", "error");
+      } finally {
+        submitBtn.classList.remove("is-loading");
+      }
     });
   }
 
   async function renderTariffs() {
-    if (!state.platform) state.platform = await api("/api/platform");
-    html(`<section class="screen"><div class="card"><p class="eyebrow">Membership</p><h1>Тарифтер</h1><p class="muted">LEVEL 1 төлемнен кейін ашылады. Контент саты-саты ашылады.</p></div><div class="grid three">${(state.platform.tariffs || [])
-      .map(tariffCard)
-      .join("")}</div></section>`);
+    if (!state.platform) {
+      try {
+        state.platform = await api("/api/platform");
+      } catch (error) {
+        toast(error.message, "error");
+        state.platform = { tariffs: [] };
+      }
+    }
+    const tariffs = (state.platform && state.platform.tariffs) || [];
+    html(`
+      <section class="screen">
+        <div class="card">
+          <p class="eyebrow">Membership</p>
+          <h1>Тарифтер</h1>
+          <p class="muted">LEVEL 1 төлемнен кейін ашылады. Контент саты-саты ашылады.</p>
+        </div>
+        <div class="grid three">${tariffs.length ? tariffs.map(tariffCard).join("") : emptyState("Тарифтер табылмады")}</div>
+      </section>
+    `);
     document.querySelectorAll("[data-tariff]").forEach((button) =>
       button.addEventListener("click", () => {
         state.selectedTariff = button.dataset.tariff;
@@ -418,9 +1381,15 @@
 
   function tariffCard(tariff) {
     return `<article class="tariff-card ${tariff.code === "STANDARD" ? "featured" : ""}">
-      <header><div><p class="eyebrow">${esc(tariff.code)}</p><h2>${money(tariff.price_kzt)} KZT / month</h2></div><span class="pill">${tariff.code}</span></header>
+      <header>
+        <div>
+          <p class="eyebrow">${esc(tariff.code)}</p>
+          <div class="price">${money(tariff.price_kzt)} <small>₸ / ай</small></div>
+        </div>
+        <span class="pill">${esc(tariff.code)}</span>
+      </header>
       <ul>${(tariff.features || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
-      <button class="gold-btn" data-tariff="${tariff.code}" type="button">Таңдау</button>
+      <button class="gold-btn block" data-tariff="${esc(tariff.code)}" type="button">Таңдау</button>
     </article>`;
   }
 
@@ -428,270 +1397,1470 @@
     const tariff = state.selectedTariff || "BASIC";
     html(`
       <section class="screen">
-        <div class="card"><p class="eyebrow">Manual MVP payment</p><h1>${tariff}</h1><p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, чекті Telegram ботқа PDF/image ретінде жіберіңіз.</p></div>
+        <div class="card">
+          <p class="eyebrow">Төлем</p>
+          <h1>${esc(tariff)}</h1>
+          <p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, чекті Telegram ботқа PDF/image ретінде жіберіңіз.</p>
+        </div>
         <form id="paymentForm" class="form">
-          <label class="field"><span>Payment provider</span><select name="provider"><option value="kaspi_qr">Kaspi QR</option><option value="kaspi_pay">Kaspi Pay</option><option value="halyk">Halyk</option><option value="bank_card">Bank card</option></select></label>
-          <button class="gold-btn" type="submit">Pending төлем құру</button>
+          <label class="field">
+            <span>Төлем провайдері</span>
+            <select name="provider">
+              <option value="kaspi_qr">Kaspi QR</option>
+              <option value="kaspi_pay">Kaspi Pay</option>
+              <option value="halyk">Halyk</option>
+              <option value="bank_card">Bank card</option>
+            </select>
+          </label>
+          <button class="gold-btn lg" type="submit"><span class="btn-label">Төлем құру</span><span class="btn-spinner"></span></button>
         </form>
         <div id="paymentResult"></div>
       </section>
     `);
     document.getElementById("paymentForm").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const provider = new FormData(event.currentTarget).get("provider");
-      const res = await api("/api/payments", { method: "POST", body: JSON.stringify({ tariff_code: tariff, provider }) });
-      document.getElementById("paymentResult").innerHTML = `<div class="card"><h2>Payment #${res.payment.id}</h2><p class="muted">${esc(res.instructions.text)}</p><p>Amount: <strong>${money(res.payment.amount_kzt)} KZT</strong></p></div>`;
+      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+      submitBtn.classList.add("is-loading");
+      try {
+        const provider = new FormData(event.currentTarget).get("provider");
+        const res = await api("/api/payments", {
+          method: "POST",
+          body: JSON.stringify({ tariff_code: tariff, provider }),
+        });
+        document.getElementById("paymentResult").innerHTML = `
+          <div class="card">
+            <p class="eyebrow">Төлем құрылды</p>
+            <h2>Төлем #${esc(shortId(res.payment.id))}</h2>
+            <p class="muted">${esc(res.instructions.text)}</p>
+            <p>Сома: <strong>${money(res.payment.amount_kzt)} ₸</strong></p>
+          </div>
+          ${receiptUploadHtml(res.payment)}
+        `;
+        bindReceiptUpload(res.payment.id);
+        toast("Төлем құрылды", "success");
+      } catch (error) {
+        toast(error.message || "Төлем құру мүмкін болмады", "error");
+      } finally {
+        submitBtn.classList.remove("is-loading");
+      }
+    });
+  }
+
+  function receiptUploadHtml(payment) {
+    return `
+      <div class="card receipt-upload-card">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Чек жүктеу</p>
+            <h2>PDF немесе сурет жүктеңіз</h2>
+          </div>
+          <span class="status warn">Қолмен тексеріледі</span>
+        </div>
+        <form id="receiptUploadForm" class="form">
+          <label class="upload-drop">
+            <input name="receipt" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" required />
+            <span class="upload-title">Чек жүктеу</span>
+            <small>PDF, JPG, PNG немесе WEBP</small>
+            <strong id="receiptFileName">Файл таңдалмады</strong>
+          </label>
+          <button class="gold-btn lg" type="submit">
+            <span class="btn-label">Тексеруге жіберу</span><span class="btn-spinner"></span>
+          </button>
+        </form>
+        <div id="receiptUploadState" class="muted small">Админ тексергеннен кейін доступ ашылады.</div>
+      </div>
+    `;
+  }
+
+  function bindReceiptUpload(paymentID) {
+    const form = document.getElementById("receiptUploadForm");
+    if (!form) return;
+    const input = form.querySelector("input[type=file]");
+    const fileName = document.getElementById("receiptFileName");
+    input.addEventListener("change", () => {
+      fileName.textContent = input.files && input.files[0] ? input.files[0].name : "Файл таңдалмады";
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitBtn = form.querySelector("button[type=submit]");
+      const stateNode = document.getElementById("receiptUploadState");
+      submitBtn.classList.add("is-loading");
+      try {
+        const fd = new FormData(form);
+        const res = await api(`/api/payments/${paymentID}/receipt`, {
+          method: "POST",
+          body: fd,
+        });
+        stateNode.innerHTML = `${statusBadge(res.receipt.validation_status)} <span>Чек тексеруге жіберілді</span>`;
+        toast("Чек тексеруге жіберілді", "success");
+      } catch (error) {
+        stateNode.textContent = error.message || "Чек жүктеу мүмкін болмады";
+        toast(error.message || "Чек жүктеу мүмкін болмады", "error");
+      } finally {
+        submitBtn.classList.remove("is-loading");
+      }
     });
   }
 
   async function renderReferral() {
-    const data = await api("/api/referral");
-    const referral = data.referral;
-    html(`<section class="screen"><div class="hero"><p class="eyebrow">Referral</p><h1>Жаңа клиент шақырыңыз</h1><p class="muted">Нақты тіркелген және төлемі мақұлданған клиенттер ғана reward береді.</p></div><div class="card"><h2>Сілтеме</h2><p class="muted">${esc(referral.referral_link)}</p><button class="gold-btn" id="copyRef" type="button">Көшіру</button></div><div class="grid two">${metric("Шақырылған", referral.invited_count, "registered")}${metric("Төлем жасаған", referral.paid_count, "approved")}</div></section>`);
-    on("copyRef", () => navigator.clipboard && navigator.clipboard.writeText(referral.referral_link));
+    html(`<section class="screen"><div class="card skeleton" style="min-height:140px"></div><div class="grid two"><div class="metric skeleton"></div><div class="metric skeleton"></div></div></section>`);
+    let referral;
+    try {
+      const data = await api("/api/referral");
+      referral = data.referral;
+      state.referral = referral;
+    } catch (error) {
+      html(`<section class="screen"><h1>Реферал</h1>${emptyState(error.message)}</section>`);
+      return;
+    }
+    html(`
+      <section class="screen">
+        <div class="hero">
+          <p class="eyebrow">Referral</p>
+          <h1>Жаңа клиент шақырыңыз</h1>
+          <p class="muted">Тек төлемі мақұлданған клиенттер reward береді.</p>
+        </div>
+        <div class="card">
+          <p class="eyebrow">Сілтеме</p>
+          <div class="referral-link">${esc(referral.referral_link || "")}</div>
+          <div class="grid two tight">
+            <button class="gold-btn" id="copyRef" type="button">Көшіру</button>
+            <button class="ghost-btn" id="shareRef" type="button">Telegram-да бөлісу</button>
+          </div>
+        </div>
+        <div class="grid two">
+          ${metric("Шақырылған", referral.invited_count || 0, "registered")}
+          ${metric("Төлем жасаған", referral.paid_count || 0, "approved")}
+        </div>
+      </section>
+    `);
+    on("copyRef", () => {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(referral.referral_link).then(() => toast("Сілтеме көшірілді", "success"));
+      } else {
+        toast("Clipboard қол жетімді емес", "error");
+      }
+    });
+    on("shareRef", () => {
+      const tg = getTelegram();
+      const text = encodeURIComponent("ZHENIS ORDA INSIDE — жүйелі өсу ордасы. " + referral.referral_link);
+      const url = `https://t.me/share/url?url=${encodeURIComponent(referral.referral_link)}&text=${text}`;
+      if (tg && typeof tg.openTelegramLink === "function") tg.openTelegramLink(url);
+      else window.open(url, "_blank");
+    });
   }
 
   async function renderCoins() {
-    const [coins, bonuses] = await Promise.all([api("/api/coins"), api("/api/bonuses")]);
-    html(`<section class="screen"><div class="hero"><p class="eyebrow">ZHENIS COIN</p><h1>${num(coins.balance)} coin</h1><p class="muted">Lesson watched +5, test passed +20, stream attended +30, referral +100.</p></div><div class="grid">${bonuses.plan
-      .map((item) => `<div class="card"><strong>${item.count} referral</strong><p class="muted">${esc(item.reward)}</p></div>`)
-      .join("")}</div></section>`);
+    html(`<section class="screen"><div class="card skeleton" style="min-height:140px"></div></section>`);
+    let coins;
+    let bonuses;
+    try {
+      [coins, bonuses] = await Promise.all([api("/api/coins"), api("/api/bonuses")]);
+    } catch (error) {
+      html(`<section class="screen"><h1>ZHENIS Coin</h1>${emptyState(error.message)}</section>`);
+      return;
+    }
+    state.coins = coins;
+    html(`
+      <section class="screen">
+        <div class="hero">
+          <p class="eyebrow">ZHENIS COIN</p>
+          <h1>${money(coins.balance)} <small style="color:var(--gold-soft);font-size:18px">coin</small></h1>
+          <p class="muted">Lesson watched +5, test passed +20, stream attended +30, referral +100.</p>
+        </div>
+        <div class="card">
+          <p class="eyebrow">Реферал бонустары</p>
+          <h2>Жоспар</h2>
+          <div class="grid">${(bonuses.plan || []).map((item) => `<div class="card" style="margin:0;padding:14px"><strong style="color:var(--gold-bright)">${esc(item.count)} referral</strong><p class="muted" style="margin-top:4px">${esc(item.reward)}</p></div>`).join("")}</div>
+        </div>
+      </section>
+    `);
   }
 
   async function renderStreams() {
-    const data = await api("/api/streams");
-    html(`<section class="screen"><div class="card"><p class="eyebrow">ZHABYQ RAZBOR NIGHT</p><h1>Жабық эфир</h1><p class="muted">STANDARD және VIP үшін жазбалар эфирден кейін ашылады.</p></div><div class="grid">${(data.streams || [])
-      .map((stream) => `<div class="card"><h2>${esc(stream.title)}</h2><p class="muted">${new Date(stream.starts_at).toLocaleString()}</p><span class="pill">${esc(stream.tariff_requirement)}</span></div>`)
-      .join("") || empty("Эфир әлі жоспарланбаған")}</div></section>`);
+    html(`<section class="screen"><div class="card skeleton" style="min-height:140px"></div></section>`);
+    let data;
+    try {
+      data = await api("/api/streams");
+    } catch (error) {
+      html(`<section class="screen"><h1>Жабық эфир</h1>${emptyState(error.message)}</section>`);
+      return;
+    }
+    const streams = data.streams || [];
+    html(`
+      <section class="screen">
+        <div class="card">
+          <p class="eyebrow">ZHABYQ RAZBOR NIGHT</p>
+          <h1>Жабық эфир</h1>
+          <p class="muted">STANDARD және VIP үшін жазбалар эфирден кейін ашылады.</p>
+        </div>
+        <div class="grid">${
+          streams.length
+            ? streams
+                .map(
+                  (stream) => `<div class="card">
+                    <div class="card-header">
+                      <div><p class="eyebrow">${formatDateTime(stream.starts_at)}</p><h2>${esc(stream.title)}</h2></div>
+                      <span class="pill">${esc(stream.tariff_requirement)}</span>
+                    </div>
+                    <p class="muted">${esc(stream.description || "")}</p>
+                  </div>`,
+                )
+                .join("")
+            : emptyState("Эфир әлі жоспарланбаған")
+        }</div>
+      </section>
+    `);
   }
 
   async function renderChannels() {
-    const data = await api("/api/channels");
-    html(`<section class="screen"><div class="card"><p class="eyebrow">Private access</p><h1>Жабық каналдар</h1></div><div class="grid">${(data.channels || [])
-      .map((channel) => `<div class="card"><div class="card-header"><div><h2>${esc(channel.title)}</h2><p class="muted">${esc(channel.tariff_requirement)} · LEVEL ${channel.level_requirement}</p></div><span class="status ${channel.access ? "ok" : "bad"}">${channel.access ? "Open" : "Locked"}</span></div><button class="gold-btn" data-invite="${channel.id}" ${channel.access ? "" : "disabled"} type="button">Invite link алу</button></div>`)
-      .join("") || empty("Каналдар жоқ")}</div></section>`);
+    html(`<section class="screen"><div class="card skeleton" style="min-height:140px"></div></section>`);
+    let data;
+    try {
+      data = await api("/api/channels");
+    } catch (error) {
+      html(`<section class="screen"><h1>Жабық каналдар</h1>${emptyState(error.message)}</section>`);
+      return;
+    }
+    const channels = data.channels || [];
+    html(`
+      <section class="screen">
+        <div class="card">
+          <p class="eyebrow">Private access</p>
+          <h1>Жабық каналдар</h1>
+        </div>
+        <div class="grid">${
+          channels.length
+            ? channels
+                .map(
+                  (channel) => `<div class="card">
+                    <div class="card-header">
+                      <div><h2>${esc(channel.title)}</h2><p class="muted">${esc(channel.tariff_requirement)} · LEVEL ${esc(channel.level_requirement)}</p></div>
+                      <span class="status ${channel.access ? "ok" : "bad"}">${channel.access ? "Open" : "Locked"}</span>
+                    </div>
+                    <button class="gold-btn block" data-invite="${esc(channel.id)}" ${channel.access ? "" : "disabled"} type="button">Invite link алу</button>
+                  </div>`,
+                )
+                .join("")
+            : emptyState("Каналдар жоқ")
+        }</div>
+      </section>
+    `);
     document.querySelectorAll("[data-invite]").forEach((button) =>
       button.addEventListener("click", async () => {
-        const res = await api(`/api/channels/${button.dataset.invite}/invite`, { method: "POST", body: "{}" });
-        alert(res.invite_link);
+        try {
+          const res = await api(`/api/channels/${button.dataset.invite}/invite`, {
+            method: "POST",
+            body: "{}",
+          });
+          await modal({
+            title: "Invite сілтеме",
+            body: `<p class="muted">Сілтеме 24 сағат жарамды.</p><div class="referral-link">${esc(res.invite_link)}</div>`,
+            actions: [{ label: "Жабу", value: "ok", primary: true }],
+          });
+        } catch (error) {
+          toast(error.message || "Канал жабық", "error");
+        }
       }),
     );
   }
 
   function renderProfile() {
-    const user = state.me.user;
+    const user = (state.me && state.me.user) || {};
     const sub = user.subscription || {};
-    html(`<section class="screen"><div class="card"><p class="eyebrow">Profile</p><h1>${esc([user.first_name, user.last_name].filter(Boolean).join(" ") || user.username || "User")}</h1><p class="muted">@${esc(user.username || String(user.telegram_id))}</p></div><div class="grid two">${metric("Current tariff", sub.tariff_code || "None", sub.status || "inactive")}${metric("Payment expiration", sub.expires_at ? new Date(sub.expires_at).toLocaleDateString() : "No active subscription", "subscription")}${metric("Current level", `LEVEL ${user.current_level || 0}`, "12-month journey")}${metric("Coin balance", num(user.coin_balance), "ZHENIS COIN")}</div><button class="ghost-btn" data-next="support" type="button">Қолдау қызметі</button></section>`);
-    document.querySelectorAll("[data-next]").forEach((button) => button.addEventListener("click", () => setScreen(button.dataset.next)));
+    const subOk = sub.status === "active";
+    const display = buildDisplayName(readTelegramUser(), user);
+    const login = buildLogin(readTelegramUser(), user);
+
+    html(`
+      <section class="screen">
+        <div class="hero">
+          <p class="eyebrow">Profile</p>
+          <h1>${esc(display)}</h1>
+          <p class="muted">${esc(login)}</p>
+        </div>
+        <div class="grid two">
+          ${metric("Current tariff", sub.tariff_code || "None", sub.status || "inactive", subOk ? "ok" : "warn")}
+          ${metric("Expiration", sub.expires_at ? formatDate(sub.expires_at) : "—", "subscription")}
+          ${metric("Current level", `LEVEL ${user.current_level || 0}`, "12-month journey")}
+          ${metric("Coin balance", money(user.coin_balance), "ZHENIS COIN")}
+        </div>
+        <div class="grid two">
+          <button class="ghost-btn" data-next="referral" type="button">Реферал</button>
+          <button class="ghost-btn" data-next="support" type="button">Қолдау қызметі</button>
+        </div>
+      </section>
+    `);
+    bindNext();
   }
 
   function renderSupport() {
-    html(`<section class="screen"><div class="card"><p class="eyebrow">Support</p><h1>Қолдау қызметі</h1></div><form id="supportForm" class="form"><label class="field"><span>Хабарлама</span><textarea name="body" required></textarea></label><button class="gold-btn" type="submit">Жіберу</button></form></section>`);
+    html(`
+      <section class="screen">
+        <div class="card">
+          <p class="eyebrow">Support</p>
+          <h1>Қолдау қызметі</h1>
+          <p class="muted">Сұрағыңызды жазыңыз. Команда жауап береді.</p>
+        </div>
+        <form id="supportForm" class="form">
+          <label class="field"><span>Хабарлама</span><textarea name="body" required placeholder="Хабарлама..."></textarea></label>
+          <button class="gold-btn lg" type="submit"><span class="btn-label">Жіберу</span><span class="btn-spinner"></span></button>
+        </form>
+      </section>
+    `);
     document.getElementById("supportForm").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const body = new FormData(event.currentTarget).get("body");
-      const res = await api("/api/support", { method: "POST", body: JSON.stringify({ body }) });
-      alert(res.message);
-      setScreen("dashboard");
+      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+      submitBtn.classList.add("is-loading");
+      try {
+        const body = new FormData(event.currentTarget).get("body");
+        const res = await api("/api/support", {
+          method: "POST",
+          body: JSON.stringify({ body }),
+        });
+        toast(res.message || "Хабарлама жіберілді", "success");
+        setScreen("dashboard");
+      } catch (error) {
+        toast(error.message || "Жіберу мүмкін болмады", "error");
+      } finally {
+        submitBtn.classList.remove("is-loading");
+      }
+    });
+  }
+
+  function bindNext() {
+    document.querySelectorAll("[data-next]").forEach((button) => {
+      button.addEventListener("click", () => setScreen(button.dataset.next));
     });
   }
 
   async function refreshLevels() {
-    const levels = await api("/api/levels");
-    state.levels = levels.levels || [];
+    try {
+      const data = await api("/api/levels");
+      state.levels = data.levels || [];
+    } catch (_) {}
   }
 
-  function renderShellLoading() {
-    html(`<section class="screen"><div class="hero"><p class="eyebrow">ZHENIS ORDA INSIDE</p><h1>Жүктелуде...</h1></div></section>`);
+  function emptyState(text, icon) {
+    return `<div class="empty-state"><div class="icon">${esc(icon || "Ø")}</div><span>${esc(text || "Бос")}</span></div>`;
   }
 
-  function renderError(message) {
-    html(`<section class="screen"><div class="card"><h1>Қате</h1><p class="muted">${esc(message)}</p></div></section>`);
+  function skeletonRows(count) {
+    return Array.from({ length: count })
+      .map(
+        () => `<div class="card">
+          <div class="skeleton-row w-50"></div>
+          <div class="skeleton-row w-90"></div>
+          <div class="skeleton-row w-70"></div>
+        </div>`,
+      )
+      .join("");
   }
 
-  function html(markup) {
-    document.getElementById("appContent").innerHTML = markup;
-  }
+  /* ===========================================================
+     BROWSER ADMIN
+     =========================================================== */
 
-  function metric(label, value, hint) {
-    return `<div class="metric"><p class="eyebrow">${esc(label)}</p><strong>${esc(String(value))}</strong><span class="muted">${esc(String(hint || ""))}</span></div>`;
-  }
-
-  function empty(text) {
-    return `<div class="card"><p class="muted">${esc(text)}</p></div>`;
-  }
-
-  function on(id, fn) {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener("click", fn);
-  }
-
-  function esc(value) {
-    return String(value || "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
-  }
-
-  function num(value) {
-    return Number(value || 0);
-  }
-
-  function money(value) {
-    return num(value).toLocaleString("ru-RU");
-  }
-
-  async function initAdmin() {
-    renderAdminNav();
-    document.getElementById("adminLogout").addEventListener("click", async () => {
-      await api("/api/browser-auth/logout", { method: "POST", body: "{}" }).catch(() => {});
-      state.admin = null;
-      renderAdminLogin();
-    });
+  async function bootBrowserAdmin() {
     try {
       const me = await api("/api/browser-auth/me");
       state.admin = me.admin;
+      showAdminAuthenticated();
+      renderAdminNav();
       renderAdmin();
     } catch (_) {
-      renderAdminLogin();
+      showAdminLogin();
     }
   }
 
-  function renderAdminLogin() {
-    document.getElementById("adminNav").innerHTML = "";
-    document.getElementById("adminTitle").textContent = "Admin login";
-    document.getElementById("adminContent").innerHTML = `<div class="login-panel card"><p class="eyebrow">Secure browser session</p><h1>ZHENIS ORDA Admin</h1><form id="adminLoginForm" class="form"><label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label><button class="gold-btn" type="submit">Login</button></form><p class="muted">Development default: admin</p></div>`;
-    document.getElementById("adminLoginForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const password = new FormData(event.currentTarget).get("password");
-      const res = await api("/api/browser-auth/login", { method: "POST", body: JSON.stringify({ password }) });
-      state.admin = res.admin;
-      renderAdminNav();
-      renderAdmin();
-    });
+  function showAdminLogin() {
+    if (els.adminApp) {
+      els.adminApp.classList.add("hidden");
+      els.adminApp.setAttribute("aria-hidden", "true");
+    }
+    if (els.adminAuth) {
+      els.adminAuth.classList.remove("hidden");
+      els.adminAuth.setAttribute("aria-hidden", "false");
+    }
+    // dev hint
+    if (els.adminLoginHint) {
+      const dev =
+        location.hostname === "localhost" ||
+        location.hostname === "127.0.0.1" ||
+        location.hostname.endsWith(".local");
+      els.adminLoginHint.classList.toggle("hidden", !dev);
+    }
+    if (els.adminPassword) {
+      setTimeout(() => els.adminPassword.focus(), 80);
+    }
+    if (els.adminLoginForm) {
+      els.adminLoginForm.onsubmit = async (event) => {
+        event.preventDefault();
+        if (els.adminLoginError) els.adminLoginError.classList.add("hidden");
+        const btn = els.adminLoginSubmit;
+        btn.classList.add("is-loading");
+        try {
+          const password = new FormData(event.currentTarget).get("password");
+          const res = await api("/api/browser-auth/login", {
+            method: "POST",
+            body: JSON.stringify({ password }),
+          });
+          state.admin = res.admin;
+          showAdminAuthenticated();
+          renderAdminNav();
+          renderAdmin();
+        } catch (error) {
+          if (els.adminLoginError) {
+            els.adminLoginError.textContent = error.message || "Қате құпия сөз";
+            els.adminLoginError.classList.remove("hidden");
+          }
+        } finally {
+          btn.classList.remove("is-loading");
+        }
+      };
+    }
+  }
+
+  function showAdminAuthenticated() {
+    if (els.adminAuth) {
+      els.adminAuth.classList.add("hidden");
+      els.adminAuth.setAttribute("aria-hidden", "true");
+    }
+    if (els.adminApp) {
+      els.adminApp.classList.remove("hidden");
+      els.adminApp.setAttribute("aria-hidden", "false");
+    }
+    if (els.adminWho && state.admin) {
+      els.adminWho.textContent = `${state.admin.name || "Admin"} · ${state.admin.role || ""}`;
+    }
+  }
+
+  async function handleAdminLogout() {
+    try {
+      await api("/api/browser-auth/logout", { method: "POST", body: "{}" });
+    } catch (_) {}
+    state.admin = null;
+    showAdminLogin();
   }
 
   const adminScreens = [
-    ["dashboard", "Dashboard"],
-    ["users", "Users"],
-    ["payments", "Payments"],
-    ["subscriptions", "Subscriptions"],
-    ["levels", "Levels"],
-    ["lessons", "Lessons"],
-    ["tests", "Tests"],
-    ["assignments", "Assignments"],
-    ["referrals", "Referrals"],
-    ["coins", "Coins"],
-    ["channels", "Channels"],
-    ["streams", "Streams"],
-    ["broadcast", "Broadcast"],
-    ["analytics", "Analytics"],
-    ["settings", "Settings"],
-    ["audit", "Audit log"],
+    ["dashboard", "Басты бет"],
+    ["users", "Қолданушылар"],
+    ["payments", "Төлемдер"],
+    ["subscriptions", "Жазылымдар"],
+    ["levels", "Деңгейлер"],
+    ["lessons", "Сабақтар"],
+    ["tests", "Тесттер"],
+    ["assignments", "Тапсырмалар"],
+    ["referrals", "Рефералдар"],
+    ["coins", "ZHENIS Coin"],
+    ["channels", "Каналдар"],
+    ["streams", "Эфирлер"],
+    ["broadcast", "Хабарлама"],
+    ["analytics", "Аналитика"],
+    ["settings", "Баптаулар"],
+    ["audit", "Аудит журналы"],
   ];
 
   function renderAdminNav() {
-    const nav = document.getElementById("adminNav");
-    if (!nav) return;
-    nav.innerHTML = adminScreens.map(([key, label]) => `<button class="tool-btn ${state.adminScreen === key ? "active" : ""}" data-admin-screen="${key}" type="button">${label}</button>`).join("");
-    document.querySelectorAll("[data-admin-screen]").forEach((button) =>
+    if (!els.adminNav) return;
+    els.adminNav.innerHTML = adminScreens
+      .map(
+        ([key, label]) =>
+          `<button class="tool-btn ${state.adminScreen === key ? "active" : ""}" data-admin-screen="${esc(key)}" type="button">${esc(label)}</button>`,
+      )
+      .join("");
+    els.adminNav.querySelectorAll("[data-admin-screen]").forEach((button) =>
       button.addEventListener("click", () => {
         state.adminScreen = button.dataset.adminScreen;
         renderAdminNav();
         renderAdmin();
+        if (els.adminApp) els.adminApp.classList.remove("nav-open");
       }),
     );
   }
 
   async function renderAdmin() {
-    document.getElementById("adminTitle").textContent = adminScreens.find(([key]) => key === state.adminScreen)?.[1] || "Dashboard";
-    if (state.adminScreen === "dashboard" || state.adminScreen === "analytics") return renderAdminDashboard();
-    if (state.adminScreen === "users") return renderAdminList("/api/admin/users", "users", ["id", "telegram_id", "username", "current_level", "coin_balance"]);
-    if (state.adminScreen === "payments") return renderAdminPayments();
-    if (state.adminScreen === "subscriptions") return renderAdminList("/api/admin/subscriptions", "subscriptions", ["id", "user_id", "tariff_code", "status", "expires_at"]);
-    if (state.adminScreen === "levels") return renderAdminList("/api/admin/levels", "levels", ["number", "title_kk", "access"]);
-    if (state.adminScreen === "lessons") return renderAdminList("/api/admin/lessons", "lessons", ["id", "level_number", "title_kk", "watched"]);
-    if (state.adminScreen === "tests") return renderAdminItems("/api/admin/tests");
-    if (state.adminScreen === "assignments") return renderAdminItems("/api/admin/assignments/submissions");
-    if (state.adminScreen === "referrals") return renderAdminItems("/api/admin/referrals");
-    if (state.adminScreen === "coins") return renderAdminItems("/api/admin/coins");
-    if (state.adminScreen === "channels") return renderAdminChannels();
-    if (state.adminScreen === "streams") return renderAdminList("/api/admin/streams", "streams", ["id", "title", "starts_at", "tariff_requirement", "status"]);
-    if (state.adminScreen === "broadcast") return renderAdminBroadcast();
-    if (state.adminScreen === "settings") return renderAdminSettings();
-    if (state.adminScreen === "audit") return renderAdminList("/api/admin/audit", "actions", ["id", "role", "action", "entity_type", "created_at"]);
+    if (els.adminTitle) {
+      const meta = adminScreens.find(([key]) => key === state.adminScreen);
+      els.adminTitle.textContent = meta ? meta[1] : "Dashboard";
+    }
+    const screen = state.adminScreen;
+    if (!els.adminContent) return;
+
+    els.adminContent.innerHTML = `<div class="grid four">${Array.from({ length: 4 })
+      .map(() => `<div class="metric skeleton"></div>`)
+      .join("")}</div>`;
+
+    try {
+      if (screen === "dashboard" || screen === "analytics") return await renderAdminDashboard();
+      if (screen === "users") return await renderAdminUsers();
+      if (screen === "payments") return await renderAdminPayments();
+      if (screen === "subscriptions")
+        return await renderAdminTable(
+          "/api/admin/subscriptions",
+          "subscriptions",
+          ["id", "user_id", "tariff_code", "status", "expires_at"],
+          "Жазылымдар",
+        );
+      if (screen === "levels") return await renderAdminLevels();
+      if (screen === "lessons") return await renderAdminLessons();
+      if (screen === "tests") return await renderAdminTests();
+      if (screen === "assignments") return await renderAdminItems("/api/admin/assignments/submissions", "Тапсырма жауаптары");
+      if (screen === "referrals") return await renderAdminItems("/api/admin/referrals", "Рефералдар");
+      if (screen === "coins") return await renderAdminItems("/api/admin/coins", "ZHENIS Coin");
+      if (screen === "channels") return await renderAdminChannels();
+      if (screen === "streams")
+        return await renderAdminTable(
+          "/api/admin/streams",
+          "streams",
+          ["id", "title", "starts_at", "tariff_requirement", "status"],
+          "Эфирлер",
+        );
+      if (screen === "broadcast") return await renderAdminBroadcast();
+      if (screen === "settings") return await renderAdminSettings();
+      if (screen === "audit")
+        return await renderAdminTable(
+          "/api/admin/audit",
+          "actions",
+          ["id", "role", "action", "entity_type", "created_at"],
+          "Аудит журналы",
+        );
+    } catch (error) {
+      els.adminContent.innerHTML = `<div class="error-card"><p class="eyebrow">Error</p><h2>Қате</h2><p>${esc(error.message)}</p></div>`;
+    }
   }
 
   async function renderAdminDashboard() {
     const data = await api("/api/admin/stats");
-    const stats = data.stats;
-    document.getElementById("adminContent").innerHTML = `<div class="admin-grid">${Object.entries(stats).map(([key, value]) => metric(key.replaceAll("_", " "), value, "live")).join("")}</div>`;
+    const stats = data.stats || {};
+    const ordered = [
+      "users_total",
+      "active_subscriptions",
+      "pending_payments",
+      "uploaded_receipts",
+      "approved_payments",
+      "monthly_revenue_kzt",
+      "lessons_count",
+      "tests_count",
+      "referrals_paid",
+      "expired_subscriptions",
+    ];
+    const metricLabels = {
+      users_total: "Барлық қолданушылар",
+      active_subscriptions: "Белсенді жазылымдар",
+      pending_payments: "Күтудегі төлемдер",
+      uploaded_receipts: "Тексерілетін чектер",
+      approved_payments: "Қабылданған төлемдер",
+      monthly_revenue_kzt: "Айлық табыс",
+      lessons_count: "Сабақтар",
+      tests_count: "Тесттер",
+      referrals_paid: "Төленген рефералдар",
+      expired_subscriptions: "Мерзімі өткендер",
+    };
+    const metrics = ordered
+      .filter((key) => key in stats)
+      .map((key) => `<div class="metric"><p class="eyebrow">${esc(metricLabels[key])}</p><strong>${esc(money(stats[key]))}</strong><span class="muted">live</span></div>`);
+    els.adminContent.innerHTML = `
+      <div class="admin-grid">${metrics.join("")}</div>
+      <div class="card">
+        <div class="section-head">
+          <div><p class="eyebrow">Басқару орталығы</p><h2>ZHENIS ORDA Command Center</h2></div>
+        </div>
+        <p class="muted">Mini App, төлемдер, контент және каналдар бойынша толық бақылау.</p>
+      </div>
+    `;
   }
 
-  async function renderAdminList(url, key, columns) {
+  async function renderAdminUsers() {
+    const params = new URLSearchParams();
+    const data = await api(`/api/admin/users?${params.toString()}`);
+    const users = data.users || [];
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">Қолданушылар</p><h2>Қолданушылар</h2></div>
+          <div class="admin-toolbar">
+            <input id="userSearch" placeholder="Аты немесе username бойынша іздеу" />
+          </div>
+        </div>
+        ${tableHtml(["id", "telegram_id", "username", "first_name", "current_level", "coin_balance", "access_closed"], users)}
+      </div>
+    `;
+    on("userSearch", debounce(async (event) => {
+      const q = event.target.value;
+      try {
+        const data = await api(`/api/admin/users?q=${encodeURIComponent(q)}`);
+        document.querySelector(".table-wrap")?.replaceWith(htmlToNode(tableHtml(["id", "telegram_id", "username", "first_name", "current_level", "coin_balance", "access_closed"], data.users || [])));
+      } catch (error) {
+        toast(error.message, "error");
+      }
+    }, 280), "input");
+  }
+
+  async function renderAdminTable(url, key, columns, title) {
     const data = await api(url);
     const rows = data[key] || data.items || [];
-    document.getElementById("adminContent").innerHTML = table(columns, rows);
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">${esc(title || key)}</p><h2>${esc(title || key)}</h2></div>
+        </div>
+        ${tableHtml(columns, rows)}
+      </div>
+    `;
   }
 
-  async function renderAdminItems(url) {
+  async function renderAdminItems(url, title) {
     const data = await api(url);
     const rows = data.items || [];
     const columns = rows[0] ? Object.keys(rows[0]).slice(0, 7) : ["id", "status"];
-    document.getElementById("adminContent").innerHTML = table(columns, rows);
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">${esc(title || "Items")}</p><h2>${esc(title || "Items")}</h2></div>
+        </div>
+        ${tableHtml(columns, rows)}
+      </div>
+    `;
+  }
+
+  async function adminLevels() {
+    const data = await api("/api/admin/levels");
+    return sortAdminLevels(data.levels || []);
+  }
+
+  function levelSortValue(level) {
+    return Number(level && (level.sort_order || level.number)) || 0;
+  }
+
+  function sortAdminLevels(levels) {
+    return [...(levels || [])].sort((a, b) => {
+      const order = levelSortValue(a) - levelSortValue(b);
+      if (order) return order;
+      return (Number(a.number) || 0) - (Number(b.number) || 0);
+    });
+  }
+
+  function levelDisplayName(level) {
+    if (!level) return "Деңгей";
+    const title = clean(level.title_kk || level.title || "");
+    return `LEVEL ${level.number || level.sort_order || "—"}${title ? ` — ${title}` : ""}`;
+  }
+
+  function isSeededLevel(level) {
+    const number = Number(level && level.number);
+    return number >= 1 && number <= 12;
+  }
+
+  function levelOptions(levels, selected) {
+    return sortAdminLevels(levels)
+      .map(
+        (level) =>
+          `<option value="${esc(level.id)}" ${String(level.id) === String(selected) ? "selected" : ""}>${esc(levelDisplayName(level))}${level.is_active ? "" : " · Белсенді емес"}</option>`,
+      )
+      .join("");
+  }
+
+  function levelNumberOptions(levels, selected) {
+    return sortAdminLevels(levels)
+      .map(
+        (level) =>
+          `<option value="${esc(level.number)}" ${String(level.number) === String(selected) ? "selected" : ""}>${esc(levelDisplayName(level))}${level.is_active ? "" : " · Белсенді емес"}</option>`,
+      )
+      .join("");
+  }
+
+  function currentAdminFilters() {
+    const q = document.getElementById("adminSearch")?.value || "";
+    const level = document.getElementById("adminLevelFilter")?.value || "";
+    const status = document.getElementById("adminStatusFilter")?.value || "";
+    return { q, level, status };
+  }
+
+  async function renderAdminLevels() {
+    const levels = await adminLevels();
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">Деңгейлер</p><h2>Деңгейлер</h2></div>
+          <div class="admin-toolbar">
+            <button class="gold-btn" id="addLevel" type="button">+ Деңгей қосу</button>
+          </div>
+        </div>
+        ${levelsTableHtml(levels)}
+      </div>
+    `;
+    on("addLevel", () => openLevelModal(null, levels));
+    delegate(els.adminContent, "[data-edit-level]", "click", (event, target) => {
+      event.stopPropagation();
+      const level = levels.find((item) => item.id === target.dataset.editLevel);
+      if (level) openLevelModal(level, levels);
+    });
+    delegate(els.adminContent, "[data-delete-level]", "click", async (event, target) => {
+      event.stopPropagation();
+      const level = levels.find((item) => item.id === target.dataset.deleteLevel);
+      const ok = await modal({
+        title: "Деңгейді жою",
+        body: `<p class="muted">${esc(level ? levelDisplayName(level) : "Бұл деңгей")} өшіруге сенімдісіз бе?</p>`,
+        actions: [
+          { label: "Бас тарту", value: false },
+          { label: "Жою", value: true, danger: true },
+        ],
+      });
+      if (!ok) return;
+      try {
+        await api(`/api/admin/levels/${target.dataset.deleteLevel}`, { method: "DELETE" });
+        toast("Деңгей өшірілді", "success");
+        renderAdminLevels();
+      } catch (error) {
+        toast(levelDeleteErrorMessage(error), "error");
+      }
+    });
+  }
+
+  function levelsTableHtml(levels) {
+    if (!levels.length) return emptyState("Деңгейлер табылмады");
+    return `<div class="table-wrap"><table>
+      <thead><tr>
+        <th>Реті</th><th>Қазақша атауы</th><th>Сипаттама</th><th>Статус</th><th>Әрекет</th>
+      </tr></thead>
+      <tbody>${levels
+        .map(
+          (level) => {
+            const seeded = isSeededLevel(level);
+            return `<tr>
+            <td><strong>LEVEL ${esc(level.number || "—")}</strong><div class="muted small">ID ${esc(shortId(level.id))}</div></td>
+            <td><strong>${esc(level.title_kk || "—")}</strong></td>
+            <td>${esc(level.description_kk || "—")}</td>
+            <td>${statusBadge(level.is_active ? "active" : "inactive")}</td>
+            <td>
+              <div class="action-row">
+                <button class="ghost-btn" data-edit-level="${esc(level.id)}" type="button">Өзгерту</button>
+                <button class="danger-btn" data-delete-level="${esc(level.id)}" type="button" ${seeded ? `disabled title="Негізгі 12 деңгейді өшіруге болмайды"` : ""}>Жою</button>
+              </div>
+            </td>
+          </tr>`;
+          },
+        )
+        .join("")}</tbody>
+    </table></div>`;
+  }
+
+  function nextLevelNumber(levels) {
+    const max = levels.reduce((acc, level) => {
+      const value = Math.max(Number(level.number) || 0, Number(level.sort_order) || 0);
+      return Math.max(acc, value);
+    }, 0);
+    return max + 1;
+  }
+
+  function openLevelModal(level, levels) {
+    const isEdit = Boolean(level && level.id);
+    const seeded = isSeededLevel(level);
+    const number = isEdit ? level.number : nextLevelNumber(levels);
+    const active = !isEdit || level.is_active;
+    const shell = openModalShell(isEdit ? "Деңгейді жаңарту" : "Деңгей қосу", `
+      <form id="levelModalForm" class="form">
+        <div class="grid two">
+          <label class="field"><span>Деңгей нөмірі / реті</span><input name="number" type="number" min="1" step="1" required ${seeded ? "readonly" : ""} value="${esc(number)}" /></label>
+          <label class="switch-field"><input name="is_active" type="checkbox" ${active ? "checked" : ""} ${seeded ? "disabled" : ""} /><span>Белсенді</span></label>
+        </div>
+        ${seeded ? `<p class="muted small">Негізгі 12 деңгей жүйеде әрқашан белсенді сақталады.</p>` : ""}
+        <label class="field"><span>Қазақша атауы</span><input name="title_kk" required value="${esc((level && level.title_kk) || "")}" /></label>
+        <label class="field"><span>Сипаттама</span><textarea name="description_kk">${esc((level && level.description_kk) || "")}</textarea></label>
+        <div class="action-row end">
+          <button class="ghost-btn" data-close-modal type="button">Бас тарту</button>
+          <button class="gold-btn" type="submit"><span class="btn-label">${isEdit ? "Жаңарту" : "Сақтау"}</span><span class="btn-spinner"></span></button>
+        </div>
+      </form>
+    `);
+    const form = shell.body.querySelector("form");
+    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const btn = form.querySelector("button[type=submit]");
+      const payload = collectLevelForm(form, level);
+      const validation = validateLevelForm(payload, levels, level);
+      if (validation) {
+        toast(validation, "error");
+        return;
+      }
+      btn.classList.add("is-loading");
+      try {
+        await api(isEdit ? `/api/admin/levels/${level.id}` : "/api/admin/levels", {
+          method: isEdit ? "PATCH" : "POST",
+          body: JSON.stringify(payload),
+        });
+        shell.close();
+        toast(isEdit ? "Деңгей жаңартылды" : "Деңгей қосылды", "success");
+        renderAdminLevels();
+      } catch (error) {
+        toast(levelSaveErrorMessage(error), "error");
+      } finally {
+        btn.classList.remove("is-loading");
+      }
+    });
+  }
+
+  function collectLevelForm(form, existing) {
+    const fd = new FormData(form);
+    const seeded = isSeededLevel(existing);
+    const number = seeded ? Number(existing.number) : Number(fd.get("number") || 0);
+    const titleKK = String(fd.get("title_kk") || "").trim();
+    const descriptionKK = String(fd.get("description_kk") || "").trim();
+    return {
+      number,
+      sort_order: number,
+      title_kk: titleKK,
+      title_ru: clean(existing && existing.title_ru) || titleKK,
+      description_kk: descriptionKK,
+      description_ru: clean(existing && existing.description_ru) || descriptionKK,
+      is_active: seeded ? true : fd.get("is_active") === "on",
+    };
+  }
+
+  function validateLevelForm(level, levels, existing) {
+    if (!Number.isInteger(level.number) || level.number < 1) return "Деңгей нөмірі 1 немесе одан жоғары болуы керек";
+    if (!level.title_kk) return "Қазақша атауы міндетті";
+    const duplicate = levels.find((item) => item.id !== (existing && existing.id) && Number(item.number) === level.number);
+    if (duplicate) return "Бұл деңгей нөмірі бұрыннан бар";
+    return "";
+  }
+
+  function levelSaveErrorMessage(error) {
+    const raw = String((error && error.message) || "");
+    if (/unique|constraint|duplicate/i.test(raw)) return "Бұл деңгей нөмірі бұрыннан бар";
+    if (/invalid state/i.test(raw)) return "Деңгей мәліметтерін тексеріңіз";
+    return raw || "Деңгейді сақтау мүмкін болмады";
+  }
+
+  function levelDeleteErrorMessage(error) {
+    const raw = String((error && error.message) || "");
+    if (/lesson|test|foreign|constraint/i.test(raw)) {
+      return "Бұл деңгейге сабақтар немесе тесттер байланған. Алдымен контентті өзгертіңіз немесе деңгейді белсенді емес күйге қойыңыз.";
+    }
+    return raw || "Деңгейді өшіру мүмкін болмады";
+  }
+
+  async function renderAdminLessons() {
+    const params = new URLSearchParams();
+    const filters = currentAdminFilters();
+    if (filters.q) params.set("q", filters.q);
+    if (filters.level) params.set("level", filters.level);
+    if (filters.status) params.set("status", filters.status);
+
+    const [levels, data] = await Promise.all([adminLevels(), api(`/api/admin/lessons?${params.toString()}`)]);
+    const lessons = data.lessons || [];
+    const rows = lessons.length
+      ? `<div class="table-wrap"><table>
+          <thead><tr>
+            <th>Деңгей</th><th>Сабақ атауы</th><th>Сілтеме</th><th>Реті</th><th>Статус</th><th>Әрекет</th>
+          </tr></thead>
+          <tbody>${lessons
+            .map(
+              (lesson) => `<tr>
+                <td>LEVEL ${esc(lesson.level_number)}</td>
+                <td><strong>${esc(lesson.title_kk)}</strong><div class="muted small">${esc(shortId(lesson.id))}</div></td>
+                <td>${lesson.video_url ? `<a class="link" href="${esc(lesson.video_url)}" target="_blank" rel="noopener">Ашу</a>` : "—"}</td>
+                <td>${esc(lesson.sort_order || 0)}</td>
+                <td>${statusBadge(lesson.is_active ? "active" : "inactive")}</td>
+                <td>
+                  <div class="action-row">
+                    <button class="ghost-btn" data-edit-lesson="${esc(lesson.id)}" type="button">Өзгерту</button>
+                    <button class="ghost-btn" data-test-level="${esc(lesson.level_id)}" type="button">Осы сабаққа тест қосу</button>
+                    <button class="danger-btn" data-delete-lesson="${esc(lesson.id)}" type="button">Өшіру</button>
+                  </div>
+                </td>
+              </tr>`,
+            )
+            .join("")}</tbody>
+        </table></div>`
+      : emptyState("Сабақтар әлі қосылған жоқ");
+
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">Контент</p><h2>Сабақтар</h2></div>
+          <div class="admin-toolbar">
+            <button class="gold-btn" id="addLesson" type="button">+ Сабақ қосу</button>
+          </div>
+        </div>
+        <div class="admin-toolbar stacked">
+          <input id="adminSearch" placeholder="Сабақ іздеу" value="${esc(filters.q)}" />
+          <select id="adminLevelFilter"><option value="">Барлық деңгей</option>${levelNumberOptions(levels, filters.level)}</select>
+          <select id="adminStatusFilter"><option value="">Барлық статус</option><option value="active" ${filters.status === "active" ? "selected" : ""}>Белсенді</option><option value="inactive" ${filters.status === "inactive" ? "selected" : ""}>Жабық</option></select>
+        </div>
+        ${rows}
+      </div>
+    `;
+
+    on("addLesson", () => openLessonModal(null, levels));
+    on("adminSearch", debounce(renderAdminLessons, 280), "input");
+    on("adminLevelFilter", renderAdminLessons, "change");
+    on("adminStatusFilter", renderAdminLessons, "change");
+    delegate(els.adminContent, "[data-edit-lesson]", "click", (event, target) => {
+      event.stopPropagation();
+      const lesson = lessons.find((item) => item.id === target.dataset.editLesson);
+      if (lesson) openLessonModal(lesson, levels);
+    });
+    delegate(els.adminContent, "[data-delete-lesson]", "click", async (event, target) => {
+      event.stopPropagation();
+      const ok = await modal({
+        title: "Сабақты өшіру",
+        body: `<p class="muted">Бұл сабақты өшіруге сенімдісіз бе?</p>`,
+        actions: [
+          { label: "Болдырмау", value: false },
+          { label: "Өшіру", value: true, danger: true },
+        ],
+      });
+      if (!ok) return;
+      try {
+        await api(`/api/admin/lessons/${target.dataset.deleteLesson}`, { method: "DELETE" });
+        toast("Сабақ өшірілді", "success");
+        renderAdminLessons();
+      } catch (error) {
+        toast(error.message || "Өшіру мүмкін болмады", "error");
+      }
+    });
+    delegate(els.adminContent, "[data-test-level]", "click", (event, target) => {
+      event.stopPropagation();
+      state.adminScreen = "tests";
+      renderAdminNav();
+      renderAdmin().then(() => {
+        const level = levels.find((item) => item.id === target.dataset.testLevel);
+        if (level) openTestModal({ level_id: level.id, level_number: level.number }, levels);
+      });
+    });
+  }
+
+  function openLessonModal(lesson, levels) {
+    const isEdit = Boolean(lesson && lesson.id);
+    const selectedLevel = (lesson && lesson.level_id) || (levels[0] && levels[0].id) || "";
+    const shell = openModalShell(isEdit ? "Сабақты өзгерту" : "Сабақ қосу", `
+      <form id="lessonModalForm" class="form">
+        <label class="field"><span>Деңгей</span><select name="level_id" required>${levelOptions(levels, selectedLevel)}</select></label>
+        <div class="grid two">
+          <label class="field"><span>Қазақша атауы</span><input name="title_kk" required value="${esc((lesson && lesson.title_kk) || "")}" /></label>
+          <label class="field"><span>Орысша атауы</span><input name="title_ru" value="${esc((lesson && lesson.title_ru) || "")}" /></label>
+        </div>
+        <label class="field"><span>Сабақ сілтемесі</span><input name="video_url" required placeholder="Telegram post немесе video URL" value="${esc((lesson && lesson.video_url) || "")}" /></label>
+        <div class="grid two">
+          <label class="field"><span>Сипаттама KK</span><textarea name="description_kk">${esc((lesson && lesson.description_kk) || "")}</textarea></label>
+          <label class="field"><span>Сипаттама RU</span><textarea name="description_ru">${esc((lesson && lesson.description_ru) || "")}</textarea></label>
+        </div>
+        <div class="grid two">
+          <label class="field"><span>Реті</span><input name="sort_order" type="number" min="1" value="${esc((lesson && lesson.sort_order) || 1)}" /></label>
+          <label class="switch-field"><input name="is_active" type="checkbox" ${!lesson || lesson.is_active ? "checked" : ""} /><span>Белсенді</span></label>
+        </div>
+        <div class="action-row end">
+          <button class="ghost-btn" data-close-modal type="button">Болдырмау</button>
+          <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
+        </div>
+      </form>
+    `);
+    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
+    shell.body.querySelector("form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const btn = event.currentTarget.querySelector("button[type=submit]");
+      const form = new FormData(event.currentTarget);
+      const body = Object.fromEntries(form.entries());
+      body.sort_order = Number(body.sort_order || 1);
+      body.is_active = form.get("is_active") === "on";
+      if (!body.level_id || !body.title_kk.trim() || !body.video_url.trim()) {
+        toast("Деңгей, сабақ атауы және сабақ сілтемесі міндетті", "error");
+        return;
+      }
+      btn.classList.add("is-loading");
+      try {
+        const url = isEdit ? `/api/admin/lessons/${lesson.id}` : "/api/admin/lessons";
+        await api(url, { method: isEdit ? "PATCH" : "POST", body: JSON.stringify(body) });
+        shell.close();
+        toast("Сабақ сақталды", "success");
+        renderAdminLessons();
+      } catch (error) {
+        toast(error.message || "Сақтау мүмкін болмады", "error");
+      } finally {
+        btn.classList.remove("is-loading");
+      }
+    });
+  }
+
+  async function renderAdminTests() {
+    const filters = currentAdminFilters();
+    const params = new URLSearchParams();
+    if (filters.q) params.set("q", filters.q);
+    if (filters.level) params.set("level", filters.level);
+    if (filters.status) params.set("status", filters.status);
+    const [levels, data] = await Promise.all([adminLevels(), api(`/api/admin/tests?${params.toString()}`)]);
+    const tests = data.tests || [];
+    const rows = tests.length
+      ? `<div class="table-wrap"><table>
+        <thead><tr><th>Деңгей</th><th>Тест атауы</th><th>Сұрақ саны</th><th>Өту пайызы</th><th>Статус</th><th>Әрекет</th></tr></thead>
+        <tbody>${tests
+          .map(
+            (test) => `<tr>
+              <td>LEVEL ${esc(test.level_number)}</td>
+              <td><strong>${esc(test.title)}</strong><div class="muted small">${esc(shortId(test.id))}</div></td>
+              <td>${esc((test.questions || []).length)}</td>
+              <td>${esc(test.pass_percent)}%</td>
+              <td>${statusBadge(test.is_active ? "active" : "inactive")}</td>
+              <td><div class="action-row">
+                <button class="ghost-btn" data-edit-test="${esc(test.id)}" type="button">Өзгерту</button>
+                <button class="danger-btn" data-delete-test="${esc(test.id)}" type="button">Өшіру</button>
+              </div></td>
+            </tr>`,
+          )
+          .join("")}</tbody></table></div>`
+      : emptyState("Тесттер әлі қосылған жоқ");
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">Білім тексеру</p><h2>Тесттер</h2></div>
+          <div class="admin-toolbar"><button class="gold-btn" id="addTest" type="button">+ Тест қосу</button></div>
+        </div>
+        <div class="admin-toolbar stacked">
+          <input id="adminSearch" placeholder="Тест іздеу" value="${esc(filters.q)}" />
+          <select id="adminLevelFilter"><option value="">Барлық деңгей</option>${levelNumberOptions(levels, filters.level)}</select>
+          <select id="adminStatusFilter"><option value="">Барлық статус</option><option value="active" ${filters.status === "active" ? "selected" : ""}>Белсенді</option><option value="inactive" ${filters.status === "inactive" ? "selected" : ""}>Жабық</option></select>
+        </div>
+        ${rows}
+      </div>
+    `;
+    on("addTest", () => openTestModal(null, levels));
+    on("adminSearch", debounce(renderAdminTests, 280), "input");
+    on("adminLevelFilter", renderAdminTests, "change");
+    on("adminStatusFilter", renderAdminTests, "change");
+    delegate(els.adminContent, "[data-edit-test]", "click", (event, target) => {
+      const test = tests.find((item) => item.id === target.dataset.editTest);
+      if (test) openTestModal(test, levels);
+    });
+    delegate(els.adminContent, "[data-delete-test]", "click", async (event, target) => {
+      const ok = await modal({
+        title: "Тестті өшіру",
+        body: `<p class="muted">Бұл тестті өшіруге сенімдісіз бе?</p>`,
+        actions: [
+          { label: "Болдырмау", value: false },
+          { label: "Өшіру", value: true, danger: true },
+        ],
+      });
+      if (!ok) return;
+      try {
+        await api(`/api/admin/tests/${target.dataset.deleteTest}`, { method: "DELETE" });
+        toast("Тест өшірілді", "success");
+        renderAdminTests();
+      } catch (error) {
+        toast(error.message || "Өшіру мүмкін болмады", "error");
+      }
+    });
+  }
+
+  function defaultTest(levels) {
+    return {
+      level_id: levels[0] ? levels[0].id : "",
+      title: "Деңгей соңындағы тест",
+      pass_percent: 70,
+      is_active: true,
+      questions: [
+        {
+          question_text_kk: "",
+          question_text_ru: "",
+          options: [
+            { option_text_kk: "", option_text_ru: "", is_correct: true },
+            { option_text_kk: "", option_text_ru: "", is_correct: false },
+          ],
+        },
+      ],
+    };
+  }
+
+  function openTestModal(test, levels) {
+    const model = test ? JSON.parse(JSON.stringify(test)) : defaultTest(levels);
+    if (!model.questions || !model.questions.length) {
+      model.questions = defaultTest(levels).questions;
+      if (!model.title) model.title = "Деңгей соңындағы тест";
+      if (!model.pass_percent) model.pass_percent = 70;
+      if (model.is_active === undefined) model.is_active = true;
+    }
+    if (model.level_id && !levels.some((level) => level.id === model.level_id)) {
+      const byNumber = levels.find((level) => level.number === model.level_number);
+      if (byNumber) model.level_id = byNumber.id;
+    }
+    const isEdit = Boolean(model.id);
+    const shell = openModalShell(isEdit ? "Тестті өзгерту" : "Тест қосу", `
+      <form id="testBuilderForm" class="form">
+        <div class="grid three">
+          <label class="field"><span>Деңгей</span><select name="level_id" required>${levelOptions(levels, model.level_id)}</select></label>
+          <label class="field"><span>Тест атауы</span><input name="title" required value="${esc(model.title || "")}" /></label>
+          <label class="field"><span>Өту пайызы</span><input name="pass_percent" type="number" min="1" max="100" required value="${esc(model.pass_percent || 70)}" /></label>
+        </div>
+        <label class="switch-field"><input name="is_active" type="checkbox" ${model.is_active ? "checked" : ""} /><span>Белсенді</span></label>
+        <div class="builder-head">
+          <h3>Сұрақтар</h3>
+          <button class="ghost-btn" id="addQuestion" type="button">Сұрақ қосу</button>
+        </div>
+        <div id="questionBuilderList" class="builder-list">${(model.questions || []).map(questionBuilderHtml).join("")}</div>
+        <div class="action-row end">
+          <button class="ghost-btn" data-close-modal type="button">Болдырмау</button>
+          <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
+        </div>
+      </form>
+    `);
+    const form = shell.body.querySelector("form");
+    const list = shell.body.querySelector("#questionBuilderList");
+    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
+    shell.body.querySelector("#addQuestion").addEventListener("click", () => {
+      list.insertAdjacentHTML("beforeend", questionBuilderHtml({ question_text_kk: "", question_text_ru: "", options: [{ option_text_kk: "", is_correct: true }, { option_text_kk: "", is_correct: false }] }));
+      renumberBuilder(list);
+    });
+    shell.body.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-builder-action]");
+      if (!btn) return;
+      const action = btn.dataset.builderAction;
+      const question = btn.closest(".builder-question");
+      const option = btn.closest(".builder-option");
+      if (action === "remove-question" && list.children.length > 1) question.remove();
+      if (action === "add-option") question.querySelector(".builder-options").insertAdjacentHTML("beforeend", optionBuilderHtml({ option_text_kk: "", is_correct: false }));
+      if (action === "remove-option" && question.querySelectorAll(".builder-option").length > 2) option.remove();
+      if (action === "up" && question.previousElementSibling) list.insertBefore(question, question.previousElementSibling);
+      if (action === "down" && question.nextElementSibling) list.insertBefore(question.nextElementSibling, question);
+      if (action === "option-up" && option.previousElementSibling) option.parentElement.insertBefore(option, option.previousElementSibling);
+      if (action === "option-down" && option.nextElementSibling) option.parentElement.insertBefore(option.nextElementSibling, option);
+      renumberBuilder(list);
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const btn = form.querySelector("button[type=submit]");
+      const payload = collectTestBuilder(form);
+      const validation = validateTestBuilder(payload);
+      if (validation) {
+        toast(validation, "error");
+        return;
+      }
+      btn.classList.add("is-loading");
+      try {
+        await api(isEdit ? `/api/admin/tests/${model.id}` : "/api/admin/tests", {
+          method: isEdit ? "PATCH" : "POST",
+          body: JSON.stringify(payload),
+        });
+        shell.close();
+        toast("Тест сақталды", "success");
+        renderAdminTests();
+      } catch (error) {
+        toast(error.message || "Сақтау мүмкін болмады", "error");
+      } finally {
+        btn.classList.remove("is-loading");
+      }
+    });
+    renumberBuilder(list);
+  }
+
+  function questionBuilderHtml(question) {
+    return `<section class="builder-question">
+      <div class="builder-question-head">
+        <strong data-question-number>Сұрақ</strong>
+        <div class="action-row">
+          <button class="ghost-btn icon-mini" data-builder-action="up" type="button">↑</button>
+          <button class="ghost-btn icon-mini" data-builder-action="down" type="button">↓</button>
+          <button class="danger-btn icon-mini" data-builder-action="remove-question" type="button">Өшіру</button>
+        </div>
+      </div>
+      <label class="field"><span>Сұрақ мәтіні KK</span><textarea data-question-kk required>${esc(question.question_text_kk || "")}</textarea></label>
+      <label class="field"><span>Сұрақ мәтіні RU</span><textarea data-question-ru>${esc(question.question_text_ru || "")}</textarea></label>
+      <div class="builder-options">${(question.options || []).map(optionBuilderHtml).join("")}</div>
+      <button class="ghost-btn" data-builder-action="add-option" type="button">Жауап қосу</button>
+    </section>`;
+  }
+
+  function optionBuilderHtml(option) {
+    return `<div class="builder-option">
+      <input class="correct-radio" data-correct type="radio" ${option.is_correct ? "checked" : ""} />
+      <label class="field"><span>Жауап KK</span><input data-option-kk required value="${esc(option.option_text_kk || "")}" /></label>
+      <label class="field"><span>Жауап RU</span><input data-option-ru value="${esc(option.option_text_ru || "")}" /></label>
+      <div class="action-row">
+        <button class="ghost-btn icon-mini" data-builder-action="option-up" type="button">↑</button>
+        <button class="ghost-btn icon-mini" data-builder-action="option-down" type="button">↓</button>
+        <button class="danger-btn icon-mini" data-builder-action="remove-option" type="button">Өшіру</button>
+      </div>
+    </div>`;
+  }
+
+  function renumberBuilder(list) {
+    [...list.querySelectorAll(".builder-question")].forEach((question, qi) => {
+      question.querySelector("[data-question-number]").textContent = `Сұрақ ${qi + 1}`;
+      question.querySelectorAll("[data-correct]").forEach((radio, oi) => {
+        radio.name = `correct_${qi}`;
+        radio.value = String(oi);
+      });
+      if (!question.querySelector("[data-correct]:checked")) {
+        const first = question.querySelector("[data-correct]");
+        if (first) first.checked = true;
+      }
+    });
+  }
+
+  function collectTestBuilder(form) {
+    const fd = new FormData(form);
+    return {
+      level_id: fd.get("level_id"),
+      title: String(fd.get("title") || "").trim(),
+      pass_percent: Number(fd.get("pass_percent") || 70),
+      is_active: fd.get("is_active") === "on",
+      questions: [...form.querySelectorAll(".builder-question")].map((question, qi) => ({
+        question_text_kk: question.querySelector("[data-question-kk]").value.trim(),
+        question_text_ru: question.querySelector("[data-question-ru]").value.trim(),
+        sort_order: qi + 1,
+        options: [...question.querySelectorAll(".builder-option")].map((option, oi) => ({
+          option_text_kk: option.querySelector("[data-option-kk]").value.trim(),
+          option_text_ru: option.querySelector("[data-option-ru]").value.trim(),
+          is_correct: Boolean(option.querySelector("[data-correct]").checked),
+          sort_order: oi + 1,
+        })),
+      })),
+    };
+  }
+
+  function validateTestBuilder(test) {
+    if (!test.level_id || !test.title) return "Деңгей және тест атауы міндетті";
+    if (test.pass_percent < 1 || test.pass_percent > 100) return "Өту пайызы 1–100 аралығында болуы керек";
+    if (!test.questions.length) return "Кемінде 1 сұрақ қосыңыз";
+    for (const question of test.questions) {
+      if (!question.question_text_kk) return "Сұрақ мәтіні бос болмауы керек";
+      if (question.options.length < 2) return "Әр сұрақта кемінде 2 жауап болуы керек";
+      if (question.options.some((option) => !option.option_text_kk)) return "Жауап мәтіні бос болмауы керек";
+      if (question.options.filter((option) => option.is_correct).length !== 1) return "Әр сұрақта дәл 1 дұрыс жауап белгіленуі керек";
+    }
+    return "";
   }
 
   async function renderAdminPayments() {
     const data = await api("/api/admin/payments");
     const rows = data.payments || [];
-    document.getElementById("adminContent").innerHTML = `${table(["id", "user_id", "tariff_code", "amount_kzt", "provider", "status", "receipt_file_path"], rows)}<div class="card"><h2>Manual verification</h2><form id="paymentAction" class="form"><label class="field"><span>Payment ID</span><input name="id" required /></label><label class="field"><span>Comment</span><input name="comment" /></label><div class="action-row"><button class="gold-btn" name="action" value="approve" type="submit">Approve</button><button class="danger-btn" name="action" value="reject" type="submit">Reject</button></div></form></div>`;
+    const paymentRows = rows.length
+      ? `<div class="table-wrap"><table>
+          <thead><tr><th>ID</th><th>Қолданушы</th><th>Тариф</th><th>Сома</th><th>Статус</th><th>Чек валидациясы</th><th>Чек</th></tr></thead>
+          <tbody>${rows
+            .map((payment) => {
+              const receipt = payment.receipt || {};
+              return `<tr>
+                <td>${esc(shortId(payment.id))}</td>
+                <td>${esc(payment.user ? `${payment.user.first_name || ""} @${payment.user.username || ""}` : shortId(payment.user_id))}</td>
+                <td>${esc(payment.tariff_code)}</td>
+                <td>${money(payment.amount_kzt)} ₸</td>
+                <td>${statusBadge(payment.status)}</td>
+                <td>${receipt.validation_status ? receiptValidationSummary(receipt, payment) : "—"}</td>
+                <td>${receipt.file_path ? `<a class="link" href="${esc(receipt.file_path)}" target="_blank" rel="noopener">Ашу</a>` : "—"}</td>
+              </tr>`;
+            })
+            .join("")}</tbody>
+        </table></div>`
+      : emptyState("Мәлімет табылмады");
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">Төлемдер</p><h2>Төлемдер</h2></div>
+        </div>
+        ${paymentRows}
+      </div>
+      <div class="card">
+        <div class="section-head"><h2>Қолмен тексеру</h2></div>
+        <form id="paymentAction" class="form">
+          <div class="grid two">
+            <label class="field"><span>Төлем ID</span><input name="id" required placeholder="UUID" /></label>
+            <label class="field"><span>Пікір / override</span><input name="comment" placeholder="Қабылдамау себебі немесе override түсіндірмесі" /></label>
+          </div>
+          <div class="action-row">
+            <button class="gold-btn" name="action" value="approve" type="submit">Қабылдау</button>
+            <button class="danger-btn" name="action" value="reject" type="submit">Қабылдамау</button>
+          </div>
+        </form>
+      </div>
+    `;
     document.getElementById("paymentAction").addEventListener("submit", async (event) => {
       event.preventDefault();
       const submitter = event.submitter;
       const form = new FormData(event.currentTarget);
       const id = form.get("id");
-      if (submitter.value === "approve") await api(`/api/admin/payments/${id}/approve`, { method: "POST", body: JSON.stringify({ days: 30 }) });
-      else await api(`/api/admin/payments/${id}/reject`, { method: "POST", body: JSON.stringify({ comment: form.get("comment") }) });
-      renderAdminPayments();
+      try {
+        if (submitter.value === "approve") {
+          await api(`/api/admin/payments/${id}/approve`, {
+            method: "POST",
+            body: JSON.stringify({ days: 30, override_comment: form.get("comment") }),
+          });
+          toast("Қабылданды", "success");
+        } else {
+          await api(`/api/admin/payments/${id}/reject`, {
+            method: "POST",
+            body: JSON.stringify({ comment: form.get("comment") }),
+          });
+          toast("Қабылданбады", "success");
+        }
+        renderAdminPayments();
+      } catch (error) {
+        toast(error.message || "Action failed", "error");
+      }
     });
+  }
+
+  function receiptValidationSummary(receipt, payment) {
+    const errors = receipt.validation_errors || [];
+    return `<div class="receipt-validation">
+      ${statusBadge(receipt.validation_status)}
+      <span>Төлем сомасы: ${money(payment.amount_kzt)} ₸</span>
+      <span>Чектегі сома: ${receipt.parsed_amount_kzt ? `${money(receipt.parsed_amount_kzt)} ₸` : "—"}</span>
+      <span>Провайдер: ${esc(receipt.provider || "unknown")}</span>
+      <span>QR: ${receipt.qr_found ? "QR табылды" : "QR табылмады"}</span>
+      <span>Қайталану: ${receipt.duplicate_of_receipt_id ? "Күдікті/қайталанған" : "Бірегей"}</span>
+      ${errors.length ? `<small>${esc(errors.join(", "))}</small>` : ""}
+    </div>`;
   }
 
   async function renderAdminChannels() {
-    const data = await api("/api/admin/channels");
-    document.getElementById("adminContent").innerHTML = `${table(["id", "title", "telegram_chat_id", "tariff_requirement", "level_requirement", "is_active"], data.channels || [])}<div class="card"><h2>Add channel</h2><form id="channelForm" class="form"><label class="field"><span>Title</span><input name="title" required /></label><label class="field"><span>Telegram chat ID</span><input name="telegram_chat_id" required /></label><label class="field"><span>Manual invite link</span><input name="manual_invite_link" /></label><label class="field"><span>Tariff</span><select name="tariff_requirement"><option>BASIC</option><option>STANDARD</option><option>VIP</option></select></label><label class="field"><span>Level</span><input name="level_requirement" type="number" value="1" min="1" max="12" /></label><button class="gold-btn" type="submit">Save</button></form></div>`;
+    const [levels, data] = await Promise.all([adminLevels(), api("/api/admin/channels")]);
+    const rows = data.channels || [];
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">Каналдар</p><h2>Жабық каналдар</h2></div>
+        </div>
+        ${tableHtml(["id", "title", "telegram_chat_id", "tariff_requirement", "level_requirement", "is_active"], rows)}
+      </div>
+      <div class="card">
+        <div class="section-head"><h2>Канал қосу</h2></div>
+        <form id="channelForm" class="form">
+          <div class="grid two">
+            <label class="field"><span>Атауы</span><input name="title" required /></label>
+            <label class="field"><span>Telegram chat ID</span><input name="telegram_chat_id" required /></label>
+          </div>
+          <label class="field"><span>Қолмен invite link</span><input name="manual_invite_link" placeholder="міндетті емес" /></label>
+          <div class="grid two">
+            <label class="field"><span>Тариф талабы</span><select name="tariff_requirement"><option>BASIC</option><option>STANDARD</option><option>VIP</option></select></label>
+            <label class="field"><span>Деңгей талабы</span><select name="level_requirement">${levelNumberOptions(levels, 1)}</select></label>
+          </div>
+          <button class="gold-btn" type="submit">Сақтау</button>
+        </form>
+      </div>
+    `;
     document.getElementById("channelForm").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const body = Object.fromEntries(new FormData(event.currentTarget).entries());
-      body.level_requirement = Number(body.level_requirement || 1);
-      body.invite_link_type = body.manual_invite_link ? "manual" : "bot";
-      body.is_active = true;
-      await api("/api/admin/channels", { method: "POST", body: JSON.stringify(body) });
-      renderAdminChannels();
+      try {
+        const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+        body.level_requirement = Number(body.level_requirement || 1);
+        body.invite_link_type = body.manual_invite_link ? "manual" : "bot";
+        body.is_active = true;
+        await api("/api/admin/channels", { method: "POST", body: JSON.stringify(body) });
+        toast("Канал сақталды", "success");
+        renderAdminChannels();
+      } catch (error) {
+        toast(error.message || "Save failed", "error");
+      }
     });
   }
 
-  function renderAdminBroadcast() {
-    document.getElementById("adminContent").innerHTML = `<div class="card"><h2>Broadcast</h2><form id="broadcastForm" class="form"><label class="field"><span>Title</span><input name="title" /></label><label class="field"><span>Message</span><textarea name="body" required></textarea></label><button class="gold-btn" type="submit">Queue broadcast</button></form></div>`;
+  async function renderAdminBroadcast() {
+    const data = await api("/api/admin/broadcasts").catch(() => ({ broadcasts: [] }));
+    const broadcasts = data.broadcasts || [];
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="section-head">
+          <div><p class="eyebrow">Хабарлама</p><h2>Хабарлама жіберу</h2></div>
+        </div>
+        <form id="broadcastForm" class="form">
+          <label class="field"><span>Тақырып</span><input name="title" placeholder="Қосымша" /></label>
+          <label class="field"><span>Хабарлама мәтіні</span><textarea name="body" required></textarea></label>
+          <label class="field"><span>Кімге жіберіледі</span><select name="target"><option value="all">Барлық қолданушылар</option><option value="active">Белсенді қолданушылар</option><option value="inactive">Белсенді емес қолданушылар</option></select></label>
+          <button class="gold-btn" type="submit">Жіберу</button>
+        </form>
+      </div>
+      <div class="card">
+        <div class="section-head"><h2>Хабарлама тарихы</h2></div>
+        ${
+          broadcasts.length
+            ? `<div class="table-wrap"><table><thead><tr><th>ID</th><th>Статус</th><th>Кімге</th><th>Жіберілді</th><th>Қате</th><th>Құрылған уақыты</th></tr></thead><tbody>${broadcasts
+                .map(
+                  (item) => `<tr><td>${esc(shortId(item.id))}</td><td>${statusBadge(item.status)}</td><td>${esc(targetLabel(item.target))}</td><td>${esc(item.sent_count || 0)}</td><td>${esc(item.failed_count || 0)}</td><td>${formatDateTime(item.created_at)}</td></tr>`,
+                )
+                .join("")}</tbody></table></div>`
+            : emptyState("Мәлімет табылмады")
+        }
+      </div>
+    `;
     document.getElementById("broadcastForm").addEventListener("submit", async (event) => {
       event.preventDefault();
-      const body = Object.fromEntries(new FormData(event.currentTarget).entries());
-      await api("/api/admin/broadcast", { method: "POST", body: JSON.stringify(body) });
-      alert("Broadcast queued");
+      try {
+        const body = Object.fromEntries(new FormData(event.currentTarget).entries());
+        await api("/api/admin/broadcast", { method: "POST", body: JSON.stringify(body) });
+        toast("Хабарлама кезекке қосылды", "success");
+        renderAdminBroadcast();
+      } catch (error) {
+        toast(error.message || "Broadcast failed", "error");
+      }
     });
+  }
+
+  function targetLabel(target) {
+    return target === "active" ? "Белсенді қолданушылар" : target === "inactive" ? "Белсенді емес қолданушылар" : "Барлық қолданушылар";
   }
 
   async function renderAdminSettings() {
     const data = await api("/api/admin/settings");
-    document.getElementById("adminContent").innerHTML = `<div class="card"><h2>Settings</h2><pre>${esc(JSON.stringify(data.settings, null, 2))}</pre></div>`;
+    els.adminContent.innerHTML = `
+      <div class="card">
+        <div class="section-head"><h2>Баптаулар</h2></div>
+        <pre style="overflow:auto;background:rgba(8,6,4,0.6);padding:14px;border-radius:12px;border:1px solid var(--border-soft);font-size:12px;color:var(--text-soft)">${esc(JSON.stringify(data.settings, null, 2))}</pre>
+      </div>
+    `;
   }
 
-  function table(columns, rows) {
-    if (!rows.length) return empty("No data yet");
-    return `<div class="table-wrap"><table><thead><tr>${columns.map((col) => `<th>${esc(col)}</th>`).join("")}</tr></thead><tbody>${rows
-      .map((row) => `<tr>${columns.map((col) => `<td>${esc(formatCell(row[col]))}</td>`).join("")}</tr>`)
-      .join("")}</tbody></table></div>`;
+  /* ===========================================================
+     ADMIN TABLE HELPER
+     =========================================================== */
+
+  function tableHtml(columns, rows) {
+    if (!rows || !rows.length) {
+      return emptyState("Мәлімет табылмады", "Ø");
+    }
+    return `<div class="table-wrap"><table>
+      <thead><tr>${columns.map((c) => `<th>${esc(adminLabel(c))}</th>`).join("")}</tr></thead>
+      <tbody>${rows
+        .map(
+          (row) =>
+            `<tr>${columns.map((c) => `<td>${esc(formatCell(row[c]))}</td>`).join("")}</tr>`,
+        )
+        .join("")}</tbody>
+    </table></div>`;
   }
 
   function formatCell(value) {
-    if (value === null || value === undefined) return "";
+    if (value === null || value === undefined || value === "") return "—";
+    if (typeof value === "boolean") return value ? "Белсенді" : "Жабық";
     if (typeof value === "object") return JSON.stringify(value);
+    if (typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value)) return shortId(value);
+    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) return formatDateTime(value);
     return String(value);
+  }
+
+  function htmlToNode(markup) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = markup;
+    return tmp.firstElementChild;
+  }
+
+  function debounce(fn, wait) {
+    let t;
+    return function (...args) {
+      clearTimeout(t);
+      t = setTimeout(() => fn.apply(this, args), wait);
+    };
+  }
+
+  /* ===========================================================
+     KICKOFF
+     =========================================================== */
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot, { once: true });
+  } else {
+    boot();
   }
 })();

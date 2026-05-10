@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
-func (s *Store) CreatePayment(ctx context.Context, userID int64, tariffCode, provider string, ttl time.Duration) (Payment, error) {
+func (s *Store) CreatePayment(ctx context.Context, userID string, tariffCode, provider string, ttl time.Duration) (Payment, error) {
 	tariff, err := s.GetTariffByCode(ctx, tariffCode)
 	if err != nil {
 		return Payment{}, err
@@ -16,22 +17,19 @@ func (s *Store) CreatePayment(ctx context.Context, userID int64, tariffCode, pro
 		return Payment{}, ErrInvalidState
 	}
 	provider = normalizeProvider(provider)
+	paymentID := newID()
 	expiresAt := nowUTC().Add(ttl)
-	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO payments(user_id, tariff_id, amount_kzt, provider, status, expires_at)
-		VALUES (?, ?, ?, ?, 'pending', ?);
-	`, userID, tariff.ID, tariff.PriceKZT, provider, expiresAt)
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO payments(id, user_id, tariff_id, amount_kzt, provider, status, expires_at)
+		VALUES (?, ?, ?, ?, ?, 'pending', ?);
+	`, paymentID, userID, tariff.ID, tariff.PriceKZT, provider, expiresAt)
 	if err != nil {
 		return Payment{}, err
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return Payment{}, err
-	}
-	return s.GetPayment(ctx, id)
+	return s.GetPayment(ctx, paymentID)
 }
 
-func (s *Store) LatestPendingPayment(ctx context.Context, userID int64) (Payment, error) {
+func (s *Store) LatestPendingPayment(ctx context.Context, userID string) (Payment, error) {
 	payment, err := scanPaymentRow(s.db.QueryRowContext(ctx, paymentSelectSQL+`
 		WHERE p.user_id = ? AND p.status IN ('pending','uploaded_receipt') AND (p.expires_at IS NULL OR p.expires_at > CURRENT_TIMESTAMP)
 		ORDER BY p.created_at DESC
@@ -40,46 +38,20 @@ func (s *Store) LatestPendingPayment(ctx context.Context, userID int64) (Payment
 	return payment, rowErr(err)
 }
 
-func (s *Store) GetPayment(ctx context.Context, paymentID int64) (Payment, error) {
+func (s *Store) GetPayment(ctx context.Context, paymentID string) (Payment, error) {
 	payment, err := scanPaymentRow(s.db.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, paymentID))
 	return payment, rowErr(err)
 }
 
-func (s *Store) AttachReceipt(ctx context.Context, userID int64, filePath, fileName, mimeType string, fileSize int64) (Payment, error) {
-	var payment Payment
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		found, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+`
-			WHERE p.user_id = ? AND p.status = 'pending' AND (p.expires_at IS NULL OR p.expires_at > CURRENT_TIMESTAMP)
-			ORDER BY p.created_at DESC
-			LIMIT 1;
-		`, userID))
-		if err != nil {
-			return rowErr(err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO payment_receipts(payment_id, user_id, file_path, file_name, mime_type, file_size)
-			VALUES (?, ?, ?, ?, ?, ?);
-		`, found.ID, userID, filePath, fileName, mimeType, fileSize); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE payments
-			SET status = 'uploaded_receipt', receipt_file_path = ?, updated_at = CURRENT_TIMESTAMP
-			WHERE id = ?;
-		`, filePath, found.ID); err != nil {
-			return err
-		}
-		updated, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, found.ID))
-		if err != nil {
-			return err
-		}
-		payment = updated
-		return nil
-	})
-	return payment, err
+func (s *Store) ApprovePayment(ctx context.Context, paymentID string, adminID int64, subscriptionDays int) (Payment, error) {
+	return s.approvePayment(ctx, paymentID, AdminActor{ID: adminID, Role: RoleSuperAdmin}, subscriptionDays, "")
 }
 
-func (s *Store) ApprovePayment(ctx context.Context, paymentID int64, adminID int64, subscriptionDays int) (Payment, error) {
+func (s *Store) ApprovePaymentReviewed(ctx context.Context, paymentID string, actor AdminActor, subscriptionDays int, overrideComment string) (Payment, error) {
+	return s.approvePayment(ctx, paymentID, actor, subscriptionDays, overrideComment)
+}
+
+func (s *Store) approvePayment(ctx context.Context, paymentID string, actor AdminActor, subscriptionDays int, overrideComment string) (Payment, error) {
 	if subscriptionDays <= 0 {
 		subscriptionDays = 30
 	}
@@ -96,10 +68,31 @@ func (s *Store) ApprovePayment(ctx context.Context, paymentID int64, adminID int
 		if found.Status != PaymentStatusPending && found.Status != PaymentStatusUploadedReceipt {
 			return ErrInvalidState
 		}
+		receipt, err := latestReceiptForPaymentTx(ctx, tx, found.ID)
+		if err != nil {
+			return err
+		}
+		if receipt != nil {
+			comment := strings.TrimSpace(overrideComment)
+			switch receipt.ValidationStatus {
+			case ReceiptStatusDuplicate:
+				if actor.Role != RoleSuperAdmin || comment == "" {
+					return ErrInvalidState
+				}
+			case ReceiptStatusSuspicious:
+				if actor.Role != RoleSuperAdmin || comment == "" {
+					return ErrInvalidState
+				}
+			case ReceiptStatusParseFailed, ReceiptStatusParsePartial:
+				if comment == "" {
+					return ErrInvalidState
+				}
+			}
+		}
 		now := nowUTC()
 		startsAt := now
 		expiresAt := now.AddDate(0, 0, subscriptionDays)
-		var activeID sql.NullInt64
+		var activeID sql.NullString
 		var activeExpires sql.NullTime
 		if err := tx.QueryRowContext(ctx, `
 			SELECT id, expires_at
@@ -110,9 +103,9 @@ func (s *Store) ApprovePayment(ctx context.Context, paymentID int64, adminID int
 		`, found.UserID).Scan(&activeID, &activeExpires); err != nil && err != sql.ErrNoRows {
 			return err
 		}
-		var subscriptionID int64
+		var subscriptionID string
 		if activeID.Valid {
-			subscriptionID = activeID.Int64
+			subscriptionID = activeID.String
 			startsAt = activeExpires.Time
 			expiresAt = activeExpires.Time.AddDate(0, 0, subscriptionDays)
 			if _, err := tx.ExecContext(ctx, `
@@ -123,14 +116,11 @@ func (s *Store) ApprovePayment(ctx context.Context, paymentID int64, adminID int
 				return err
 			}
 		} else {
-			res, err := tx.ExecContext(ctx, `
-				INSERT INTO subscriptions(user_id, tariff_id, status, started_at, expires_at)
-				VALUES (?, ?, 'active', ?, ?);
-			`, found.UserID, found.TariffID, startsAt, expiresAt)
-			if err != nil {
-				return err
-			}
-			subscriptionID, err = res.LastInsertId()
+			subscriptionID = newID()
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO subscriptions(id, user_id, tariff_id, status, started_at, expires_at)
+				VALUES (?, ?, ?, 'active', ?, ?);
+			`, subscriptionID, found.UserID, found.TariffID, startsAt, expiresAt)
 			if err != nil {
 				return err
 			}
@@ -139,7 +129,7 @@ func (s *Store) ApprovePayment(ctx context.Context, paymentID int64, adminID int
 			UPDATE payments
 			SET status = 'approved', subscription_id = ?, approved_by_admin_id = ?, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?;
-		`, subscriptionID, adminID, found.ID); err != nil {
+		`, subscriptionID, actor.ID, found.ID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -153,6 +143,15 @@ func (s *Store) ApprovePayment(ctx context.Context, paymentID int64, adminID int
 		if err := s.applyReferralPaymentRewardsTx(ctx, tx, found.UserID); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE payment_receipts
+			SET validation_status = 'approved'
+			WHERE payment_id = ? AND id = (
+				SELECT id FROM payment_receipts WHERE payment_id = ? ORDER BY created_at DESC LIMIT 1
+			);
+		`, found.ID, found.ID); err != nil {
+			return err
+		}
 		updated, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, found.ID))
 		if err != nil {
 			return err
@@ -163,7 +162,7 @@ func (s *Store) ApprovePayment(ctx context.Context, paymentID int64, adminID int
 	return payment, err
 }
 
-func (s *Store) RejectPayment(ctx context.Context, paymentID int64, adminID int64, comment string) (Payment, error) {
+func (s *Store) RejectPayment(ctx context.Context, paymentID string, adminID int64, comment string) (Payment, error) {
 	var payment Payment
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		found, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, paymentID))
@@ -180,6 +179,15 @@ func (s *Store) RejectPayment(ctx context.Context, paymentID int64, adminID int6
 		`, comment, adminID, paymentID); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE payment_receipts
+			SET validation_status = 'rejected'
+			WHERE payment_id = ? AND id = (
+				SELECT id FROM payment_receipts WHERE payment_id = ? ORDER BY created_at DESC LIMIT 1
+			);
+		`, paymentID, paymentID); err != nil {
+			return err
+		}
 		updated, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, paymentID))
 		if err != nil {
 			return err
@@ -188,6 +196,18 @@ func (s *Store) RejectPayment(ctx context.Context, paymentID int64, adminID int6
 		return nil
 	})
 	return payment, err
+}
+
+func latestReceiptForPaymentTx(ctx context.Context, tx *sql.Tx, paymentID string) (*Receipt, error) {
+	receipt, err := scanReceiptRow(tx.QueryRowContext(ctx, receiptSelectSQL+`
+		WHERE r.payment_id = ?
+		ORDER BY r.created_at DESC
+		LIMIT 1;
+	`, paymentID))
+	if err == ErrNotFound {
+		return nil, nil
+	}
+	return &receipt, err
 }
 
 func (s *Store) ExpirePendingPayments(ctx context.Context) (int64, error) {
@@ -214,8 +234,8 @@ func (s *Store) ExpireSubscriptions(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
-func (s *Store) applyReferralPaymentRewardsTx(ctx context.Context, tx *sql.Tx, invitedUserID int64) error {
-	var referralID, inviterID int64
+func (s *Store) applyReferralPaymentRewardsTx(ctx context.Context, tx *sql.Tx, invitedUserID string) error {
+	var referralID, inviterID string
 	err := tx.QueryRowContext(ctx, `
 		SELECT id, inviter_user_id
 		FROM referrals
@@ -276,8 +296,8 @@ func (s *Store) applyReferralPaymentRewardsTx(ctx context.Context, tx *sql.Tx, i
 	return nil
 }
 
-func (s *Store) extendSubscriptionTx(ctx context.Context, tx *sql.Tx, userID int64, days int, fallbackTariffCode string) error {
-	var subID sql.NullInt64
+func (s *Store) extendSubscriptionTx(ctx context.Context, tx *sql.Tx, userID string, days int, fallbackTariffCode string) error {
+	var subID sql.NullString
 	var expires sql.NullTime
 	err := tx.QueryRowContext(ctx, `
 		SELECT id, expires_at
@@ -290,18 +310,18 @@ func (s *Store) extendSubscriptionTx(ctx context.Context, tx *sql.Tx, userID int
 		return err
 	}
 	if subID.Valid {
-		_, err := tx.ExecContext(ctx, `UPDATE subscriptions SET expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, expires.Time.AddDate(0, 0, days), subID.Int64)
+		_, err := tx.ExecContext(ctx, `UPDATE subscriptions SET expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, expires.Time.AddDate(0, 0, days), subID.String)
 		return err
 	}
-	var tariffID int64
+	var tariffID string
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM tariffs WHERE code = ?`, fallbackTariffCode).Scan(&tariffID); err != nil {
 		return err
 	}
 	now := nowUTC()
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO subscriptions(user_id, tariff_id, status, started_at, expires_at)
-		VALUES (?, ?, 'active', ?, ?);
-	`, userID, tariffID, now, now.AddDate(0, 0, days))
+		INSERT INTO subscriptions(id, user_id, tariff_id, status, started_at, expires_at)
+		VALUES (?, ?, ?, 'active', ?, ?);
+	`, newID(), userID, tariffID, now, now.AddDate(0, 0, days))
 	return err
 }
 
@@ -314,19 +334,20 @@ const paymentSelectSQL = `
 
 func scanPaymentRow(row interface{ Scan(dest ...any) error }) (Payment, error) {
 	var payment Payment
-	var subscriptionID, approvedBy sql.NullInt64
+	var subscriptionID sql.NullString
+	var approvedBy sql.NullInt64
 	var approvedAt, expiresAt sql.NullTime
 	if err := row.Scan(&payment.ID, &payment.UserID, &payment.TariffID, &payment.TariffCode, &subscriptionID, &payment.AmountKZT, &payment.Provider, &payment.Status, &payment.ReceiptFilePath, &payment.AdminComment, &approvedBy, &approvedAt, &expiresAt, &payment.CreatedAt, &payment.UpdatedAt); err != nil {
 		return Payment{}, rowErr(err)
 	}
-	payment.SubscriptionID = scanInt64(subscriptionID)
+	payment.SubscriptionID = scanStringPtr(subscriptionID)
 	payment.ApprovedByAdminID = scanInt64(approvedBy)
 	payment.ApprovedAt = scanTime(approvedAt)
 	payment.ExpiresAt = scanTime(expiresAt)
 	return payment, nil
 }
 
-func (s *Store) ManualAddSubscriptionDays(ctx context.Context, userID int64, days int, tariffCode string) error {
+func (s *Store) ManualAddSubscriptionDays(ctx context.Context, userID string, days int, tariffCode string) error {
 	if days <= 0 {
 		return ErrInvalidState
 	}
@@ -335,7 +356,7 @@ func (s *Store) ManualAddSubscriptionDays(ctx context.Context, userID int64, day
 	})
 }
 
-func (s *Store) ManualAdjustCoins(ctx context.Context, userID int64, amount int, reason string, adminID int64) error {
+func (s *Store) ManualAdjustCoins(ctx context.Context, userID string, amount int, reason string, adminID int64) error {
 	_, err := s.AddCoins(ctx, userID, amount, reason, "admin", fmt.Sprintf("%d:%d", adminID, time.Now().UnixNano()))
 	return err
 }

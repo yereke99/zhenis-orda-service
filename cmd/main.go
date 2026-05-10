@@ -42,6 +42,12 @@ func main() {
 	if err := database.Migrate(ctx, db); err != nil {
 		log.Fatal("database migrate failed", zap.Error(err))
 	}
+	if err := os.MkdirAll(cfg.PaymentDir, 0o755); err != nil {
+		log.Fatal("payment directory create failed", zap.String("dir", cfg.PaymentDir), zap.Error(err))
+	}
+	if err := os.MkdirAll(cfg.UploadDir, 0o755); err != nil {
+		log.Fatal("upload directory create failed", zap.String("dir", cfg.UploadDir), zap.Error(err))
+	}
 
 	store := repository.New(db)
 	kv := buildKV(ctx, cfg, log)
@@ -49,7 +55,7 @@ func main() {
 	srv := handler.NewServer(cfg, store, kv, log)
 	var bot *handler.TelegramBot
 	if !cfg.DisableTelegramBot {
-		bot = handler.NewTelegramBot(cfg.Token, store, kv, cfg.UploadDir, cfg.MiniAppURL, cfg.AdminIDs, cfg.MaxReceiptBytes, log)
+		bot = handler.NewTelegramBot(cfg.Token, store, kv, cfg.PaymentDir, cfg.MiniAppURL, cfg.AdminIDs, cfg.MaxReceiptBytes, log)
 		srv.SetBot(bot)
 		bot.StartLongPolling(ctx)
 	}

@@ -12,9 +12,50 @@ import (
 
 func (s *Server) StartSchedulers(ctx context.Context) {
 	go s.every(ctx, time.Minute, s.runMinuteJobs)
+	go s.every(ctx, 5*time.Second, s.runBroadcastJob)
 	go s.every(ctx, 10*time.Minute, s.runInactiveReminderJob)
 	go s.every(ctx, 24*time.Hour, s.runDailyJobs)
 	go s.every(ctx, time.Minute, s.runLiveStreamReminderJob)
+}
+
+func (s *Server) runBroadcastJob(ctx context.Context) {
+	if s.bot == nil {
+		return
+	}
+	broadcast, err := s.store.ClaimQueuedBroadcast(ctx)
+	if err != nil {
+		s.logger.Warn("claim broadcast failed", zap.Error(err))
+		return
+	}
+	if broadcast == nil {
+		return
+	}
+	recipients, err := s.store.BroadcastRecipients(ctx, broadcast.Target)
+	if err != nil {
+		s.logger.Warn("broadcast recipients query failed", zap.String("broadcast_id", broadcast.ID), zap.Error(err))
+		_ = s.store.FinishBroadcast(ctx, broadcast.ID, true)
+		return
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	failed := false
+	for _, recipient := range recipients {
+		select {
+		case <-ctx.Done():
+			_ = s.store.FinishBroadcast(context.Background(), broadcast.ID, true)
+			return
+		case <-ticker.C:
+		}
+		if err := s.bot.SendMessage(ctx, recipient.TelegramID, broadcast.Body); err != nil {
+			failed = true
+			_ = s.store.RecordBroadcastMessage(ctx, broadcast.ID, recipient, "failed", err.Error())
+			continue
+		}
+		_ = s.store.RecordBroadcastMessage(ctx, broadcast.ID, recipient, "sent", "")
+	}
+	if err := s.store.FinishBroadcast(ctx, broadcast.ID, failed); err != nil {
+		s.logger.Warn("broadcast finish failed", zap.String("broadcast_id", broadcast.ID), zap.Error(err))
+	}
 }
 
 func (s *Server) every(ctx context.Context, interval time.Duration, fn func(context.Context)) {
@@ -54,7 +95,7 @@ func (s *Server) runInactiveReminderJob(ctx context.Context) {
 		return
 	}
 	for _, user := range users {
-		key := fmt.Sprintf("reminder:inactive3:%d", user.ID)
+		key := fmt.Sprintf("reminder:inactive3:%s", user.ID)
 		ok, err := s.kv.SetNX(ctx, key, "1", s.cfg.InactiveReminderCooldown)
 		if err != nil || !ok {
 			continue
@@ -75,7 +116,7 @@ func (s *Server) runDailyJobs(ctx context.Context) {
 		return
 	}
 	for _, sub := range subs {
-		key := fmt.Sprintf("reminder:sub3:%d:%s", sub.ID, sub.ExpiresAt.Format("2006-01-02"))
+		key := fmt.Sprintf("reminder:sub3:%s:%s", sub.ID, sub.ExpiresAt.Format("2006-01-02"))
 		ok, err := s.kv.SetNX(ctx, key, "1", 7*24*time.Hour)
 		if err != nil || !ok {
 			continue
@@ -91,7 +132,7 @@ func (s *Server) runLiveStreamReminderJob(ctx context.Context) {
 	if s.bot == nil {
 		return
 	}
-	streams, err := s.store.ListStreams(ctx, 0, true)
+	streams, err := s.store.ListStreams(ctx, "", true)
 	if err != nil {
 		return
 	}
@@ -111,7 +152,7 @@ func (s *Server) runLiveStreamReminderJob(ctx context.Context) {
 		until := time.Until(stream.StartsAt)
 		for _, window := range windows {
 			if until <= window.dur && until > window.dur-time.Minute {
-				key := fmt.Sprintf("reminder:stream:%d:%s", stream.ID, window.key)
+				key := fmt.Sprintf("reminder:stream:%s:%s", stream.ID, window.key)
 				ok, err := s.kv.SetNX(ctx, key, "1", 48*time.Hour)
 				if err != nil || !ok {
 					continue
@@ -125,7 +166,7 @@ func (s *Server) runLiveStreamReminderJob(ctx context.Context) {
 					text := fmt.Sprintf("ZHABYQ RAZBOR NIGHT: %s\n%s қалды.\nЭфирді өткізіп алмаңыз.", stream.Title, window.key)
 					_ = s.bot.SendMessage(ctx, user.TelegramID, text)
 				}
-				s.logger.Info("live stream reminders sent", zap.Int64("stream_id", stream.ID), zap.String("window", window.key), zap.Int("users", len(users)), zap.Time("now", now))
+				s.logger.Info("live stream reminders sent", zap.String("stream_id", stream.ID), zap.String("window", window.key), zap.Int("users", len(users)), zap.Time("now", now))
 			}
 		}
 	}

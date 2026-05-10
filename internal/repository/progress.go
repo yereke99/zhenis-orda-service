@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 )
 
-func (s *Store) CanAccessLevel(ctx context.Context, userID int64, levelNumber int) (bool, error) {
+func (s *Store) CanAccessLevel(ctx context.Context, userID string, levelNumber int) (bool, error) {
 	user, err := s.GetUserByID(ctx, userID)
 	if err != nil {
 		return false, err
@@ -25,11 +24,11 @@ func (s *Store) CanAccessLevel(ctx context.Context, userID int64, levelNumber in
 	return user.CurrentLevel >= levelNumber, nil
 }
 
-func (s *Store) CanUnlockNextLevel(ctx context.Context, userID int64, currentLevel int) (bool, error) {
+func (s *Store) CanUnlockNextLevel(ctx context.Context, userID string, currentLevel int) (bool, error) {
 	return s.canUnlockNextLevel(ctx, s.db, userID, currentLevel)
 }
 
-func (s *Store) canUnlockNextLevel(ctx context.Context, q queryer, userID int64, currentLevel int) (bool, error) {
+func (s *Store) canUnlockNextLevel(ctx context.Context, q queryer, userID string, currentLevel int) (bool, error) {
 	if currentLevel < 1 || currentLevel >= 12 {
 		return false, nil
 	}
@@ -57,7 +56,7 @@ func (s *Store) canUnlockNextLevel(ctx context.Context, q queryer, userID int64,
 	return passed, nil
 }
 
-func (s *Store) RecalculateUserProgress(ctx context.Context, userID int64) (Progress, error) {
+func (s *Store) RecalculateUserProgress(ctx context.Context, userID string) (Progress, error) {
 	var progress Progress
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		var currentLevel int
@@ -91,7 +90,7 @@ func (s *Store) RecalculateUserProgress(ctx context.Context, userID int64) (Prog
 	return progress, err
 }
 
-func (s *Store) CurrentProgress(ctx context.Context, userID int64) (Progress, error) {
+func (s *Store) CurrentProgress(ctx context.Context, userID string) (Progress, error) {
 	user, err := s.GetUserByID(ctx, userID)
 	if err != nil {
 		return Progress{}, err
@@ -102,7 +101,7 @@ func (s *Store) CurrentProgress(ctx context.Context, userID int64) (Progress, er
 	return s.progressForLevel(ctx, s.db, userID, user.CurrentLevel)
 }
 
-func (s *Store) progressForLevel(ctx context.Context, q queryer, userID int64, levelNumber int) (Progress, error) {
+func (s *Store) progressForLevel(ctx context.Context, q queryer, userID string, levelNumber int) (Progress, error) {
 	var progress Progress
 	progress.LevelNumber = levelNumber
 	active, err := hasActiveSubscription(ctx, q, userID)
@@ -167,7 +166,7 @@ func (s *Store) progressForLevel(ctx context.Context, q queryer, userID int64, l
 	return progress, nil
 }
 
-func (s *Store) ListLevels(ctx context.Context, userID int64) ([]Level, error) {
+func (s *Store) ListLevels(ctx context.Context, userID string) ([]Level, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, number, title_kk, title_ru, COALESCE(description_kk, ''), COALESCE(description_ru, ''), sort_order, is_active
 		FROM levels
@@ -202,7 +201,7 @@ func (s *Store) ListLevels(ctx context.Context, userID int64) ([]Level, error) {
 	return levels, nil
 }
 
-func (s *Store) GetLevel(ctx context.Context, userID int64, levelNumber int) (Level, error) {
+func (s *Store) GetLevel(ctx context.Context, userID string, levelNumber int) (Level, error) {
 	var level Level
 	var active int
 	err := s.db.QueryRowContext(ctx, `
@@ -226,7 +225,7 @@ func (s *Store) GetLevel(ctx context.Context, userID int64, levelNumber int) (Le
 	return level, nil
 }
 
-func (s *Store) ListLessons(ctx context.Context, userID int64, levelNumber int) ([]Lesson, error) {
+func (s *Store) ListLessons(ctx context.Context, userID string, levelNumber int) ([]Lesson, error) {
 	args := []any{userID}
 	where := `WHERE l.is_active = 1`
 	if levelNumber > 0 {
@@ -272,7 +271,7 @@ func (s *Store) ListLessons(ctx context.Context, userID int64, levelNumber int) 
 	return lessons, nil
 }
 
-func (s *Store) GetLesson(ctx context.Context, userID, lessonID int64) (Lesson, error) {
+func (s *Store) GetLesson(ctx context.Context, userID, lessonID string) (Lesson, error) {
 	var lesson Lesson
 	var active, watched int
 	var watchedAt sql.NullTime
@@ -302,7 +301,7 @@ func (s *Store) GetLesson(ctx context.Context, userID, lessonID int64) (Lesson, 
 	return lesson, nil
 }
 
-func (s *Store) MarkLessonWatched(ctx context.Context, userID, lessonID int64) (Progress, error) {
+func (s *Store) MarkLessonWatched(ctx context.Context, userID, lessonID string) (Progress, error) {
 	var progress Progress
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		var levelNumber int
@@ -344,7 +343,7 @@ func (s *Store) MarkLessonWatched(ctx context.Context, userID, lessonID int64) (
 	return progress, err
 }
 
-func (s *Store) GetTestByLevel(ctx context.Context, userID int64, levelNumber int) (Test, error) {
+func (s *Store) GetTestByLevel(ctx context.Context, userID string, levelNumber int) (Test, error) {
 	access, err := s.CanAccessLevel(ctx, userID, levelNumber)
 	if err != nil {
 		return Test{}, err
@@ -359,7 +358,7 @@ func (s *Store) GetTestByLevel(ctx context.Context, userID int64, levelNumber in
 	return test, nil
 }
 
-func (s *Store) SubmitTest(ctx context.Context, userID int64, levelNumber int, selected map[int64]int64) (TestAttempt, Progress, error) {
+func (s *Store) SubmitTest(ctx context.Context, userID string, levelNumber int, selected map[string]string) (TestAttempt, Progress, error) {
 	var attempt TestAttempt
 	var progress Progress
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
@@ -379,7 +378,7 @@ func (s *Store) SubmitTest(ctx context.Context, userID int64, levelNumber int, s
 			return ErrInvalidState
 		}
 		correct := 0
-		correctByQuestion := map[int64]bool{}
+		correctByQuestion := map[string]bool{}
 		for _, question := range test.Questions {
 			selectedID := selected[question.ID]
 			for _, option := range question.Options {
@@ -391,23 +390,19 @@ func (s *Store) SubmitTest(ctx context.Context, userID int64, levelNumber int, s
 		}
 		score := int(math.Round(float64(correct) / float64(total) * 100))
 		passed := score >= test.PassPercent
-		res, err := tx.ExecContext(ctx, `
-			INSERT INTO test_attempts(user_id, test_id, score_percent, correct_count, total_count, passed)
-			VALUES (?, ?, ?, ?, ?, ?);
-		`, userID, test.ID, score, correct, total, boolInt(passed))
-		if err != nil {
-			return err
-		}
-		attemptID, err := res.LastInsertId()
-		if err != nil {
+		attemptID := newID()
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO test_attempts(id, user_id, test_id, score_percent, correct_count, total_count, passed)
+			VALUES (?, ?, ?, ?, ?, ?, ?);
+		`, attemptID, userID, test.ID, score, correct, total, boolInt(passed)); err != nil {
 			return err
 		}
 		for _, question := range test.Questions {
 			selectedID := selected[question.ID]
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO test_answers(attempt_id, question_id, selected_option_id, is_correct)
-				VALUES (?, ?, ?, ?);
-			`, attemptID, question.ID, nullableOptionID(selectedID), boolInt(correctByQuestion[question.ID])); err != nil {
+				INSERT INTO test_answers(id, attempt_id, question_id, selected_option_id, is_correct)
+				VALUES (?, ?, ?, ?, ?);
+			`, newID(), attemptID, question.ID, nullableOptionID(selectedID), boolInt(correctByQuestion[question.ID])); err != nil {
 				return err
 			}
 		}
@@ -427,14 +422,14 @@ func (s *Store) SubmitTest(ctx context.Context, userID int64, levelNumber int, s
 	return attempt, progress, err
 }
 
-func nullableOptionID(id int64) any {
-	if id == 0 {
+func nullableOptionID(id string) any {
+	if strings.TrimSpace(id) == "" {
 		return nil
 	}
 	return id
 }
 
-func (s *Store) GetAssignmentByLevel(ctx context.Context, userID int64, levelNumber int) (Assignment, error) {
+func (s *Store) GetAssignmentByLevel(ctx context.Context, userID string, levelNumber int) (Assignment, error) {
 	access, err := s.CanAccessLevel(ctx, userID, levelNumber)
 	if err != nil {
 		return Assignment{}, err
@@ -445,15 +440,15 @@ func (s *Store) GetAssignmentByLevel(ctx context.Context, userID int64, levelNum
 	return s.getAssignmentByLevel(ctx, s.db, levelNumber)
 }
 
-func (s *Store) SubmitAssignment(ctx context.Context, userID int64, levelNumber int, answerText, filePath, linkURL string) error {
+func (s *Store) SubmitAssignment(ctx context.Context, userID string, levelNumber int, answerText, filePath, linkURL string) error {
 	assignment, err := s.GetAssignmentByLevel(ctx, userID, levelNumber)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO assignment_submissions(assignment_id, user_id, answer_text, file_path, link_url, status)
-		VALUES (?, ?, ?, ?, ?, 'submitted');
-	`, assignment.ID, userID, answerText, filePath, linkURL)
+		INSERT INTO assignment_submissions(id, assignment_id, user_id, answer_text, file_path, link_url, status)
+		VALUES (?, ?, ?, ?, ?, ?, 'submitted');
+	`, newID(), assignment.ID, userID, answerText, filePath, linkURL)
 	return err
 }
 
@@ -482,7 +477,7 @@ func (s *Store) getTestByLevelQuery(ctx context.Context, q queryer, levelNumber 
 		return Test{}, err
 	}
 	defer rows.Close()
-	questions := map[int64]*TestQuestion{}
+	questions := map[string]*TestQuestion{}
 	for rows.Next() {
 		var qn TestQuestion
 		var opt TestOption
@@ -526,7 +521,7 @@ func (s *Store) getAssignmentByLevel(ctx context.Context, q queryer, levelNumber
 	return a, nil
 }
 
-func (s *Store) recalculateUserProgressTx(ctx context.Context, tx *sql.Tx, userID int64) (Progress, error) {
+func (s *Store) recalculateUserProgressTx(ctx context.Context, tx *sql.Tx, userID string) (Progress, error) {
 	var currentLevel int
 	if err := tx.QueryRowContext(ctx, `SELECT current_level FROM users WHERE id = ?`, userID).Scan(&currentLevel); err != nil {
 		return Progress{}, rowErr(err)
@@ -550,7 +545,7 @@ func (s *Store) recalculateUserProgressTx(ctx context.Context, tx *sql.Tx, userI
 	return s.progressForLevel(ctx, tx, userID, currentLevel)
 }
 
-func testPassed(ctx context.Context, q queryer, userID int64, levelNumber int) (bool, error) {
+func testPassed(ctx context.Context, q queryer, userID string, levelNumber int) (bool, error) {
 	var passed int
 	err := q.QueryRowContext(ctx, `
 		SELECT COALESCE(MAX(ta.passed), 0)
@@ -565,7 +560,7 @@ func testPassed(ctx context.Context, q queryer, userID int64, levelNumber int) (
 	return passed == 1, nil
 }
 
-func assignmentSubmitted(ctx context.Context, q queryer, userID int64, levelNumber int) (bool, error) {
+func assignmentSubmitted(ctx context.Context, q queryer, userID string, levelNumber int) (bool, error) {
 	var submitted int
 	err := q.QueryRowContext(ctx, `
 		SELECT CASE WHEN COUNT(s.id) > 0 THEN 1 ELSE 0 END
@@ -593,7 +588,7 @@ func hasAssignment(ctx context.Context, q queryer, levelNumber int) (bool, error
 	return count > 0, nil
 }
 
-func hasActiveSubscription(ctx context.Context, q queryer, userID int64) (bool, error) {
+func hasActiveSubscription(ctx context.Context, q queryer, userID string) (bool, error) {
 	var count int
 	if err := q.QueryRowContext(ctx, `
 		SELECT COUNT(id)
@@ -605,7 +600,7 @@ func hasActiveSubscription(ctx context.Context, q queryer, userID int64) (bool, 
 	return count > 0, nil
 }
 
-func canAccessLevelQuery(ctx context.Context, q queryer, userID int64, levelNumber int) (bool, error) {
+func canAccessLevelQuery(ctx context.Context, q queryer, userID string, levelNumber int) (bool, error) {
 	var currentLevel, accessClosed int
 	if err := q.QueryRowContext(ctx, `SELECT current_level, access_closed FROM users WHERE id = ?`, userID).Scan(&currentLevel, &accessClosed); err != nil {
 		return false, rowErr(err)
@@ -622,11 +617,12 @@ type queryer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func ParseSelectedAnswers(raw map[string]int64) map[int64]int64 {
-	selected := make(map[int64]int64, len(raw))
+func ParseSelectedAnswers(raw map[string]string) map[string]string {
+	selected := make(map[string]string, len(raw))
 	for questionID, optionID := range raw {
-		id, err := strconv.ParseInt(strings.TrimSpace(questionID), 10, 64)
-		if err == nil {
+		id := strings.TrimSpace(questionID)
+		optionID = strings.TrimSpace(optionID)
+		if IsUUID(id) && IsUUID(optionID) {
 			selected[id] = optionID
 		}
 	}

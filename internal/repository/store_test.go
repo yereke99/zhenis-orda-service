@@ -2,6 +2,8 @@ package repository_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 
 func newTestStore(t *testing.T) (*repository.Store, context.Context) {
 	t.Helper()
+	t.Setenv("SEED_DEMO_CONTENT", "1")
 	ctx := context.Background()
 	db, err := database.Open(ctx, ":memory:")
 	if err != nil {
@@ -38,7 +41,7 @@ func registerUser(t *testing.T, ctx context.Context, store *repository.Store, te
 	return user
 }
 
-func approveBasic(t *testing.T, ctx context.Context, store *repository.Store, userID int64) repository.Payment {
+func approveBasic(t *testing.T, ctx context.Context, store *repository.Store, userID string) repository.Payment {
 	t.Helper()
 	payment, err := store.CreatePayment(ctx, userID, "BASIC", "kaspi_qr", time.Hour)
 	if err != nil {
@@ -57,7 +60,7 @@ func TestReferralRegistration(t *testing.T) {
 	invited := registerUser(t, ctx, store, 1002, inviter.ReferralCode)
 
 	if invited.InvitedByUserID == nil || *invited.InvitedByUserID != inviter.ID {
-		t.Fatalf("expected inviter %d, got %#v", inviter.ID, invited.InvitedByUserID)
+		t.Fatalf("expected inviter %s, got %#v", inviter.ID, invited.InvitedByUserID)
 	}
 	summary, err := store.ReferralSummary(ctx, inviter.ID, "zhenisorda_bot")
 	if err != nil {
@@ -125,7 +128,7 @@ func TestLevelUnlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answers := map[int64]int64{}
+	answers := map[string]string{}
 	for _, question := range test.Questions {
 		answers[question.ID] = question.Options[0].ID
 	}
@@ -151,7 +154,7 @@ func TestTestPassFailAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrong := map[int64]int64{}
+	wrong := map[string]string{}
 	for _, question := range test.Questions {
 		wrong[question.ID] = question.Options[1].ID
 	}
@@ -162,7 +165,7 @@ func TestTestPassFailAndRetry(t *testing.T) {
 	if attempt.Passed {
 		t.Fatal("wrong answers should fail")
 	}
-	right := map[int64]int64{}
+	right := map[string]string{}
 	for _, question := range test.Questions {
 		right[question.ID] = question.Options[0].ID
 	}
@@ -219,5 +222,123 @@ func TestSubscriptionExpiration(t *testing.T) {
 	}
 	if sub != nil {
 		t.Fatalf("expected no active subscription, got %#v", sub)
+	}
+}
+
+func TestLessonInactiveIsPreserved(t *testing.T) {
+	store, ctx := newTestStore(t)
+	var levelID string
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM levels WHERE number = 1`).Scan(&levelID); err != nil {
+		t.Fatal(err)
+	}
+	lesson, err := store.UpsertLesson(ctx, repository.Lesson{
+		LevelID:   levelID,
+		TitleKK:   "Жабық сабақ",
+		TitleRU:   "Жабық сабақ",
+		VideoURL:  "https://t.me/private/1",
+		SortOrder: 99,
+		IsActive:  false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lesson.IsActive {
+		t.Fatal("inactive lesson was forced active")
+	}
+	items, err := store.ListAdminLessons(ctx, repository.AdminLessonFilter{Status: "inactive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range items {
+		if item.ID == lesson.ID && !item.IsActive {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("inactive lesson not visible in admin list")
+	}
+}
+
+func TestAdminTestCRUDWithQuestions(t *testing.T) {
+	store, ctx := newTestStore(t)
+	var levelID string
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM levels WHERE number = 2`).Scan(&levelID); err != nil {
+		t.Fatal(err)
+	}
+	test, err := store.UpsertTest(ctx, repository.Test{
+		LevelID:     levelID,
+		Title:       "Қаржы тесті",
+		PassPercent: 80,
+		IsActive:    true,
+		Questions: []repository.TestQuestion{{
+			QuestionTextKK: "Бірінші сұрақ",
+			QuestionTextRU: "Первый вопрос",
+			SortOrder:      1,
+			Options: []repository.TestOption{
+				{OptionTextKK: "Дұрыс", OptionTextRU: "Верно", IsCorrect: true, SortOrder: 1},
+				{OptionTextKK: "Қате", OptionTextRU: "Неверно", IsCorrect: false, SortOrder: 2},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests, err := store.ListAdminTests(ctx, repository.AdminTestFilter{Level: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tests) == 0 || tests[0].Title != "Қаржы тесті" || len(tests[0].Questions) != 1 || len(tests[0].Questions[0].Options) != 2 {
+		t.Fatalf("unexpected test list: %#v", tests)
+	}
+	if err := store.DeleteTest(ctx, test.ID); err != nil {
+		t.Fatal(err)
+	}
+	tests, err = store.ListAdminTests(ctx, repository.AdminTestFilter{Level: 2, Status: "inactive"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tests) == 0 || tests[0].IsActive {
+		t.Fatalf("expected inactive test, got %#v", tests)
+	}
+}
+
+func TestReceiptDuplicateBlocksApprovalWithoutOverride(t *testing.T) {
+	store, ctx := newTestStore(t)
+	first := registerUser(t, ctx, store, 7001, "")
+	second := registerUser(t, ctx, store, 7002, "")
+	p1, err := store.CreatePayment(ctx, first.ID, "BASIC", "kaspi_qr", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := store.CreatePayment(ctx, second.ID, "BASIC", "kaspi_qr", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	file := filepath.Join(dir, "receipt.pdf")
+	body := []byte("Kaspi чек transaction ABC123 amount 4 990 ₸ 10.05.2026")
+	if err := os.WriteFile(file, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AttachReceiptToPayment(ctx, first.ID, p1.ID, file, "receipt.pdf", "application/pdf", int64(len(body))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApprovePaymentReviewed(ctx, p1.ID, repository.AdminActor{ID: 1, Role: repository.RoleSuperAdmin}, 30, "manual review"); err != nil {
+		t.Fatal(err)
+	}
+	file2 := filepath.Join(dir, "receipt-copy.pdf")
+	if err := os.WriteFile(file2, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, receipt, err := store.AttachReceiptToPayment(ctx, second.ID, p2.ID, file2, "receipt-copy.pdf", "application/pdf", int64(len(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.ValidationStatus != repository.ReceiptStatusDuplicate {
+		t.Fatalf("expected duplicate receipt, got %#v", receipt)
+	}
+	if _, err := store.ApprovePaymentReviewed(ctx, p2.ID, repository.AdminActor{ID: 1, Role: repository.RoleSuperAdmin}, 30, ""); err == nil {
+		t.Fatal("duplicate receipt approved without override comment")
 	}
 }

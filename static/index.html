@@ -2,53 +2,181 @@
 <html lang="kk">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#080604" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#050403" />
+    <meta name="color-scheme" content="dark" />
     <title>ZHENIS ORDA INSIDE</title>
     <link rel="stylesheet" href="/static/css/style.css" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script defer src="/static/js/app.js"></script>
   </head>
   <body>
-    <div id="miniApp" class="app-shell">
+    <!-- Mini App shell (Telegram) -->
+    <div id="miniApp" class="app-shell hidden" aria-hidden="true">
       <header class="user-header" id="userHeader">
-        <div class="avatar-wrap">
-          <img class="avatar" id="tgAvatar" alt="" />
-          <div class="avatar-fallback" id="tgAvatarFallback">Z</div>
+        <div class="brand-mini">
+          <div class="avatar-wrap">
+            <img id="tgAvatar" class="avatar hidden" alt="" referrerpolicy="no-referrer" />
+            <div id="tgAvatarFallback" class="avatar-fallback">ZO</div>
+          </div>
+          <div class="user-meta">
+            <div id="tgName" class="user-name">ZHENIS ORDA</div>
+            <div id="tgLogin" class="user-login">INSIDE</div>
+          </div>
         </div>
-        <div class="user-meta">
-          <div class="user-name" id="tgName">ZHENIS ORDA</div>
-          <div class="user-login" id="tgLogin">@inside</div>
-        </div>
-        <div class="brand-mark" aria-label="ZHENIS ORDA">ZO</div>
+        <button id="profileAction" class="header-action" type="button">
+          <span class="header-action-dot" aria-hidden="true"></span>
+          <span>Менің жолым</span>
+        </button>
       </header>
 
-      <main class="content" id="appContent"></main>
+      <main id="appContent" class="content" tabindex="-1"></main>
 
-      <footer class="bottom-cta" id="bottomCta"></footer>
+      <footer id="bottomCta" class="bottom-cta hidden" role="navigation"></footer>
     </div>
 
-    <div id="adminApp" class="admin-shell hidden">
-      <aside class="admin-sidebar">
+    <!-- Browser admin login (unauthenticated) -->
+    <div id="adminAuth" class="auth-shell hidden" aria-hidden="true">
+      <div class="auth-bg" aria-hidden="true"></div>
+      <main class="auth-main">
+        <header class="auth-brand">
+          <div class="brand-mark big">ZO</div>
+          <div>
+            <p class="eyebrow">ZHENIS ORDA</p>
+            <h1 class="auth-brand-title">INSIDE ADMIN</h1>
+          </div>
+        </header>
+
+        <section class="auth-card" aria-labelledby="authCardTitle">
+          <p class="eyebrow">Қауіпсіз admin session</p>
+          <h2 id="authCardTitle" class="auth-card-title">Кіру</h2>
+          <p class="muted auth-card-sub">
+            Тек авторизацияланған әкімші ғана командалық орталыққа кіре алады.
+          </p>
+
+          <form id="adminLoginForm" class="form" autocomplete="on" novalidate>
+            <label class="field">
+              <span>Құпия сөз</span>
+              <div class="input-wrap">
+                <input
+                  id="adminPassword"
+                  name="password"
+                  type="password"
+                  autocomplete="current-password"
+                  inputmode="text"
+                  required
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  id="togglePassword"
+                  class="input-toggle"
+                  aria-label="Show password"
+                >
+                  Көрсету
+                </button>
+              </div>
+            </label>
+
+            <div id="adminLoginError" class="form-error hidden" role="alert"></div>
+
+            <button id="adminLoginSubmit" class="gold-btn lg" type="submit">
+              <span class="btn-label">Кіру</span>
+              <span class="btn-spinner" aria-hidden="true"></span>
+            </button>
+          </form>
+
+          <p id="adminLoginHint" class="auth-hint hidden">
+            Development default: <code>admin</code>
+          </p>
+        </section>
+
+        <footer class="auth-foot">
+          <span>© ZHENIS ORDA</span>
+          <span class="dot">•</span>
+          <span>Private members area</span>
+        </footer>
+      </main>
+    </div>
+
+    <!-- Browser admin shell (authenticated) -->
+    <div id="adminApp" class="admin-shell hidden" aria-hidden="true">
+      <aside class="admin-sidebar" id="adminSidebar">
         <div class="admin-brand">
           <div class="brand-mark">ZO</div>
-          <div>
+          <div class="admin-brand-meta">
             <strong>ZHENIS ORDA</strong>
             <span>INSIDE ADMIN</span>
           </div>
         </div>
-        <nav id="adminNav" class="admin-nav"></nav>
+        <nav id="adminNav" class="admin-nav" aria-label="Admin sections"></nav>
+        <div class="admin-side-foot">
+          <button id="adminLogout" class="ghost-btn block" type="button">Шығу</button>
+        </div>
       </aside>
+
       <main class="admin-main">
         <header class="admin-topbar">
-          <div>
-            <p class="eyebrow">Genius Orda</p>
-            <h1 id="adminTitle">Dashboard</h1>
+          <button
+            id="adminNavToggle"
+            class="ghost-btn icon-only"
+            type="button"
+            aria-label="Toggle navigation"
+          >
+            ☰
+          </button>
+          <div class="admin-title-block">
+            <p class="eyebrow">ZHENIS ORDA</p>
+            <h1 id="adminTitle">Басты бет</h1>
           </div>
-          <button class="ghost-btn" id="adminLogout" type="button">Logout</button>
+          <div class="admin-topbar-actions">
+            <span id="adminWho" class="admin-who">—</span>
+            <button id="adminLogoutTop" class="ghost-btn" type="button">Шығу</button>
+          </div>
         </header>
         <section id="adminContent" class="admin-content"></section>
       </main>
     </div>
+
+    <!-- Landing for browser at "/" without admin path and without Telegram -->
+    <div id="landing" class="landing-shell hidden" aria-hidden="true">
+      <div class="landing-bg" aria-hidden="true"></div>
+      <main class="landing-main">
+        <header class="landing-brand">
+          <div class="brand-mark big">ZO</div>
+          <p class="eyebrow">ZHENIS ORDA</p>
+          <h1>INSIDE</h1>
+          <p class="muted">Жүйелі өсу ордасы — premium private members area.</p>
+        </header>
+
+        <section class="landing-card">
+          <h2>Mini App тек Telegram ішінде ашылады.</h2>
+          <p class="muted">
+            Қауіпсіздік үшін Telegram профилі браузерде көрсетілмейді. Мини-аппты
+            <strong>@zhenisorda_bot</strong> арқылы ашыңыз немесе төмендегі сілтемеге өтіңіз.
+          </p>
+          <div class="landing-actions">
+            <a id="landingTelegramLink" class="gold-btn lg" href="#" target="_blank" rel="noopener">
+              Telegram-да ашу
+            </a>
+            <a class="ghost-btn lg" href="/admin">Admin панель</a>
+          </div>
+          <p class="muted small">
+            Әзірлеуші режимі:
+            <a class="link" href="?miniapp_dev=1">Dev preview</a>
+          </p>
+        </section>
+
+        <footer class="landing-foot">
+          <span>© ZHENIS ORDA INSIDE</span>
+        </footer>
+      </main>
+    </div>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+    <div id="modalRoot"></div>
   </body>
 </html>

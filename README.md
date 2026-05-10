@@ -59,6 +59,9 @@ DISABLE_TELEGRAM_BOT=true docker compose up --build
 - `ADMIN_IDS`
 - `ADMIN_PASSWORD_HASH`
 - `UPLOAD_DIR`
+- `PAYMENT_DIR` default `payment`, used for original receipt files
+- `SEED_DEMO_CONTENT=1` enables development-only demo lessons/tests
+- `RESET_LEGACY_INTEGER_IDS=1` recreates legacy integer-ID MVP tables as UUID tables after you have backed up development data
 - `ALLOWED_ORIGINS`
 - `KASPI_PAY_URL`
 - `KASPI_QR_IMAGE_URL`
@@ -77,7 +80,7 @@ DISABLE_TELEGRAM_BOT=true docker compose up --build
 3. User selects Kazakh or Russian.
 4. Mini App opens with Telegram profile header and safe-area fullscreen layout.
 5. User completes diagnostics, selects tariff, creates a pending payment.
-6. User uploads receipt PDF/image to the bot.
+6. User uploads receipt PDF/image to the bot or directly inside the Mini App payment screen.
 7. Admin opens `/admin`, reviews receipt and approves/rejects payment.
 8. Approval activates subscription, opens LEVEL 1, grants referral rewards when applicable, and notifies the user.
 9. Lessons unlock level-by-level through watched lessons and passed tests.
@@ -98,3 +101,15 @@ Covered critical paths:
 - subscription expiration
 - Mini App auth middleware
 - browser admin auth
+- UUID route validation
+- Mini App receipt upload
+- lesson/test admin CRUD logic
+- receipt duplicate validation
+
+## Technical Notes
+
+- Main domain tables use UUID `TEXT` IDs. Existing integer-ID databases are not reset silently.
+- Production seed keeps tariffs, 12 levels, and app settings only. Demo lessons/tests require `SEED_DEMO_CONTENT=1`.
+- Admin creates real lessons and level-end tests from `/admin`; test questions/options are saved transactionally.
+- Receipt parsing stores hashes and safe extracted fields, flags duplicate/suspicious receipts, and keeps final approval manual.
+- Broadcasts are queued in DB and delivered by the scheduler through Telegram with per-user delivery records.

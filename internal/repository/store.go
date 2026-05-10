@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 var (
@@ -34,6 +35,14 @@ func scanString(ns sql.NullString) string {
 		return ns.String
 	}
 	return ""
+}
+
+func scanStringPtr(ns sql.NullString) *string {
+	if ns.Valid {
+		value := ns.String
+		return &value
+	}
+	return nil
 }
 
 func scanInt64(ni sql.NullInt64) *int64 {
@@ -76,8 +85,17 @@ func normalizeProvider(provider string) string {
 	}
 }
 
-func sourceID(id int64) string {
-	return strconv.FormatInt(id, 10)
+func newID() string {
+	return uuid.NewString()
+}
+
+func IsUUID(value string) bool {
+	_, err := uuid.Parse(strings.TrimSpace(value))
+	return err == nil
+}
+
+func sourceID(id string) string {
+	return id
 }
 
 func nowUTC() time.Time {
@@ -104,9 +122,9 @@ func (s *Store) Audit(ctx context.Context, actor AdminActor, action, entityType,
 		}
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO admin_actions(admin_id, role, action, entity_type, entity_id, metadata_json)
-		VALUES (?, ?, ?, ?, ?, ?);
-	`, actor.ID, actor.Role, action, entityType, entityID, raw)
+		INSERT INTO admin_actions(id, admin_id, role, action, entity_type, entity_id, metadata_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?);
+	`, newID(), actor.ID, actor.Role, action, entityType, entityID, raw)
 	return err
 }
 
@@ -117,7 +135,7 @@ func rowErr(err error) error {
 	return err
 }
 
-func nullableInt64(value *int64) any {
+func nullableStringPtrValue(value *string) any {
 	if value == nil {
 		return nil
 	}

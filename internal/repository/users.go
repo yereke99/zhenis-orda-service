@@ -13,17 +13,18 @@ func (s *Store) RegisterOrUpdateTelegramUser(ctx context.Context, input Telegram
 	var user User
 	created := false
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		var existingID int64
+		var existingID string
 		err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?`, input.TelegramID).Scan(&existingID)
 		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
 		if err == sql.ErrNoRows {
 			created = true
+			userID := newID()
 			referralCode := fmt.Sprintf("ref%d", input.TelegramID)
-			var invitedBy *int64
+			var invitedBy *string
 			if strings.HasPrefix(input.StartParam, "ref") {
-				var inviterID int64
+				var inviterID string
 				var inviterTelegramID int64
 				refErr := tx.QueryRowContext(ctx, `SELECT id, telegram_id FROM users WHERE referral_code = ?`, input.StartParam).Scan(&inviterID, &inviterTelegramID)
 				if refErr == nil && inviterTelegramID != input.TelegramID {
@@ -31,21 +32,17 @@ func (s *Store) RegisterOrUpdateTelegramUser(ctx context.Context, input Telegram
 				}
 			}
 			_, err = tx.ExecContext(ctx, `
-				INSERT INTO users(telegram_id, username, first_name, last_name, language, referral_code, invited_by_user_id, current_level, last_seen_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP);
-			`, input.TelegramID, input.Username, input.FirstName, input.LastName, input.Language, referralCode, nullableInt64(invitedBy))
+				INSERT INTO users(id, telegram_id, username, first_name, last_name, photo_url, language, referral_code, invited_by_user_id, current_level, last_seen_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP);
+			`, userID, input.TelegramID, input.Username, input.FirstName, input.LastName, input.PhotoURL, input.Language, referralCode, nullableStringPtrValue(invitedBy))
 			if err != nil {
 				return err
 			}
 			if invitedBy != nil {
-				var invitedUserID int64
-				if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE telegram_id = ?`, input.TelegramID).Scan(&invitedUserID); err != nil {
-					return err
-				}
 				if _, err := tx.ExecContext(ctx, `
-					INSERT OR IGNORE INTO referrals(inviter_user_id, invited_user_id, status)
-					VALUES (?, ?, 'registered');
-				`, *invitedBy, invitedUserID); err != nil {
+					INSERT OR IGNORE INTO referrals(id, inviter_user_id, invited_user_id, status)
+					VALUES (?, ?, ?, 'registered');
+				`, newID(), *invitedBy, userID); err != nil {
 					return err
 				}
 			}
@@ -55,11 +52,12 @@ func (s *Store) RegisterOrUpdateTelegramUser(ctx context.Context, input Telegram
 					username = COALESCE(NULLIF(?, ''), username),
 					first_name = COALESCE(NULLIF(?, ''), first_name),
 					last_name = COALESCE(NULLIF(?, ''), last_name),
+					photo_url = COALESCE(NULLIF(?, ''), photo_url),
 					language = CASE WHEN language = '' THEN COALESCE(NULLIF(?, ''), language) ELSE language END,
 					last_seen_at = CURRENT_TIMESTAMP,
 					updated_at = CURRENT_TIMESTAMP
 				WHERE id = ?;
-			`, input.Username, input.FirstName, input.LastName, input.Language, existingID)
+			`, input.Username, input.FirstName, input.LastName, input.PhotoURL, input.Language, existingID)
 			if err != nil {
 				return err
 			}
@@ -74,7 +72,7 @@ func (s *Store) RegisterOrUpdateTelegramUser(ctx context.Context, input Telegram
 	return user, created, err
 }
 
-func (s *Store) SetLanguage(ctx context.Context, userID int64, language string) error {
+func (s *Store) SetLanguage(ctx context.Context, userID string, language string) error {
 	if language != "kk" && language != "ru" {
 		language = "kk"
 	}
@@ -87,26 +85,26 @@ func (s *Store) GetUserByTelegramID(ctx context.Context, telegramID int64) (User
 	return user, rowErr(err)
 }
 
-func (s *Store) GetUserByID(ctx context.Context, userID int64) (User, error) {
+func (s *Store) GetUserByID(ctx context.Context, userID string) (User, error) {
 	user, err := scanUserRow(s.db.QueryRowContext(ctx, userSelectSQL+` WHERE u.id = ?`, userID))
 	return user, rowErr(err)
 }
 
-func (s *Store) TouchUser(ctx context.Context, userID int64) error {
+func (s *Store) TouchUser(ctx context.Context, userID string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?`, userID)
 	return err
 }
 
-func (s *Store) SaveDiagnostics(ctx context.Context, userID int64, answers map[string]string) error {
+func (s *Store) SaveDiagnostics(ctx context.Context, userID string, answers map[string]string) error {
 	raw, _ := json.Marshal(answers)
 	age := 0
 	if answers["age"] != "" {
 		fmt.Sscanf(answers["age"], "%d", &age)
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO diagnostics(user_id, name, city, age, income, has_debt, has_business, main_problem, growth_area, answers_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-	`, userID, answers["name"], answers["city"], age, answers["income"], answers["has_debt"], answers["has_business"], answers["main_problem"], answers["growth_area"], string(raw))
+		INSERT INTO diagnostics(id, user_id, name, city, age, income, has_debt, has_business, main_problem, growth_area, answers_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+	`, newID(), userID, answers["name"], answers["city"], age, answers["income"], answers["has_debt"], answers["has_business"], answers["main_problem"], answers["growth_area"], string(raw))
 	return err
 }
 
@@ -150,7 +148,7 @@ func (s *Store) GetTariffByCode(ctx context.Context, code string) (Tariff, error
 	return tariff, nil
 }
 
-func (s *Store) GetActiveSubscription(ctx context.Context, userID int64) (*Subscription, error) {
+func (s *Store) GetActiveSubscription(ctx context.Context, userID string) (*Subscription, error) {
 	sub, err := scanSubscriptionRow(s.db.QueryRowContext(ctx, subscriptionSelectSQL+`
 		WHERE s.user_id = ? AND s.status = 'active' AND s.expires_at > CURRENT_TIMESTAMP
 		ORDER BY s.expires_at DESC
@@ -165,7 +163,7 @@ func (s *Store) GetActiveSubscription(ctx context.Context, userID int64) (*Subsc
 	return &sub, nil
 }
 
-func (s *Store) CoinBalance(ctx context.Context, userID int64) (int, error) {
+func (s *Store) CoinBalance(ctx context.Context, userID string) (int, error) {
 	var balance sql.NullInt64
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount), 0) FROM coin_transactions WHERE user_id = ?`, userID).Scan(&balance); err != nil {
 		return 0, err
@@ -173,7 +171,7 @@ func (s *Store) CoinBalance(ctx context.Context, userID int64) (int, error) {
 	return int(balance.Int64), nil
 }
 
-func (s *Store) ReferralSummary(ctx context.Context, userID int64, botUsername string) (ReferralSummary, error) {
+func (s *Store) ReferralSummary(ctx context.Context, userID string, botUsername string) (ReferralSummary, error) {
 	user, err := s.GetUserByID(ctx, userID)
 	if err != nil {
 		return ReferralSummary{}, err
@@ -196,7 +194,7 @@ func (s *Store) ReferralSummary(ctx context.Context, userID int64, botUsername s
 	return ReferralSummary{ReferralCode: user.ReferralCode, ReferralLink: link, InvitedCount: invited, PaidCount: paid, Rewards: rewards}, nil
 }
 
-func (s *Store) ListReferralRewards(ctx context.Context, userID int64) ([]ReferralReward, error) {
+func (s *Store) ListReferralRewards(ctx context.Context, userID string) ([]ReferralReward, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_id, threshold_count, reward_type, status, created_at
 		FROM referral_rewards
@@ -218,11 +216,11 @@ func (s *Store) ListReferralRewards(ctx context.Context, userID int64) ([]Referr
 	return rewards, rows.Err()
 }
 
-func (s *Store) AddCoins(ctx context.Context, userID int64, amount int, reason, sourceType string, sourceID string) (bool, error) {
+func (s *Store) AddCoins(ctx context.Context, userID string, amount int, reason, sourceType string, sourceID string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO coin_transactions(user_id, amount, reason, source_type, source_id)
-		VALUES (?, ?, ?, ?, ?);
-	`, userID, amount, reason, sourceType, sourceID)
+		INSERT OR IGNORE INTO coin_transactions(id, user_id, amount, reason, source_type, source_id)
+		VALUES (?, ?, ?, ?, ?, ?);
+	`, newID(), userID, amount, reason, sourceType, sourceID)
 	if err != nil {
 		return false, err
 	}
@@ -230,28 +228,28 @@ func (s *Store) AddCoins(ctx context.Context, userID int64, amount int, reason, 
 	return rows > 0, nil
 }
 
-func (s *Store) AddCoinsTx(ctx context.Context, tx *sql.Tx, userID int64, amount int, reason, sourceType string, sourceID string) error {
+func (s *Store) AddCoinsTx(ctx context.Context, tx *sql.Tx, userID string, amount int, reason, sourceType string, sourceID string) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT OR IGNORE INTO coin_transactions(user_id, amount, reason, source_type, source_id)
-		VALUES (?, ?, ?, ?, ?);
-	`, userID, amount, reason, sourceType, sourceID)
+		INSERT OR IGNORE INTO coin_transactions(id, user_id, amount, reason, source_type, source_id)
+		VALUES (?, ?, ?, ?, ?, ?);
+	`, newID(), userID, amount, reason, sourceType, sourceID)
 	return err
 }
 
 const userSelectSQL = `
-	SELECT u.id, u.telegram_id, COALESCE(u.username, ''), COALESCE(u.first_name, ''), COALESCE(u.last_name, ''),
+	SELECT u.id, u.telegram_id, COALESCE(u.username, ''), COALESCE(u.first_name, ''), COALESCE(u.last_name, ''), COALESCE(u.photo_url, ''),
 		COALESCE(u.language, ''), COALESCE(u.phone, ''), u.referral_code, u.invited_by_user_id,
 		u.current_level, u.access_closed, u.created_at, u.updated_at, u.last_seen_at
 	FROM users u`
 
 func scanUserRow(row interface{ Scan(dest ...any) error }) (User, error) {
 	var user User
-	var invited sql.NullInt64
+	var invited sql.NullString
 	var accessClosed int
-	if err := row.Scan(&user.ID, &user.TelegramID, &user.Username, &user.FirstName, &user.LastName, &user.Language, &user.Phone, &user.ReferralCode, &invited, &user.CurrentLevel, &accessClosed, &user.CreatedAt, &user.UpdatedAt, &user.LastSeenAt); err != nil {
+	if err := row.Scan(&user.ID, &user.TelegramID, &user.Username, &user.FirstName, &user.LastName, &user.PhotoURL, &user.Language, &user.Phone, &user.ReferralCode, &invited, &user.CurrentLevel, &accessClosed, &user.CreatedAt, &user.UpdatedAt, &user.LastSeenAt); err != nil {
 		return User{}, rowErr(err)
 	}
-	user.InvitedByUserID = scanInt64(invited)
+	user.InvitedByUserID = scanStringPtr(invited)
 	user.AccessClosed = accessClosed == 1
 	return user, nil
 }

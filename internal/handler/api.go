@@ -2,7 +2,11 @@ package handler
 
 import (
 	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +113,91 @@ func (s *Server) handlePayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"payment": payment})
 }
 
+func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	paymentID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad payment")
+		return
+	}
+	payment, err := s.store.GetPayment(r.Context(), paymentID)
+	if mapRepoError(w, err) {
+		return
+	}
+	if payment.UserID != user.ID {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if payment.Status != repository.PaymentStatusPending && payment.Status != repository.PaymentStatusUploadedReceipt {
+		writeError(w, http.StatusConflict, "payment cannot accept receipt")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxReceiptBytes+1024)
+	if err := r.ParseMultipartForm(s.cfg.MaxReceiptBytes + 1024); err != nil {
+		writeError(w, http.StatusBadRequest, "receipt file is too large or invalid")
+		return
+	}
+	file, header, err := r.FormFile("receipt")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "receipt file is required")
+		return
+	}
+	defer file.Close()
+
+	fileName := filepath.Base(header.Filename)
+	ext := strings.ToLower(filepath.Ext(fileName))
+	mimeType := header.Header.Get("Content-Type")
+	if !allowedReceiptExt(ext) {
+		if guessed, _ := mime.ExtensionsByType(mimeType); len(guessed) > 0 {
+			ext = guessed[0]
+		}
+	}
+	if !allowedReceiptExt(ext) {
+		writeError(w, http.StatusBadRequest, "unsupported receipt file type")
+		return
+	}
+	now := time.Now()
+	dir := filepath.Join(s.cfg.PaymentDir, "receipts", now.Format("2006"), now.Format("01"))
+	if err := ensureUploadDir(dir); err != nil {
+		writeError(w, http.StatusInternalServerError, "receipt directory error")
+		return
+	}
+	if fileName == "." || fileName == string(filepath.Separator) || fileName == "" {
+		fileName = "receipt" + ext
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%s_%d%s", user.ID, now.UnixNano(), ext))
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "receipt save error")
+		return
+	}
+	limited := io.LimitReader(file, s.cfg.MaxReceiptBytes+1)
+	written, copyErr := io.Copy(out, limited)
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		writeError(w, http.StatusInternalServerError, "receipt save error")
+		return
+	}
+	if written > s.cfg.MaxReceiptBytes {
+		_ = os.Remove(path)
+		writeError(w, http.StatusBadRequest, "receipt file is too large")
+		return
+	}
+	updated, receipt, err := s.store.AttachReceiptToPayment(r.Context(), user.ID, paymentID, path, fileName, mimeType, written)
+	if mapRepoError(w, err) {
+		_ = os.Remove(path)
+		return
+	}
+	if s.bot != nil {
+		for _, adminID := range s.cfg.AdminIDs {
+			text := fmt.Sprintf("Жаңа чек жүктелді\nТөлем: %s\nҚолданушы: %s @%s\nСома: %d KZT\nСтатус: %s", updated.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, updated.AmountKZT, receipt.ValidationStatus)
+			_ = s.bot.SendMessage(r.Context(), adminID, text)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"payment": updated, "receipt": receipt})
+}
+
 func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	sub, err := s.store.GetActiveSubscription(r.Context(), user.ID)
@@ -204,7 +293,7 @@ func (s *Server) handleSubmitTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Answers map[string]int64 `json:"answers"`
+		Answers map[string]string `json:"answers"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -337,7 +426,7 @@ func (s *Server) handleIssueInvite(w http.ResponseWriter, r *http.Request) {
 	link := channel.ManualInviteLink
 	expiresAt := time.Now().Add(24 * time.Hour)
 	if channel.InviteLinkType == "bot" && s.bot != nil {
-		if generated, err := s.bot.CreateInviteLink(r.Context(), channel.TelegramChatID, fmt.Sprintf("user-%d-channel-%d", user.ID, channel.ID), expiresAt); err == nil {
+		if generated, err := s.bot.CreateInviteLink(r.Context(), channel.TelegramChatID, fmt.Sprintf("user-%s-channel-%s", user.ID, channel.ID), expiresAt); err == nil {
 			link = generated
 		}
 	}

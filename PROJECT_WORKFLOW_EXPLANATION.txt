@@ -1,0 +1,4415 @@
+PROJECT WORKFLOW EXPLANATION
+ZHENIS ORDA INSIDE / Genius Orda
+
+Язык документа: русский.
+Источник документа: текущий код проекта. Документ не описывает функциональность, которая не найдена в кодовой базе.
+
+1. PROJECT OVERVIEW
+
+1.1. Что это за проект
+
+Проект zhenis-orda-service является Go backend + static frontend MVP для ZHENIS ORDA INSIDE / Genius Orda.
+
+Фактически в коде найдены следующие части:
+
+1. Telegram Bot.
+   Реализован в internal/handler/telegram.go.
+   Работает через long polling Telegram Bot API.
+   Обрабатывает /start, регистрацию Telegram пользователя, выбор языка, диагностику в чате, открытие Mini App через WebApp button, загрузку чеков оплаты и уведомления администраторов.
+
+2. Telegram Mini App.
+   Реализован как static SPA:
+   - static/index.html
+   - static/css/style.css
+   - static/js/app.js
+
+   Mini App использует Telegram.WebApp.initData, отправляет его backend в HTTP header X-Telegram-Init-Data и получает user/profile/progress через /api/me.
+
+3. Browser admin panel.
+   Реализован в том же static/index.html и static/js/app.js.
+   Запускается по URL /admin.
+   Использует cookie-based browser session zo_admin_session.
+   Backend routes находятся в internal/handler/http.go и internal/handler/admin_http.go.
+
+4. Education/subscription platform.
+   В проекте есть 12 уровней, уроки, тесты, задания, тарифы, подписки, платежи, реферальная система, ZHENIS Coin, закрытые каналы, live streams, support messages, broadcast queue и audit log.
+
+5. ZHENIS ORDA / Genius Orda logic.
+   Название платформы и брендовые тексты находятся:
+   - internal/service/domain.go: BrandTexts()
+   - traits/database/database.go: seedSettings()
+   - internal/handler/api.go: handlePlatform()
+   - static/index.html и static/js/app.js: frontend copy/layout
+
+1.2. Как части работают вместе
+
+1. Пользователь открывает Telegram bot.
+2. Bot регистрирует или обновляет пользователя в таблице users через Store.RegisterOrUpdateTelegramUser().
+3. Если пользователь пришел по реферальному start payload вида ref..., Store.RegisterOrUpdateTelegramUser() создает связь в users.invited_by_user_id и referrals.
+4. Bot показывает главное меню и inline кнопку Mini App.
+5. Mini App открывает static/index.html, запускает static/js/app.js, валидирует Telegram initData через backend route /api/me.
+6. Пользователь проходит диагностику, выбирает тариф, создает pending payment.
+7. Чек оплаты загружается через Telegram bot как document/photo. HTTP upload receipt route в Mini App не найден.
+8. Admin открывает /admin, логинится по browser password, видит платежи и вручную approve/reject.
+9. При approve backend создает или продлевает subscription, переводит payment в approved, открывает current_level минимум до 1 и начисляет referral rewards.
+10. Пользователь получает доступ к LEVEL 1, проходит уроки, отмечает watched, проходит тест.
+11. Store.RecalculateUserProgress() и Store.recalculateUserProgressTx() повышают current_level, если все уроки текущего уровня watched и тест уровня passed.
+
+2. PROJECT STRUCTURE
+
+2.1. cmd/main.go
+
+Назначение:
+Главная точка входа приложения. Собирает конфигурацию, logger, database, repository, KV store, HTTP server, Telegram bot и scheduler.
+
+Основные функции:
+- main()
+- buildKV(ctx, cfg, log)
+
+Startup responsibilities:
+- config.Load()
+- logger.New(cfg.Env)
+- database.Open(ctx, cfg.DBPath)
+- database.Migrate(ctx, db)
+- repository.New(db)
+- buildKV()
+- handler.NewServer(cfg, store, kv, log)
+- handler.NewTelegramBot(...) если cfg.DisableTelegramBot == false
+- srv.SetBot(bot)
+- bot.StartLongPolling(ctx)
+- srv.StartSchedulers(ctx)
+- http.Server.ListenAndServe()
+- graceful shutdown через httpServer.Shutdown()
+
+2.2. config/
+
+Файл:
+- config/config.go
+
+Назначение:
+Загрузка и валидация environment variables.
+
+Основные типы и функции:
+- Config
+- Load()
+- Validate()
+- IsProduction()
+- Addr()
+- PaymentURL(provider string)
+- String()
+
+Важные параметры:
+- TOKEN
+- PORT
+- ENV
+- BASE_URL
+- MINI_APP_URL
+- DB_PATH
+- REDIS_ADDR
+- REDIS_PASSWORD
+- REDIS_DB
+- ADMIN_IDS
+- ADMIN_PASSWORD_HASH
+- UPLOAD_DIR
+- ALLOWED_ORIGINS
+- KASPI_PAY_URL
+- KASPI_QR_IMAGE_URL
+- HALYK_PAYMENT_URL
+- BANK_CARD_PAYMENT_URL
+- PAYMENT_PENDING_TTL_MINUTES
+- SUBSCRIPTION_DEFAULT_DAYS
+- DISABLE_TELEGRAM_BOT
+- MAX_RECEIPT_BYTES
+- BROWSER_SESSION_TTL_HOURS
+- TELEGRAM_INIT_DATA_MAX_AGE_HOURS
+- INACTIVE_REMINDER_COOLDOWN_HOURS
+- SUBSCRIPTION_REMINDER_HOURS
+
+Current behavior:
+- BASE_URL валидируется и логируется, но прямого использования в handler logic не найдено.
+- MINI_APP_URL передается в TelegramBot и используется в inlineMiniAppMarkup() как web_app.url.
+- TOKEN обязателен только в production.
+- ADMIN_PASSWORD_HASH и ADMIN_IDS обязательны только в production.
+- В development browser admin password равен admin, если ADMIN_PASSWORD_HASH пустой.
+
+2.3. internal/handler/
+
+Назначение:
+HTTP routing, Telegram bot, auth middleware, browser sessions, schedulers.
+
+Файлы:
+
+1. internal/handler/http.go
+   - Server struct
+   - Routes()
+   - serveIndex()
+   - withCORS()
+   - withMiniAppAuth()
+   - userFromMiniApp()
+   - withBrowserAuth()
+   - withRole()
+   - handleBrowserLogin()
+   - handleBrowserLogout()
+   - handleBrowserMe()
+   - safePublicUploadPath()
+
+   Routes() регистрирует все static, Mini App API, browser auth API и admin API routes.
+
+2. internal/handler/api.go
+   User-facing Mini App handlers:
+   - handleMe()
+   - handlePlatform()
+   - handleDiagnostics()
+   - handleTariffs()
+   - handleCreatePayment()
+   - handlePayment()
+   - handleSubscription()
+   - handleLevels()
+   - handleLevel()
+   - handleLessons()
+   - handleLesson()
+   - handleLessonWatched()
+   - handleTest()
+   - handleSubmitTest()
+   - handleAssignment()
+   - handleSubmitAssignment()
+   - handleReferral()
+   - handleBonuses()
+   - handleCoins()
+   - handleStreams()
+   - handleChannels()
+   - handleIssueInvite()
+   - handleSupport()
+
+3. internal/handler/admin_http.go
+   Browser admin handlers:
+   - handleAdminStats()
+   - handleAdminUsers()
+   - handleAdminUser()
+   - handleAdminUserAccess()
+   - handleAdminUserBonus()
+   - handleAdminPayments()
+   - handleAdminPayment()
+   - handleAdminApprovePayment()
+   - handleAdminRejectPayment()
+   - handleAdminSubscriptions()
+   - handleAdminPatchSubscription()
+   - handleAdminLevels()
+   - handleAdminPostLevel()
+   - handleAdminDeleteLevel()
+   - handleAdminLessons()
+   - handleAdminPostLesson()
+   - handleAdminDeleteLesson()
+   - handleAdminPostTest()
+   - handleAdminDeleteTest()
+   - handleAdminReviewAssignmentSubmission()
+   - handleAdminPlaceholder()
+   - handleAdminAdjustCoins()
+   - handleAdminChannels()
+   - handleAdminPostChannel()
+   - handleAdminDeleteChannel()
+   - handleAdminIssueInvite()
+   - handleAdminStreams()
+   - handleAdminPostStream()
+   - handleAdminDeleteStream()
+   - handleAdminBroadcast()
+   - handleAdminSettings()
+   - handleAdminPatchSettings()
+   - handleAdminAudit()
+
+4. internal/handler/telegram.go
+   Telegram Bot long polling and bot actions:
+   - TelegramBot
+   - NewTelegramBot()
+   - StartLongPolling()
+   - SendMessage()
+   - CreateInviteLink()
+   - handleUpdate()
+   - sendLanguageSelection()
+   - sendMainMenu()
+   - inlineMiniAppMarkup()
+   - startDiagnostics()
+   - handleDiagnosticsText()
+   - handleReceiptUpload()
+   - downloadTelegramFile()
+   - sendMessage()
+   - postJSON()
+
+5. internal/handler/session.go
+   KV abstraction and browser sessions:
+   - KV interface
+   - RedisKV
+   - MemoryKV
+   - BrowserSession
+   - SessionManager
+
+6. internal/handler/scheduler.go
+   Background jobs:
+   - StartSchedulers()
+   - runMinuteJobs()
+   - runInactiveReminderJob()
+   - runDailyJobs()
+   - runLiveStreamReminderJob()
+
+2.4. internal/repository/
+
+Назначение:
+SQL access, transactions, persistence, status changes, business rules.
+
+Файлы:
+
+1. internal/repository/models.go
+   DTO/domain structs and constants:
+   - User
+   - Tariff
+   - Subscription
+   - Payment
+   - Receipt
+   - Level
+   - Lesson
+   - Progress
+   - Test
+   - TestQuestion
+   - TestOption
+   - TestAttempt
+   - Assignment
+   - ReferralSummary
+   - ReferralReward
+   - Channel
+   - LiveStream
+   - AdminStats
+   - AdminActor
+
+2. internal/repository/store.go
+   Store wrapper and shared helpers:
+   - Store
+   - New()
+   - DB()
+   - withTx()
+   - Audit()
+   - rowErr()
+
+3. internal/repository/users.go
+   User, diagnostics, tariffs, subscriptions, coins, referrals:
+   - RegisterOrUpdateTelegramUser()
+   - SetLanguage()
+   - GetUserByTelegramID()
+   - GetUserByID()
+   - TouchUser()
+   - SaveDiagnostics()
+   - ListTariffs()
+   - GetTariffByCode()
+   - GetActiveSubscription()
+   - CoinBalance()
+   - ReferralSummary()
+   - ListReferralRewards()
+   - AddCoins()
+   - AddCoinsTx()
+   - ListInactiveUsers()
+   - ListSubscriptionsExpiringBetween()
+   - ListUsersWithActiveTariffAtLeast()
+
+4. internal/repository/payments.go
+   Payment lifecycle and referral payment rewards:
+   - CreatePayment()
+   - LatestPendingPayment()
+   - GetPayment()
+   - AttachReceipt()
+   - ApprovePayment()
+   - RejectPayment()
+   - ExpirePendingPayments()
+   - ExpireSubscriptions()
+   - applyReferralPaymentRewardsTx()
+   - extendSubscriptionTx()
+   - ManualAddSubscriptionDays()
+   - ManualAdjustCoins()
+
+5. internal/repository/progress.go
+   Level access, lessons, tests, assignments, progress:
+   - CanAccessLevel()
+   - CanUnlockNextLevel()
+   - RecalculateUserProgress()
+   - CurrentProgress()
+   - ListLevels()
+   - GetLevel()
+   - ListLessons()
+   - GetLesson()
+   - MarkLessonWatched()
+   - GetTestByLevel()
+   - SubmitTest()
+   - GetAssignmentByLevel()
+   - SubmitAssignment()
+   - ParseSelectedAnswers()
+
+6. internal/repository/admin.go
+   Admin queries and mutations:
+   - AdminStats()
+   - ListUsers()
+   - SetUserAccessClosed()
+   - ListPayments()
+   - ListSubscriptions()
+   - UpdateSubscriptionStatus()
+   - UpsertLevel()
+   - DeleteLevel()
+   - UpsertLesson()
+   - DeleteLesson()
+   - UpsertTest()
+   - DeleteTest()
+   - ReviewAssignmentSubmission()
+   - UpsertTariff()
+   - ListChannels()
+   - CanAccessChannel()
+   - GetChannel()
+   - UpsertChannel()
+   - DeleteChannel()
+   - RecordInviteLink()
+   - ListStreams()
+   - UpsertStream()
+   - DeleteStream()
+   - Broadcast()
+   - CreateSupportMessage()
+   - ListAudit()
+   - Settings()
+   - PatchSettings()
+   - PlaceholderList()
+
+2.5. internal/service/
+
+Файлы:
+
+1. internal/service/auth.go
+   Telegram Mini App initData validation.
+   Основные элементы:
+   - TelegramInitUser
+   - TelegramInitData
+   - TelegramInitValidator
+   - NewTelegramInitValidator()
+   - Validate()
+
+   Validate() парсит initData, проверяет hash через HMAC-SHA256 по Telegram WebAppData algorithm, проверяет auth_date по maxAge и возвращает Telegram user/start_param.
+
+2. internal/service/domain.go
+   Pure domain helpers:
+   - SupportedPaymentProviders()
+   - TariffRank()
+   - ReferralRewardLabel()
+   - BrandTexts()
+
+2.6. internal/i18n/
+
+Файл:
+- internal/i18n/i18n.go
+
+Назначение:
+Локализованные bot/user messages для kk и ru.
+
+Основная функция:
+- T(language, key string)
+
+Если language != ru, используется kk.
+
+2.7. traits/database/
+
+Файлы:
+
+1. traits/database/database.go
+   - Open()
+   - Migrate()
+   - Seed()
+   - seedTariffs()
+   - seedSettings()
+   - seedLevels()
+
+   Open() открывает SQLite через modernc.org/sqlite, включает foreign_keys, WAL и busy_timeout.
+   Migrate() создает schema_migrations, schemaV1, indexesV1 и запускает Seed().
+   Seed() создает default tariffs, 12 levels, lessons, tests/questions/options, default assignment для level 1, app_settings.
+
+2. traits/database/schema.go
+   Полная SQL schemaV1 и indexesV1.
+
+2.8. traits/logger/
+
+Файл:
+- traits/logger/logger.go
+
+Назначение:
+zap logger setup.
+
+Функция:
+- New(env string)
+
+Production использует zap.NewProductionConfig(), development использует zap.NewDevelopmentConfig().
+
+2.9. static/index.html
+
+Назначение:
+Один HTML shell для трех режимов:
+
+1. Mini App shell:
+   - #miniApp
+   - #userHeader
+   - #appContent
+   - #bottomCta
+
+2. Browser admin login:
+   - #adminAuth
+   - #adminLoginForm
+   - #adminPassword
+
+3. Authenticated browser admin:
+   - #adminApp
+   - #adminSidebar
+   - #adminNav
+   - #adminContent
+
+4. Browser landing/fallback:
+   - #landing
+
+Подключает:
+- /static/css/style.css
+- https://telegram.org/js/telegram-web-app.js
+- /static/js/app.js
+
+2.10. static/css/style.css
+
+Назначение:
+Dark/gold visual system, Mini App safe-area layout, admin layout, landing layout, forms, buttons, cards, tables, modal, toast.
+
+Важные CSS variables:
+- --viewport-height
+- --viewport-stable-height
+- --app-top-padding
+- --app-bottom-padding
+- --tg-safe-area-inset-top
+- --tg-safe-area-inset-bottom
+- --tg-content-safe-area-inset-top
+- --tg-content-safe-area-inset-bottom
+
+2.11. static/js/app.js
+
+Назначение:
+Static SPA runtime без build system.
+
+Основные responsibilities:
+- mode detection: Mini App / Browser Admin / Landing / Dev Mini App
+- Telegram viewport setup
+- API client
+- Mini App screen rendering
+- browser admin rendering
+- modal/toast/loading states
+
+Основные функции перечислены подробно в разделе 22.
+
+2.12. docker-compose.yml
+
+Назначение:
+Запуск app service и Redis.
+
+Services:
+- app
+- redis
+
+App:
+- build/Dockerfile
+- port mapping ${PORT:-8080}:8080
+- DB_PATH=/app/data/zhenis_orda.sqlite
+- REDIS_ADDR=redis:6379
+- UPLOAD_DIR=/app/uploads
+- DISABLE_TELEGRAM_BOT default true
+- volumes app-data, app-uploads
+
+2.13. build/Dockerfile
+
+Назначение:
+Multi-stage Docker build.
+
+Build stage:
+- golang:1.26.1-alpine
+- go mod download
+- go build -o /out/zhenis-orda ./cmd
+
+Runtime stage:
+- alpine:3.22
+- copies binary and static folder
+- creates /app/data and /app/uploads
+- EXPOSE 8080
+- CMD ["/app/zhenis-orda"]
+
+3. APPLICATION STARTUP FLOW
+
+Startup path: cmd/main.go main()
+
+Step 1. Context and signal handling.
+main() создает context через signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM).
+
+Step 2. Config loading.
+main() вызывает config.Load().
+config.Load() читает environment variables, применяет defaults и вызывает Config.Validate().
+
+Step 3. Logger initialization.
+main() вызывает logger.New(cfg.Env).
+traits/logger/logger.go выбирает production или development zap config.
+
+Step 4. Database initialization.
+main() вызывает database.Open(ctx, cfg.DBPath).
+traits/database/database.go:
+- создает directory для DB file, если path != :memory:
+- открывает SQLite DSN
+- включает WAL, foreign_keys и busy_timeout
+- ограничивает DB pool до 1 open и 1 idle connection
+
+Step 5. Migrations/table creation.
+main() вызывает database.Migrate(ctx, db).
+Migrate():
+- создает schema_migrations
+- выполняет schemaV1
+- выполняет indexesV1
+- вставляет migration version 1
+- вызывает Seed()
+
+Step 6. Seed data.
+Seed():
+- seedTariffs(): BASIC, STANDARD, VIP
+- seedLevels(): 12 levels, lessons, tests, test_questions, test_options, assignment для level 1
+- seedSettings(): platform_name, brand_line, stream_name
+
+Step 7. Repository creation.
+main() вызывает repository.New(db).
+
+Step 8. Redis/state store initialization.
+main() вызывает buildKV(ctx, cfg, log).
+
+buildKV():
+- если cfg.RedisAddr пустой: handler.NewMemoryKV()
+- иначе создает redis.NewClient()
+- Ping(ctx)
+- если Redis недоступен: fallback to handler.NewMemoryKV()
+- если Redis доступен: handler.NewRedisKV(client)
+
+KV используется для:
+- browser sessions
+- Telegram diagnostics state
+- reminder idempotency keys
+
+Step 9. Handler creation.
+main() вызывает handler.NewServer(cfg, store, kv, log).
+
+NewServer():
+- stores cfg/store/kv/logger
+- создает SessionManager
+- создает TelegramInitValidator через service.NewTelegramInitValidator(cfg.Token, cfg.TelegramInitDataMaxAge)
+
+Step 10. Telegram bot creation.
+Если cfg.DisableTelegramBot == false:
+- handler.NewTelegramBot(cfg.Token, store, kv, cfg.UploadDir, cfg.MiniAppURL, cfg.AdminIDs, cfg.MaxReceiptBytes, log)
+- srv.SetBot(bot)
+- bot.StartLongPolling(ctx)
+
+Если TOKEN пустой, StartLongPolling() логирует warning и не запускает polling.
+
+Step 11. Scheduler start.
+main() вызывает srv.StartSchedulers(ctx).
+
+StartSchedulers() запускает goroutines:
+- every 1 minute: runMinuteJobs()
+- every 10 minutes: runInactiveReminderJob()
+- every 24 hours: runDailyJobs()
+- every 1 minute: runLiveStreamReminderJob()
+
+Step 12. HTTP server start.
+main() создает http.Server:
+- Addr: cfg.Addr()
+- Handler: srv.Routes()
+- ReadHeaderTimeout 10s
+- ReadTimeout 30s
+- WriteTimeout 60s
+- IdleTimeout 120s
+
+ListenAndServe() запускается в goroutine.
+
+Step 13. Shutdown.
+При ctx.Done():
+- создает shutdown context 15 seconds
+- httpServer.Shutdown()
+- logs "shutdown complete"
+
+4. TELEGRAM BOT FLOW
+
+4.1. Bot creation and polling
+
+Файл:
+- internal/handler/telegram.go
+
+Functions:
+- NewTelegramBot()
+- StartLongPolling()
+- getUpdates()
+- handleUpdate()
+
+StartLongPolling() запускает goroutine, вызывает getUpdates() с timeout 45 секунд и allowed_updates ["message"].
+
+4.2. /start
+
+Handler:
+- TelegramBot.handleUpdate()
+
+Flow:
+1. Проверяет update.Message != nil и update.Message.From.ID != 0.
+2. Читает msg.Text.
+3. Если text starts with /start, извлекает startParam из второго слова.
+4. Определяет language:
+   - ru, если msg.From.LanguageCode начинается с ru
+   - иначе kk
+5. Вызывает Store.RegisterOrUpdateTelegramUser() с:
+   - TelegramID
+   - Username
+   - FirstName
+   - LastName
+   - Language
+   - StartParam
+6. Если сообщение содержит document/photo, переходит в receipt upload flow.
+7. Если текст "Қазақша" или "Русский", вызывает Store.SetLanguage() и sendMainMenu().
+8. Если есть diagnostics state, обрабатывает ответ диагностики.
+9. Если /start или user created:
+   - если user.Language пустой: sendLanguageSelection()
+   - иначе sendMainMenu()
+
+Important current behavior:
+- RegisterOrUpdateTelegramUser() получает language уже как kk или ru, поэтому новый пользователь обычно сразу получает language и language selection может не показаться.
+- parseStartPayload() существует, но в handleUpdate() не используется.
+
+4.3. User registration/upsert
+
+Repository:
+- internal/repository/users.go
+- Store.RegisterOrUpdateTelegramUser()
+
+New user:
+- генерирует referral_code = "ref" + telegram_id
+- если StartParam начинается с "ref", ищет inviter по users.referral_code
+- запрещает self-referral через проверку inviterTelegramID != input.TelegramID
+- INSERT INTO users(...)
+- если inviter найден, INSERT OR IGNORE INTO referrals(...)
+
+Existing user:
+- обновляет username, first_name, last_name, last_seen_at, updated_at
+- language меняется только если текущий language пустой
+- invited_by_user_id не меняется для существующего пользователя
+
+Tables:
+- users
+- referrals
+
+4.4. Language selection
+
+Functions:
+- sendLanguageSelection()
+- sendMainMenu()
+- Store.SetLanguage()
+
+sendLanguageSelection() отправляет reply keyboard:
+- Қазақша
+- Русский
+
+Store.SetLanguage():
+- принимает kk или ru
+- если другое значение, fallback kk
+- UPDATE users SET language=...
+
+4.5. Main menu
+
+Function:
+- sendMainMenu()
+
+Reply keyboard содержит:
+- menu_level / menu_lessons
+- menu_test / menu_assignments
+- menu_stream / menu_referral
+- menu_bonuses / menu_payment
+- menu_support / Open Mini App
+
+После reply keyboard bot отправляет отдельное сообщение с inlineMiniAppMarkup().
+
+4.6. WebApp button
+
+Function:
+- inlineMiniAppMarkup(language)
+
+Returns:
+- inline_keyboard with web_app.url = b.miniAppURL
+
+miniAppURL приходит из config.MINI_APP_URL.
+
+4.7. Diagnostics in bot
+
+Functions:
+- startDiagnostics()
+- handleDiagnosticsText()
+- diagnosticsQuestions()
+- saveDiagnosticsState()
+- getDiagnosticsState()
+- diagnosticsKey()
+
+Flow:
+1. User sends "Free diagnostics", "Тегін диагностика" или "Бесплатная диагностика".
+2. startDiagnostics() сохраняет diagnosticsState в KV по key diag:{userID}.
+3. Bot задает 8 вопросов.
+4. Каждый ответ сохраняется в state.Answers.
+5. После последнего ответа Store.SaveDiagnostics() пишет row в diagnostics.
+6. Bot отправляет i18n.T(language, "diagnostics_done") и inline Mini App button.
+
+Tables:
+- diagnostics
+
+4.8. Payment receipt upload
+
+Function:
+- handleReceiptUpload()
+
+Accepted Telegram message types:
+- document
+- photo
+
+Allowed extensions:
+- .pdf
+- .jpg
+- .jpeg
+- .png
+- .webp
+
+Flow:
+1. Получает file_id, fileName, mimeType, fileSize.
+2. Проверяет fileSize <= maxReceipt.
+3. Проверяет extension через allowedReceiptExt().
+4. Если extension unknown, пытается mime.ExtensionsByType().
+5. downloadTelegramFile() вызывает Telegram getFile, скачивает файл по fileBase/file_path.
+6. Сохраняет файл в uploads/receipts/YYYY/MM/{userID}_{unixNano}.{ext}.
+7. Store.AttachReceipt() ищет latest pending payment текущего user.
+8. INSERT INTO payment_receipts.
+9. UPDATE payments SET status='uploaded_receipt', receipt_file_path=...
+10. Bot сообщает user payment_uploaded.
+11. Bot отправляет admin notifications всем adminIDs.
+
+Tables:
+- payments
+- payment_receipts
+
+Mini App receipt upload route:
+Not found in current codebase.
+
+4.9. Admin notifications
+
+Receipt upload:
+- handleReceiptUpload() отправляет "New receipt uploaded..." каждому adminID из config.AdminIDs.
+
+Payment approval/rejection:
+- handleAdminApprovePayment() отправляет user i18n payment_approved через s.bot.SendMessage().
+- handleAdminRejectPayment() отправляет user formatted rejection message через s.bot.SendMessage().
+
+4.10. User notifications
+
+Found:
+- payment_uploaded
+- payment_no_pending
+- payment_approved
+- payment_rejected
+- inactive_3_days scheduler reminder
+- subscription_ending scheduler reminder
+- live stream reminders
+
+Broadcast delivery:
+Not found in current codebase. Broadcast records are queued in database, but no scheduler/worker sends them.
+
+5. TELEGRAM MINI APP BOOT FLOW
+
+5.1. Static loading
+
+Route:
+- GET /
+
+Backend:
+- internal/handler/http.go
+- Server.Routes()
+- serveIndex()
+
+GET / serves static/index.html.
+static/index.html loads:
+- /static/css/style.css
+- https://telegram.org/js/telegram-web-app.js
+- /static/js/app.js
+
+5.2. app.js boot
+
+Function:
+- boot()
+
+Runs on DOMContentLoaded.
+
+Steps:
+1. state.bootedAt = Date.now()
+2. cacheElements()
+3. Determines path.
+4. setupGlobalUi()
+5. If path is /admin or starts with /admin/: bootBrowserAdmin()
+6. Else if isTelegramMiniAppLaunch(): Mini App mode
+7. Else if isDevMiniAppLaunch(): development Mini App mode
+8. Else landing mode
+
+5.3. Telegram Mini App detection
+
+Functions:
+- getTelegram()
+- isTelegramMiniAppLaunch()
+
+isTelegramMiniAppLaunch() returns true if:
+- window.Telegram.WebApp exists
+- tg.initData exists
+- tg.initDataUnsafe.user exists
+
+5.4. initData reading and backend auth
+
+Frontend:
+- api(path, options)
+
+api() sets:
+- Content-Type: application/json
+- X-Telegram-Init-Data: tg.initData when available
+- credentials: include
+
+Backend:
+- withMiniAppAuth()
+- userFromMiniApp()
+- service.TelegramInitValidator.Validate()
+
+Validate() checks Telegram HMAC hash, auth_date age and user JSON.
+
+5.5. /api/me call
+
+bootMiniApp() calls in parallel:
+- GET /api/me
+- GET /api/platform
+- GET /api/levels
+
+handleMe() returns:
+- user
+- progress
+- texts
+- menu
+- serverTime
+
+handleMe() enriches user with:
+- active subscription
+- coin balance
+- current progress
+
+5.6. Frontend state initialization
+
+State object fields:
+- mode
+- me
+- platform
+- levels
+- lessons
+- referral
+- coins
+- currentScreen
+- selectedTariff
+- adminScreen
+- admin
+- fullscreenRequested
+- bootedAt
+
+After bootMiniApp():
+- state.me = /api/me response
+- state.platform = /api/platform response
+- state.levels = /api/levels response
+- state.currentScreen = dashboard if current_level > 0 or active subscription exists; otherwise onboarding
+
+5.7. Profile header rendering
+
+Functions:
+- renderHeader()
+- readTelegramUser()
+- buildDisplayName()
+- buildLogin()
+- buildPhotoUrl()
+
+renderHeader():
+- Reads Telegram initDataUnsafe.user and state.me.user.
+- Sets #tgName.
+- Sets #tgLogin.
+- Uses photo_url if available.
+- Falls back to avatar initials.
+
+Important current behavior:
+- Backend User struct does not include photo_url.
+- Telegram photo_url can be read only from tg.initDataUnsafe.user.
+- If Telegram does not provide photo_url, frontend uses fallback avatar.
+
+5.8. Telegram Mini App mode vs Browser Admin mode vs development mode
+
+Telegram Mini App mode:
+- Detected by Telegram.WebApp.initData/initDataUnsafe.user.
+- Adds CSS classes telegram-miniapp-mode to html/body.
+- Calls setupTelegramViewport().
+- Auth uses X-Telegram-Init-Data.
+
+Browser Admin mode:
+- Detected by path /admin.
+- Adds browser-admin-mode classes.
+- Calls bootBrowserAdmin().
+- Auth uses cookie zo_admin_session.
+- Does not use Telegram initData.
+
+Development Mini App mode:
+- Detected by query ?miniapp_dev=1.
+- Adds telegram-miniapp-mode and dev-miniapp-mode classes.
+- api() sends X-Miniapp-Dev: 1.
+- Optional query params:
+  - telegram_id
+  - username
+- Backend accepts this only when cfg.Env == "development".
+- userFromMiniApp() creates/updates dev user with telegramID default 777000.
+
+6. FORCE EXPAND AND SAFE-AREA BEHAVIOR
+
+6.1. Functions
+
+Frontend file:
+- static/js/app.js
+
+Functions:
+- setupTelegramViewport()
+- forceExpand()
+- syncTelegramFrame()
+- updateViewportVars()
+- getAppTopPadding()
+
+6.2. setupTelegramViewport()
+
+Called only in real Telegram Mini App mode.
+
+It:
+- calls forceExpand()
+- subscribes to Telegram events:
+  - viewportChanged
+  - safeAreaChanged
+  - contentSafeAreaChanged
+  - fullscreenChanged
+  - fullscreenFailed
+  - activated
+- subscribes to browser resize/orientation/focus
+- subscribes to visualViewport resize/scroll
+- syncs frame when document becomes visible again
+
+6.3. forceExpand()
+
+forceExpand():
+1. Gets Telegram.WebApp.
+2. Calls webApp.ready().
+3. Calls webApp.expand().
+4. Sets background/header color to #050403 when supported.
+5. Calls disableVerticalSwipes() when supported.
+6. Calls requestFullscreen() when supported and not already fullscreen.
+7. Sets state.fullscreenRequested = true and adds class telegram-fullscreen when requestFullscreen() was requested.
+8. Calls syncTelegramFrame() immediately and again after 120ms, 450ms, 900ms.
+
+6.4. syncTelegramFrame()
+
+syncTelegramFrame():
+- calls updateViewportVars()
+- calls tg.expand() again if Telegram.WebApp exists
+
+6.5. updateViewportVars()
+
+Reads:
+- tg.viewportHeight
+- tg.viewportStableHeight
+- tg.safeAreaInset
+- tg.contentSafeAreaInset
+- window.innerHeight fallback
+
+Sets CSS variables:
+- --browser-viewport-height
+- --viewport-height
+- --viewport-stable-height
+- --tg-safe-area-inset-top
+- --tg-safe-area-inset-bottom
+- --tg-content-safe-area-inset-top
+- --tg-content-safe-area-inset-bottom
+- --app-top-padding
+- --app-bottom-padding
+
+6.6. Header below Telegram system buttons
+
+The Mini App header is inside .app-shell.
+.app-shell uses:
+- padding-top: var(--app-top-padding)
+- height/min-height: var(--viewport-stable-height)
+
+getAppTopPadding() reserves vertical space for:
+- safeAreaInset.top
+- contentSafeAreaInset.top
+- mobile Telegram system buttons
+- fullscreen state
+
+This is why user-header should remain below Telegram close/back/system controls instead of being hidden under them.
+
+6.7. CSS layout variables
+
+static/css/style.css:
+- html.telegram-miniapp-mode and body.telegram-miniapp-mode are fixed, fullscreen, overflow hidden.
+- .app-shell uses --viewport-stable-height.
+- .content scrolls internally.
+- .bottom-cta stays below content and respects --app-bottom-padding.
+
+7. FRONTEND ARCHITECTURE
+
+7.1. static/index.html as shell
+
+static/index.html contains all root nodes for:
+- Mini App
+- Admin login
+- Admin app
+- Landing fallback
+- Toast stack
+- Modal root
+
+The frontend does not use a bundler. app.js runs directly in browser.
+
+7.2. static/css/style.css as design system and responsive layout
+
+style.css defines:
+- dark/gold color tokens
+- text colors
+- borders
+- semantic colors
+- shadows
+- radii
+- safe-area variables
+- Mini App fixed viewport layout
+- admin responsive sidebar
+- landing page
+- cards, metrics, forms, tables, modals, toasts, skeletons
+
+7.3. static/js/app.js as SPA state, API client and renderer
+
+app.js owns:
+- global state
+- DOM cache
+- Telegram helpers
+- viewport management
+- profile header rendering
+- API helper
+- utility functions
+- toast/modal
+- Mini App routing/rendering
+- Browser admin routing/rendering
+
+7.4. Global state object
+
+state fields:
+- mode
+- me
+- platform
+- levels
+- lessons
+- referral
+- coins
+- currentScreen
+- selectedTariff
+- adminScreen
+- admin
+- fullscreenRequested
+- bootedAt
+
+7.5. Cached DOM elements
+
+cacheElements() maps important IDs into els:
+- miniApp
+- userHeader
+- tgAvatar
+- tgAvatarFallback
+- tgName
+- tgLogin
+- profileAction
+- appContent
+- bottomCta
+- adminAuth
+- adminLoginForm
+- adminPassword
+- adminLoginError
+- adminLoginSubmit
+- adminLoginHint
+- togglePassword
+- adminApp
+- adminSidebar
+- adminNav
+- adminNavToggle
+- adminTitle
+- adminWho
+- adminLogout
+- adminLogoutTop
+- adminContent
+- landing
+- landingTelegramLink
+- toastStack
+- modalRoot
+
+7.6. API helper
+
+Function:
+- api(path, options)
+
+Responsibilities:
+- adds Content-Type application/json
+- adds X-Telegram-Init-Data in Mini App
+- adds X-Miniapp-Dev in dev preview
+- sends credentials: include for browser admin cookie
+- parses JSON response
+- throws Error with body.error or HTTP status if res.ok is false
+
+7.7. Render functions
+
+Mini App:
+- renderLanding()
+- showMiniApp()
+- bootMiniApp()
+- setScreen()
+- renderMini()
+- renderFooter()
+- renderShellLoading()
+- renderError()
+- renderOnboarding()
+- renderDashboard()
+- renderLevelStrip()
+- renderLevels()
+- renderLessons()
+- lessonCard()
+- markWatched()
+- renderTest()
+- questionBlock()
+- renderAssignment()
+- renderDiagnostics()
+- renderTariffs()
+- tariffCard()
+- renderPayment()
+- renderReferral()
+- renderCoins()
+- renderStreams()
+- renderChannels()
+- renderProfile()
+- renderSupport()
+- bindNext()
+- refreshLevels()
+
+Browser admin:
+- bootBrowserAdmin()
+- showAdminLogin()
+- showAdminAuthenticated()
+- handleAdminLogout()
+- renderAdminNav()
+- renderAdmin()
+- renderAdminDashboard()
+- renderAdminUsers()
+- renderAdminTable()
+- renderAdminItems()
+- renderAdminPayments()
+- renderAdminChannels()
+- renderAdminBroadcast()
+- renderAdminSettings()
+- tableHtml()
+
+7.8. Navigation between screens
+
+Mini App:
+- state.currentScreen controls screen.
+- setScreen(screen) updates state.currentScreen and calls renderMini().
+- renderFooter() creates tabbar:
+  - dashboard
+  - lessons
+  - referral
+  - coins
+  - profile
+- bindNext() handles buttons with data-next.
+
+Admin:
+- state.adminScreen controls admin page.
+- renderAdminNav() creates sidebar buttons from adminScreens.
+- renderAdmin() dispatches by screen.
+
+7.9. Modal handling
+
+Function:
+- modal({ title, body, actions })
+
+Used in renderChannels() to display invite link.
+
+7.10. Toast handling
+
+Function:
+- toast(message, kind)
+
+Kinds used:
+- success
+- error
+- default
+
+7.11. Loading states
+
+Found:
+- renderShellLoading()
+- skeletonRows()
+- CSS .skeleton and .skeleton-row
+- button .is-loading state with .btn-spinner
+
+7.12. Error handling
+
+Frontend:
+- api() throws Error.
+- renderMini() catches renderer errors and calls renderError().
+- individual render functions show emptyState() or toast().
+
+Backend:
+- mapRepoError() maps repository errors:
+  - ErrNotFound -> 404
+  - ErrForbidden -> 403
+  - ErrInvalidState -> 409
+  - default -> 500
+
+8. FRONTEND AND BACKEND INTERACTION
+
+8.1. GET /api/me
+
+User action:
+- Mini App boot.
+
+Frontend:
+- bootMiniApp()
+- api("/api/me")
+
+HTTP:
+- GET /api/me
+- Headers: X-Telegram-Init-Data or X-Miniapp-Dev in development.
+
+Backend:
+- withMiniAppAuth()
+- handleMe()
+
+Repository:
+- RegisterOrUpdateTelegramUser() in auth middleware
+- GetActiveSubscription()
+- CurrentProgress()
+- CoinBalance()
+
+Tables:
+- users
+- subscriptions
+- tariffs
+- lesson_progress
+- lessons
+- tests
+- test_attempts
+- assignments
+- assignment_submissions
+- coin_transactions
+
+Response usage:
+- state.me
+- renderHeader()
+- dashboard/profile/progress metrics
+
+8.2. Diagnostics submit
+
+User action:
+- Mini App diagnostics form submit.
+
+Frontend:
+- renderDiagnostics()
+- diagnosticsForm submit
+
+HTTP:
+- POST /api/diagnostics
+- Body:
+  {"answers":{"name":"...","city":"...","age":"...","income":"...","has_debt":"...","has_business":"...","main_problem":"...","growth_area":"..."}}
+
+Backend:
+- handleDiagnostics()
+
+Repository:
+- SaveDiagnostics()
+
+Tables:
+- diagnostics
+
+Response usage:
+- toast message
+- setScreen("tariffs")
+
+8.3. Tariffs loading
+
+User action:
+- open tariffs screen or Mini App boot platform load.
+
+Frontend:
+- renderTariffs()
+- bootMiniApp() via /api/platform
+
+HTTP:
+- GET /api/tariffs
+- GET /api/platform
+
+Backend:
+- handleTariffs()
+- handlePlatform()
+
+Repository:
+- ListTariffs(ctx, true)
+
+Tables:
+- tariffs
+
+Response usage:
+- tariff cards
+- selectedTariff
+
+8.4. Payment creation
+
+User action:
+- Choose tariff in renderTariffs(), then submit payment form in renderPayment().
+
+Frontend:
+- tariffCard()
+- renderPayment()
+
+HTTP:
+- POST /api/payments
+- Body:
+  {"tariff_code":"BASIC|STANDARD|VIP","provider":"kaspi_qr|kaspi_pay|halyk|bank_card"}
+
+Backend:
+- handleCreatePayment()
+
+Repository:
+- CreatePayment()
+- GetTariffByCode()
+- GetPayment()
+
+Tables:
+- tariffs
+- payments
+
+Response usage:
+- shows payment id, amount, instructions text.
+- user must send receipt to Telegram bot.
+
+8.5. Receipt/payment status
+
+Payment status route:
+- GET /api/payments/{id}
+
+Frontend use:
+- Not found in current static/js/app.js.
+
+Backend:
+- handlePayment()
+- Store.GetPayment()
+- verifies payment.UserID == current user.ID
+
+Tables:
+- payments
+
+Receipt upload:
+- Telegram bot only.
+- handleReceiptUpload()
+- Store.AttachReceipt()
+
+Tables:
+- payments
+- payment_receipts
+
+Mini App receipt upload:
+Not found in current codebase.
+
+8.6. Levels loading
+
+Frontend:
+- bootMiniApp()
+- refreshLevels()
+- renderLevels()
+
+HTTP:
+- GET /api/levels
+- GET /api/levels/{id}
+
+Backend:
+- handleLevels()
+- handleLevel()
+
+Repository:
+- ListLevels()
+- GetLevel()
+- CanAccessLevel()
+- progressForLevel()
+- ListLessons() for GetLevel()
+
+Tables:
+- levels
+- lessons
+- lesson_progress
+- subscriptions
+- users
+- tests
+- test_attempts
+- assignments
+- assignment_submissions
+
+8.7. Lessons loading
+
+Frontend:
+- renderLessons()
+
+HTTP:
+- GET /api/lessons?level={currentLevel}
+- GET /api/lessons/{id} exists but is not used by current app.js.
+
+Backend:
+- handleLessons()
+- handleLesson()
+
+Repository:
+- ListLessons()
+- GetLesson()
+- CanAccessLevel()
+
+Tables:
+- lessons
+- levels
+- lesson_progress
+- users
+- subscriptions
+
+8.8. Lesson watched action
+
+User action:
+- Click "Сабақты өттім" in lessonCard().
+
+Frontend:
+- markWatched(id)
+
+HTTP:
+- POST /api/lessons/{id}/watched
+- Body: "{}"
+
+Backend:
+- handleLessonWatched()
+
+Repository:
+- MarkLessonWatched()
+- AddCoinsTx()
+- recalculateUserProgressTx()
+
+Tables:
+- lesson_progress
+- coin_transactions
+- users
+- subscriptions
+- lessons
+- tests
+- test_attempts
+
+Response usage:
+- frontend reloads /api/me
+- refreshLevels()
+- toast success
+- renderLessons()
+
+8.9. Test loading
+
+Frontend:
+- renderTest()
+
+HTTP:
+- GET /api/tests/{level_id}
+
+Backend:
+- handleTest()
+
+Repository:
+- GetTestByLevel()
+- getTestByLevelQuery(includeCorrect=false)
+
+Tables:
+- tests
+- test_questions
+- test_options
+- levels
+- users
+- subscriptions
+
+Response usage:
+- renders radio options without is_correct.
+
+8.10. Test submit
+
+User action:
+- Submit test form.
+
+Frontend:
+- renderTest()
+
+HTTP:
+- POST /api/tests/{level_id}/submit
+- Body:
+  {"answers":{"question_id_as_string": option_id_number}}
+
+Backend:
+- handleSubmitTest()
+
+Repository:
+- ParseSelectedAnswers()
+- SubmitTest()
+- getTestByLevelQuery(includeCorrect=true)
+- AddCoinsTx() if passed
+- recalculateUserProgressTx()
+
+Tables:
+- test_attempts
+- test_answers
+- coin_transactions
+- users
+
+Response usage:
+- toast score and passed/try again
+- reloads /api/me
+- refreshLevels()
+- setScreen("dashboard")
+
+8.11. Assignments
+
+User loading:
+- renderAssignment()
+- GET /api/assignments/{level_id}
+- handleAssignment()
+- Store.GetAssignmentByLevel()
+
+User submit:
+- renderAssignment()
+- POST /api/assignments/{level_id}/submit
+- Body:
+  {"answer_text":"...","file_path":"...","link_url":"..."}
+
+Current frontend sends:
+- answer_text
+- link_url
+
+Current frontend file upload:
+Not found in current codebase.
+
+Backend:
+- handleSubmitAssignment()
+- Store.SubmitAssignment()
+- Store.RecalculateUserProgress()
+
+Tables:
+- assignments
+- assignment_submissions
+
+Admin review:
+- PATCH /api/admin/assignments/submissions/{id}
+- handleAdminReviewAssignmentSubmission()
+- Store.ReviewAssignmentSubmission()
+
+Admin assignment creation:
+Not found in current codebase.
+
+8.12. Referral link
+
+Frontend:
+- renderReferral()
+
+HTTP:
+- GET /api/referral
+
+Backend:
+- handleReferral()
+
+Repository:
+- ReferralSummary()
+- ListReferralRewards()
+
+Tables:
+- users
+- referrals
+- referral_rewards
+
+Response usage:
+- referral link display
+- copy to clipboard
+- Telegram share URL
+
+8.13. Bonuses
+
+Frontend:
+- renderCoins() loads /api/bonuses
+
+HTTP:
+- GET /api/bonuses
+
+Backend:
+- handleBonuses()
+
+Repository:
+- ReferralSummary()
+
+Tables:
+- referrals
+- referral_rewards
+
+Response usage:
+- displays referral reward plan.
+
+8.14. ZHENIS coin
+
+Frontend:
+- renderCoins()
+
+HTTP:
+- GET /api/coins
+
+Backend:
+- handleCoins()
+
+Repository:
+- CoinBalance()
+- PlaceholderList("coins")
+
+Tables:
+- coin_transactions
+
+Important current behavior:
+- balance is calculated for current user.
+- transactions returned by PlaceholderList("coins") are all coin_transactions, not filtered by current user. Needs verification for privacy/UX.
+
+8.15. Channels/invite links
+
+Frontend:
+- renderChannels()
+
+HTTP:
+- GET /api/channels
+- POST /api/channels/{id}/invite
+
+Backend:
+- handleChannels()
+- handleIssueInvite()
+
+Repository:
+- ListChannels()
+- CanAccessChannel()
+- GetChannel()
+- RecordInviteLink()
+
+Telegram:
+- s.bot.CreateInviteLink() when invite_link_type == "bot" and bot is available.
+
+Tables:
+- channels
+- channel_invite_links
+- users
+- subscriptions
+- tariffs
+
+Response usage:
+- modal with invite_link and expires_at.
+
+8.16. Support
+
+Frontend:
+- renderSupport()
+
+HTTP:
+- POST /api/support
+- Body:
+  {"body":"..."}
+
+Backend:
+- handleSupport()
+
+Repository:
+- CreateSupportMessage()
+
+Tables:
+- support_messages
+
+Admin support inbox:
+Not found in current codebase.
+
+8.17. Admin login
+
+Frontend:
+- bootBrowserAdmin()
+- showAdminLogin()
+
+HTTP:
+- GET /api/browser-auth/me
+- POST /api/browser-auth/login
+- POST /api/browser-auth/logout
+
+Login body:
+  {"password":"..."}
+
+Backend:
+- handleBrowserLogin()
+- handleBrowserMe()
+- handleBrowserLogout()
+- SessionManager
+
+Storage:
+- RedisKV or MemoryKV key browser_session:{token}
+- Cookie zo_admin_session
+
+Tables:
+- staff_users/admins not used by current browser auth.
+
+8.18. Admin users
+
+Frontend:
+- renderAdminUsers()
+
+HTTP:
+- GET /api/admin/users?q=...
+- GET /api/admin/users/{id} exists but frontend does not call it.
+- PATCH /api/admin/users/{id}/access exists but frontend does not call it.
+- POST /api/admin/users/{id}/bonus exists but frontend does not call it.
+
+Backend:
+- handleAdminUsers()
+- handleAdminUser()
+- handleAdminUserAccess()
+- handleAdminUserBonus()
+
+Repository:
+- ListUsers()
+- GetUserByID()
+- SetUserAccessClosed()
+- ManualAddSubscriptionDays()
+- ManualAdjustCoins()
+- Audit()
+
+Tables:
+- users
+- subscriptions
+- coin_transactions
+- referrals
+- admin_actions
+
+8.19. Admin payments
+
+Frontend:
+- renderAdminPayments()
+
+HTTP:
+- GET /api/admin/payments
+- POST /api/admin/payments/{id}/approve
+- POST /api/admin/payments/{id}/reject
+
+Backend:
+- handleAdminPayments()
+- handleAdminApprovePayment()
+- handleAdminRejectPayment()
+
+Repository:
+- ListPayments()
+- ApprovePayment()
+- RejectPayment()
+- Audit()
+
+Tables:
+- payments
+- subscriptions
+- users
+- referrals
+- referral_rewards
+- coin_transactions
+- admin_actions
+
+8.20. Admin levels
+
+Frontend:
+- renderAdminTable("/api/admin/levels", ...)
+
+HTTP:
+- GET /api/admin/levels
+- POST /api/admin/levels exists but current frontend does not provide a level form.
+- PATCH /api/admin/levels/{id} exists but current frontend does not provide edit UI.
+- DELETE /api/admin/levels/{id} exists but current frontend does not provide delete UI.
+
+Backend:
+- handleAdminLevels()
+- handleAdminPostLevel()
+- handleAdminDeleteLevel()
+
+Repository:
+- ListLevels()
+- UpsertLevel()
+- DeleteLevel()
+- Audit()
+
+Tables:
+- levels
+- admin_actions
+
+8.21. Admin lessons
+
+Frontend:
+- renderAdminTable("/api/admin/lessons", ...)
+
+Current lesson form in browser admin:
+Not found in current codebase.
+
+HTTP:
+- GET /api/admin/lessons
+- POST /api/admin/lessons
+- PATCH /api/admin/lessons/{id}
+- DELETE /api/admin/lessons/{id}
+
+Backend:
+- handleAdminLessons()
+- handleAdminPostLesson()
+- handleAdminDeleteLesson()
+
+Repository:
+- ListLessons()
+- UpsertLesson()
+- DeleteLesson()
+- Audit()
+
+Tables:
+- lessons
+- levels
+- admin_actions
+
+8.22. Admin tests
+
+Frontend:
+- renderAdminItems("/api/admin/tests", "Tests")
+
+Current test creation form in browser admin:
+Not found in current codebase.
+
+HTTP:
+- GET /api/admin/tests
+- POST /api/admin/tests
+- PATCH /api/admin/tests/{id}
+- DELETE /api/admin/tests/{id}
+
+Backend:
+- GET uses handleAdminPlaceholder("tests")
+- POST/PATCH uses handleAdminPostTest()
+- DELETE uses handleAdminDeleteTest()
+
+Repository:
+- PlaceholderList("tests")
+- UpsertTest()
+- DeleteTest()
+- Audit()
+
+Tables:
+- tests
+- test_questions
+- test_options
+- admin_actions
+
+8.23. Admin broadcast
+
+Frontend:
+- renderAdminBroadcast()
+
+HTTP:
+- POST /api/admin/broadcast
+- Body:
+  {"title":"optional","body":"...","target":"all|active|inactive"}
+
+Backend:
+- handleAdminBroadcast()
+
+Repository:
+- Broadcast()
+- Audit()
+
+Tables:
+- broadcasts
+- admin_actions
+
+Actual sending:
+Not found in current codebase.
+No scheduler/worker populating broadcast_messages or sending Telegram messages was found.
+
+8.24. Admin settings
+
+Frontend:
+- renderAdminSettings()
+
+HTTP:
+- GET /api/admin/settings
+- PATCH /api/admin/settings exists but current frontend only displays JSON and does not provide edit form.
+
+Backend:
+- handleAdminSettings()
+- handleAdminPatchSettings()
+
+Repository:
+- Settings()
+- PatchSettings()
+- Audit()
+
+Tables:
+- app_settings
+- admin_actions
+
+9. HOW LESSONS ARE ADDED
+
+9.1. Current admin UI status
+
+Browser admin has a Lessons navigation item.
+
+Frontend path:
+- /admin
+- bootBrowserAdmin()
+- renderAdminNav()
+- adminScreens includes ["lessons", "Lessons"]
+- renderAdmin()
+- screen === "lessons"
+- renderAdminTable("/api/admin/lessons", "lessons", ["id", "level_number", "title_kk", "sort_order", "is_active"], "Lessons")
+
+Current behavior:
+- Lessons screen displays a table.
+- Lesson creation form in static/js/app.js: Not found in current codebase.
+- Lesson edit/delete buttons in static/js/app.js: Not found in current codebase.
+
+Backend endpoints for lesson create/edit/delete do exist.
+
+9.2. Backend lesson creation flow
+
+Practical backend/API flow:
+
+1. Admin must be authenticated in browser admin.
+   Auth route:
+   - POST /api/browser-auth/login
+   Cookie:
+   - zo_admin_session
+
+2. Request must call:
+   - POST /api/admin/lessons
+
+3. Expected JSON body maps to repository.Lesson:
+   - id: omitted or 0 for create
+   - level_id: required
+   - title_kk: required by DB schema
+   - title_ru: required by DB schema
+   - description_kk: optional
+   - description_ru: optional
+   - video_url: optional
+   - sort_order: integer
+   - is_active: boolean
+
+Example body:
+  {
+    "level_id": 1,
+    "title_kk": "New lesson title KK",
+    "title_ru": "New lesson title RU",
+    "description_kk": "Description KK",
+    "description_ru": "Description RU",
+    "video_url": "https://...",
+    "sort_order": 5,
+    "is_active": true
+  }
+
+4. Backend route:
+   - internal/handler/http.go Routes()
+   - mux.Handle("POST /api/admin/lessons", admin(s.handleAdminPostLesson, super_admin, content_manager))
+
+5. Middleware:
+   - withBrowserAuth()
+   - withRole()
+
+6. Handler:
+   - internal/handler/admin_http.go handleAdminPostLesson()
+
+7. Handler behavior:
+   - decodeJSON(r, &lesson)
+   - if path id exists, sets lesson.ID from path
+   - if !lesson.IsActive, sets lesson.IsActive = true
+   - calls s.store.UpsertLesson()
+   - writes audit action "lesson_upsert"
+   - returns {"lesson": out}
+
+Important current behavior:
+- Because handleAdminPostLesson() does if !lesson.IsActive { lesson.IsActive = true }, clients cannot create/update an inactive lesson through this handler by sending is_active=false. This means "inactive status" exists in DB/repository but HTTP handler forces active on upsert.
+
+8. Repository:
+   - internal/repository/admin.go Store.UpsertLesson()
+
+9. If lesson.ID == 0:
+   INSERT INTO lessons(level_id, title_kk, title_ru, description_kk, description_ru, video_url, sort_order, is_active)
+
+10. If lesson.ID != 0:
+   UPDATE lessons SET level_id=?, title_kk=?, title_ru=?, description_kk=?, description_ru=?, video_url=?, sort_order=?, is_active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?
+
+11. Audit:
+   - Store.Audit()
+   - INSERT INTO admin_actions(...)
+
+9.3. Database table
+
+Table:
+- lessons
+
+Columns:
+- id
+- level_id
+- title_kk
+- title_ru
+- description_kk
+- description_ru
+- video_url
+- sort_order
+- is_active
+- created_at
+- updated_at
+
+Constraints:
+- level_id references levels(id) ON DELETE CASCADE
+- UNIQUE(level_id, sort_order)
+
+9.4. How lesson is connected to level
+
+Connection:
+- lessons.level_id -> levels.id
+
+The user-facing ListLessons() joins:
+- lessons l
+- levels lv ON lv.id = l.level_id
+
+The API uses level number in query:
+- GET /api/lessons?level=1
+
+Repository filters by:
+- lv.number = ?
+
+9.5. sort_order behavior
+
+sort_order controls ordering inside a level.
+
+Repository:
+- ListLessons() ORDER BY lv.number ASC, l.sort_order ASC
+
+DB constraint:
+- UNIQUE(level_id, sort_order)
+
+If admin tries to insert another lesson with same level_id and sort_order through UpsertLesson(), SQLite unique constraint error can occur.
+
+9.6. active/inactive status
+
+DB:
+- lessons.is_active
+
+User-facing queries:
+- ListLessons() uses WHERE l.is_active = 1
+- MarkLessonWatched() checks l.is_active = 1
+
+Admin delete:
+- DELETE /api/admin/lessons/{id}
+- handleAdminDeleteLesson()
+- Store.DeleteLesson()
+- UPDATE lessons SET is_active = 0
+
+Create/update:
+- Repository supports is_active.
+- HTTP handler currently forces true when is_active is false. Needs verification if inactive create/edit is expected.
+
+9.7. video_url and lesson content
+
+DB stores:
+- lessons.video_url
+- lessons.description_kk
+- lessons.description_ru
+
+Current frontend lessonCard():
+- displays title_kk
+- displays description_kk
+- does not render video_url
+- does not open video player
+
+Video playback/content page:
+Not found in current codebase.
+
+9.8. How user later sees lesson
+
+Frontend:
+- renderLessons()
+- GET /api/lessons?level={currentLevel}
+- lessonCard()
+
+Backend:
+- handleLessons()
+- Store.ListLessons()
+
+Access flag:
+- Store.ListLessons() calculates Lesson.Access using CanAccessLevel()
+
+9.9. How backend checks access to lesson
+
+For lesson details:
+- GET /api/lessons/{id}
+- handleLesson()
+- Store.GetLesson()
+- Store.CanAccessLevel()
+- if no access, returns repository.ErrForbidden
+
+For watched action:
+- POST /api/lessons/{id}/watched
+- Store.MarkLessonWatched()
+- canAccessLevelQuery()
+
+Access requires:
+- users.access_closed = 0
+- user.current_level >= lesson level number
+- level number between 1 and 12
+- active subscription exists and expires_at > CURRENT_TIMESTAMP
+
+9.10. How user marks lesson as watched
+
+Frontend:
+- lessonCard() button data-watch="{lesson.id}"
+- markWatched(id)
+
+Backend:
+- POST /api/lessons/{id}/watched
+- handleLessonWatched()
+- Store.MarkLessonWatched()
+
+DB:
+- INSERT INTO lesson_progress(user_id, lesson_id, watched, watched_at, coin_granted)
+- ON CONFLICT(user_id, lesson_id) DO UPDATE
+- AddCoinsTx(userID, 5, "lesson_watched", "lesson", lessonID)
+
+Idempotency:
+- coin_transactions has UNIQUE(user_id, reason, source_type, source_id)
+- marking the same lesson again does not grant duplicate coins.
+
+9.11. How progress is recalculated
+
+Store.MarkLessonWatched() calls:
+- recalculateUserProgressTx()
+
+recalculateUserProgressTx():
+1. Reads users.current_level.
+2. If current_level == 0, returns "Төлем жасаңыз."
+3. While currentLevel < 12:
+   - calls canUnlockNextLevel()
+   - if true, increments currentLevel
+   - UPDATE users SET current_level = currentLevel
+4. Returns progressForLevel()
+
+9.12. How next level unlock depends on watched lessons and test pass
+
+canUnlockNextLevel() requires:
+- currentLevel >= 1 and < 12
+- active subscription
+- total active lessons for level > 0
+- watchedLessons >= totalLessons
+- testPassed() true
+
+Assignment submission is included in progress percentage but is not required by canUnlockNextLevel().
+
+9.13. Editing lessons
+
+Backend:
+- PATCH /api/admin/lessons/{id}
+- handleAdminPostLesson()
+- Store.UpsertLesson()
+
+Frontend edit UI:
+Not found in current codebase.
+
+9.14. Deleting lessons
+
+Backend:
+- DELETE /api/admin/lessons/{id}
+- handleAdminDeleteLesson()
+- Store.DeleteLesson()
+
+Behavior:
+- soft delete by setting lessons.is_active = 0
+
+Frontend delete UI:
+Not found in current codebase.
+
+10. HOW LEVELS WORK
+
+10.1. 12-level structure
+
+Seeded in:
+- traits/database/database.go seedLevels()
+
+Levels:
+1. МЫШЛЕНИЕ / ФУНДАМЕНТ
+2. ҚАРЖЫ RESET / ФИНАНСЫ RESET
+3. АЛТЫН ФОРМУЛА START / ЗОЛОТАЯ ФОРМУЛА START
+4. АЛТЫН ФОРМУЛА FULL / ЗОЛОТАЯ ФОРМУЛА FULL
+5. БИЗНЕС ФУНДАМЕНТ
+6. БИЗНЕС ПРАКТИКУМ
+7. BUSINESS UPGRADE
+8. САТУ ЖӘНЕ ЫҚПАЛ / ПРОДАЖИ И ВЛИЯНИЕ
+9. КӨШБАСШЫЛЫҚ / ЛИДЕРСТВО
+10. ПРОРАБОТКА
+11. ЖЕКЕ БРЕНД / ЛИЧНЫЙ БРЕНД
+12. MASTER LEVEL
+
+10.2. Current user level
+
+Stored in:
+- users.current_level
+
+Default:
+- 0
+
+After payment approval:
+- Store.ApprovePayment() sets current_level to at least 1:
+  UPDATE users SET current_level = CASE WHEN current_level < 1 THEN 1 ELSE current_level END
+
+10.3. Locked/unlocked levels
+
+Access function:
+- Store.CanAccessLevel()
+
+Rules:
+- user.access_closed must be false
+- levelNumber must be 1..12
+- active subscription must exist
+- user.current_level >= levelNumber
+
+10.4. Active subscription requirement
+
+Function:
+- hasActiveSubscription()
+
+SQL:
+- SELECT COUNT(id) FROM subscriptions WHERE user_id = ? AND status='active' AND expires_at > CURRENT_TIMESTAMP
+
+Without active subscription:
+- level access is false
+- lesson watch/test/assignment access is forbidden
+
+10.5. Lesson completion requirement
+
+For next level unlock:
+- all active lessons in current level must be watched
+
+Implemented in:
+- canUnlockNextLevel()
+
+10.6. Test pass requirement
+
+For next level unlock:
+- testPassed() must be true
+
+testPassed():
+- checks MAX(ta.passed) for user/test/level
+- any previous passed attempt is enough
+
+10.7. Assignment requirement
+
+Assignments affect:
+- progress percentage
+- assignment_done flag
+
+Assignments do not gate next level unlock in canUnlockNextLevel().
+Needs verification if assignments were intended to gate unlock.
+
+10.8. Next level unlock logic
+
+Implemented in:
+- RecalculateUserProgress()
+- recalculateUserProgressTx()
+- canUnlockNextLevel()
+
+Triggered by:
+- MarkLessonWatched()
+- SubmitTest()
+- SubmitAssignment() route calls RecalculateUserProgress()
+
+11. HOW TESTS WORK
+
+11.1. Seeded tests
+
+seedLevels() creates one test per level:
+- tests.level_id
+- title "LEVEL {n} test"
+- pass_percent = 70
+- is_active = 1
+
+Each seeded test gets:
+- 10 questions
+- 4 options per question
+- option 1 is correct
+
+11.2. Admin creates test/questions/options
+
+Backend:
+- POST /api/admin/tests
+- PATCH /api/admin/tests/{id}
+- handleAdminPostTest()
+- Store.UpsertTest()
+
+Request maps to repository.Test:
+- level_id
+- title
+- pass_percent
+- is_active
+- questions[]
+- questions[].question_text_kk
+- questions[].question_text_ru
+- questions[].sort_order
+- questions[].options[]
+- options[].option_text_kk
+- options[].option_text_ru
+- options[].is_correct
+- options[].sort_order
+
+Frontend admin test creation form:
+Not found in current codebase.
+Current admin Tests screen uses renderAdminItems("/api/admin/tests", "Tests") and only lists placeholder rows.
+
+11.3. User receives test
+
+Frontend:
+- renderTest()
+
+HTTP:
+- GET /api/tests/{currentLevel}
+
+Backend:
+- handleTest()
+- Store.GetTestByLevel()
+- getTestByLevelQuery(includeCorrect=false)
+
+Correct answers are not included in user response because includeCorrect=false.
+
+11.4. Answer submission
+
+Frontend:
+- renderTest() form submit
+- Body {"answers":{"question_id": option_id}}
+
+Backend:
+- handleSubmitTest()
+- Store.SubmitTest()
+
+11.5. Score calculation
+
+Store.SubmitTest():
+- loads test with includeCorrect=true
+- total = len(test.Questions)
+- correct increments when selected option ID matches an option with IsCorrect=true
+- score = round(correct / total * 100)
+- passed = score >= test.PassPercent
+
+11.6. Pass threshold
+
+Stored in:
+- tests.pass_percent
+
+Default:
+- 70
+
+11.7. Retry behavior
+
+No retry limit found.
+Every submit creates new row in test_attempts and test_answers.
+testPassed() uses MAX(ta.passed), so passing any attempt unlocks progress.
+
+11.8. How passed test affects progress/unlock
+
+If passed:
+- AddCoinsTx(userID, 20, "test_passed", "test", testID)
+- recalculateUserProgressTx()
+
+If all lessons watched and test passed:
+- current_level increments to next level.
+
+11.9. Coins granted
+
+Test passed reward:
+- +20 ZHENIS Coin
+
+Idempotency:
+- coin_transactions UNIQUE(user_id, reason, source_type, source_id)
+- same test ID grants +20 only once.
+
+12. HOW ASSIGNMENTS WORK
+
+12.1. Assignment attachment to level
+
+Table:
+- assignments
+
+Relationship:
+- assignments.level_id -> levels.id
+- UNIQUE(level_id)
+
+Seed:
+- seedLevels() creates assignment only when level.Assignment != "".
+- Current seed has assignment for LEVEL 1:
+  "Менің қазіргі басты проблемам"
+
+Admin assignment creation:
+Not found in current codebase.
+
+12.2. User loads assignment
+
+Frontend:
+- renderAssignment()
+
+HTTP:
+- GET /api/assignments/{level_id}
+
+Backend:
+- handleAssignment()
+- Store.GetAssignmentByLevel()
+- getAssignmentByLevel()
+
+Access:
+- requires CanAccessLevel()
+
+12.3. User submits assignment
+
+Frontend:
+- renderAssignment()
+- form fields:
+  - answer_text
+  - link_url
+
+HTTP:
+- POST /api/assignments/{level_id}/submit
+
+Backend:
+- handleSubmitAssignment()
+
+Validation:
+- answer_text, file_path, link_url cannot all be empty.
+
+Repository:
+- Store.SubmitAssignment()
+
+Table:
+- assignment_submissions
+
+Fields:
+- assignment_id
+- user_id
+- answer_text
+- file_path
+- link_url
+- status default submitted
+
+File upload:
+Not found in current codebase.
+
+12.4. Admin reviews assignment
+
+Admin list:
+- GET /api/admin/assignments/submissions
+- handleAdminPlaceholder("assignment_submissions")
+- Store.PlaceholderList("assignment_submissions")
+
+Admin review:
+- PATCH /api/admin/assignments/submissions/{id}
+- Body {"status":"reviewed|rejected"}
+- handleAdminReviewAssignmentSubmission()
+- Store.ReviewAssignmentSubmission()
+
+DB effect:
+- assignment_submissions.status
+- reviewed_by_admin_id
+- reviewed_at
+- updated_at
+
+Current admin frontend:
+- Assignments screen lists submissions through renderAdminItems().
+- Review form/buttons not found in current frontend.
+
+13. PAYMENT AND RECEIPT FLOW
+
+13.1. Tariff selection
+
+Frontend:
+- renderTariffs()
+- tariffCard()
+
+Data:
+- /api/platform or /api/tariffs
+
+Tariffs seeded:
+- BASIC 4990 KZT
+- STANDARD 9990 KZT
+- VIP 24900 KZT
+
+13.2. Payment creation
+
+Frontend:
+- renderPayment()
+
+HTTP:
+- POST /api/payments
+
+Backend:
+- handleCreatePayment()
+- Store.CreatePayment()
+
+DB:
+- INSERT INTO payments with status pending
+- expires_at = now + PaymentPendingTTL
+
+Provider normalization:
+- Store.normalizeProvider()
+- unknown provider defaults to kaspi_qr
+
+13.3. Pending payment
+
+Status:
+- pending
+
+Expiration:
+- runMinuteJobs() calls ExpirePendingPayments()
+- ExpirePendingPayments() updates pending payments to expired when expires_at <= CURRENT_TIMESTAMP
+
+Uploaded receipt payments:
+- status uploaded_receipt
+- ExpirePendingPayments() does not expire uploaded_receipt payments.
+
+13.4. Kaspi/payment instruction
+
+handleCreatePayment() returns instructions:
+- kaspi_qr_image_url
+- kaspi_pay_url
+- halyk_payment_url
+- bank_card_url
+- text: "Kaspi QR немесе Kaspi Pay арқылы төлем жасап, чекті Telegram ботқа PDF/image ретінде жіберіңіз."
+
+Frontend currently shows:
+- instructions.text
+- amount
+- payment id
+
+Provider-specific QR rendering:
+Not found in current codebase.
+
+13.5. Receipt upload
+
+Implemented through Telegram Bot:
+- handleReceiptUpload()
+- downloadTelegramFile()
+- Store.AttachReceipt()
+
+Mini App receipt upload:
+Not found in current codebase.
+
+13.6. Admin approval/rejection
+
+Frontend:
+- renderAdminPayments()
+- Manual verification form
+
+Approve:
+- POST /api/admin/payments/{id}/approve
+- Body {"days":30}
+- handleAdminApprovePayment()
+- Store.ApprovePayment()
+
+Reject:
+- POST /api/admin/payments/{id}/reject
+- Body {"comment":"..."}
+- handleAdminRejectPayment()
+- Store.RejectPayment()
+
+13.7. Subscription activation
+
+Store.ApprovePayment():
+1. Accepts payment status pending or uploaded_receipt.
+2. Finds active subscription for user.
+3. If active subscription exists:
+   - updates tariff_id
+   - extends expires_at by subscriptionDays from activeExpires
+4. Else:
+   - creates subscriptions row status active
+5. Updates payment status approved.
+6. Updates users.current_level to at least 1.
+7. Applies referral rewards.
+
+Tables:
+- payments
+- subscriptions
+- users
+- referrals
+- referral_rewards
+- coin_transactions
+
+13.8. Access unlock after payment
+
+After approval:
+- user.current_level becomes 1 if it was 0.
+- CanAccessLevel(user, 1) returns true if subscription active and access_closed false.
+
+13.9. Expiration logic
+
+Schedulers:
+- StartSchedulers()
+- runMinuteJobs()
+
+Every minute:
+- ExpirePendingPayments()
+- ExpireSubscriptions()
+
+ExpireSubscriptions():
+- UPDATE subscriptions SET status='expired' WHERE status='active' AND expires_at <= CURRENT_TIMESTAMP
+
+13.10. Reminders
+
+Inactive reminder:
+- runInactiveReminderJob()
+- every 10 minutes
+- users with last_seen_at <= now - 72h
+- sends inactive_3_days
+- idempotency key reminder:inactive3:{user.ID}
+
+Subscription ending:
+- runDailyJobs()
+- every 24h
+- subscriptions expiring around cfg.SubscriptionReminderHours
+- sends subscription_ending
+- idempotency key reminder:sub3:{sub.ID}:{date}
+
+14. REFERRAL SYSTEM
+
+14.1. Referral code creation
+
+Store.RegisterOrUpdateTelegramUser():
+- referral_code = "ref" + telegram_id
+
+Stored in:
+- users.referral_code
+
+14.2. /start ref payload
+
+Bot:
+- handleUpdate() extracts second word after /start into startParam.
+
+Mini App:
+- Telegram initData start_param is read in service.TelegramInitValidator.Validate().
+- userFromMiniApp() passes initData.StartParam to RegisterOrUpdateTelegramUser().
+
+Repository:
+- If StartParam starts with "ref", finds inviter by users.referral_code.
+
+14.3. invited_by logic
+
+New invited user:
+- users.invited_by_user_id = inviter.id
+- INSERT OR IGNORE INTO referrals(inviter_user_id, invited_user_id, status='registered')
+
+Existing user:
+- invited_by_user_id is not changed.
+
+14.4. Reward calculation
+
+Triggered by:
+- Store.ApprovePayment()
+- applyReferralPaymentRewardsTx(invitedUserID)
+
+Flow:
+1. Find referral where invited_user_id = invitedUserID.
+2. If none, no action.
+3. UPDATE referrals SET status='paid', reward_granted=1 WHERE status='registered'.
+4. Add +100 coins to inviter:
+   - reason referral_paid
+   - source_type referral
+   - source_id invitedUserID
+5. Count paid/rewarded referrals for inviter.
+6. For thresholds, insert referral_rewards.
+
+Thresholds:
+- 1: 7_days_free
+- 3: 1_month_free
+- 5: closed_vip_stream
+- 10: personal_mini_review
+- 20: 1_month_vip_tariff_access
+- 50: personal_zoom_with_mentor
+
+Subscription extension:
+- threshold 1 grants 7 days free via extendSubscriptionTx()
+- threshold 3 grants 30 days free via extendSubscriptionTx()
+- thresholds 5/10/20/50 only insert referral_rewards; no further automated action found.
+
+14.5. Bonus granting
+
+Tables:
+- referral_rewards
+- coin_transactions
+- subscriptions
+
+Idempotency:
+- referral_rewards UNIQUE(user_id, threshold_count)
+- coin_transactions UNIQUE(user_id, reason, source_type, source_id)
+- Approving same payment again does not duplicate referral coins.
+
+14.6. Referral statistics in admin
+
+Admin route:
+- GET /api/admin/referrals
+- handleAdminPlaceholder("referrals")
+- Store.PlaceholderList("referrals")
+
+Frontend:
+- renderAdminItems("/api/admin/referrals", "Referrals")
+
+14.7. Anti-duplicate/self-referral rules
+
+Found:
+- self-referral prevented by inviterTelegramID != input.TelegramID.
+- referrals table UNIQUE(invited_user_id) prevents duplicate invited record.
+- RegisterOrUpdateTelegramUser() only creates referral for new users.
+
+15. ZHENIS COIN SYSTEM
+
+15.1. Balance calculation
+
+Repository:
+- CoinBalance()
+
+SQL:
+- SELECT COALESCE(SUM(amount), 0) FROM coin_transactions WHERE user_id = ?
+
+15.2. Coin transaction table
+
+Table:
+- coin_transactions
+
+Columns:
+- id
+- user_id
+- amount
+- reason
+- source_type
+- source_id
+- created_at
+
+Unique:
+- UNIQUE(user_id, reason, source_type, source_id)
+
+15.3. Coins granted
+
+Found:
+- Lesson watched: +5
+  - MarkLessonWatched()
+  - reason lesson_watched
+  - source_type lesson
+
+- Test passed: +20
+  - SubmitTest()
+  - reason test_passed
+  - source_type test
+
+- Referral paid: +100
+  - applyReferralPaymentRewardsTx()
+  - reason referral_paid
+  - source_type referral
+
+- Manual admin adjustment:
+  - ManualAdjustCoins()
+  - source_type admin
+  - source_id "{adminID}:{unixNano}"
+
+15.4. Stream attendance reward
+
+Frontend renderCoins() text says:
+"Lesson watched +5, test passed +20, stream attended +30, referral +100."
+
+Backend method/handler that grants +30 for stream attendance:
+Not found in current codebase.
+
+Table user_stream_attendance exists, but no repository/handler flow was found to insert attendance or grant coins.
+
+15.5. Idempotency rules
+
+AddCoins() and AddCoinsTx() use INSERT OR IGNORE.
+DB unique key prevents duplicate grant for same user/reason/source_type/source_id.
+
+16. CLOSED CHANNELS AND INVITE LINKS
+
+16.1. How admin adds Telegram channels
+
+Frontend:
+- renderAdminChannels()
+- form id channelForm
+
+Fields:
+- title
+- telegram_chat_id
+- manual_invite_link
+- tariff_requirement
+- level_requirement
+
+Frontend sets:
+- invite_link_type = "manual" if manual_invite_link exists
+- invite_link_type = "bot" otherwise
+- is_active = true
+
+HTTP:
+- POST /api/admin/channels
+
+Backend:
+- handleAdminPostChannel()
+- Store.UpsertChannel()
+
+Table:
+- channels
+
+16.2. Channel access check
+
+Repository:
+- Store.CanAccessChannel()
+
+Rules:
+- user exists
+- user.access_closed is false
+- active subscription exists
+- user.current_level >= channel.level_requirement
+- tariffRank(user subscription tariff) >= tariffRank(channel.tariff_requirement)
+
+16.3. Tariff/level requirement
+
+Stored in channels:
+- tariff_requirement BASIC/STANDARD/VIP
+- level_requirement integer default 1
+
+16.4. Invite link issued to user
+
+Frontend:
+- renderChannels()
+- button data-invite
+
+HTTP:
+- POST /api/channels/{id}/invite
+
+Backend:
+- handleIssueInvite()
+
+Flow:
+1. Get channel by id.
+2. Check CanAccessChannel().
+3. Default link = channel.ManualInviteLink.
+4. expiresAt = now + 24h.
+5. If channel.InviteLinkType == "bot" and s.bot != nil:
+   - call TelegramBot.CreateInviteLink(channel.TelegramChatID, "user-{userID}-channel-{channelID}", expiresAt)
+6. If generated link succeeds, use generated link.
+7. If link empty, return 409 "invite link is not configured".
+8. RecordInviteLink().
+9. Return invite_link and expires_at.
+
+16.5. One-time invite links
+
+TelegramBot.CreateInviteLink() sends Telegram payload:
+- chat_id
+- name
+- expire_date
+- member_limit = 1
+- creates_join_request = false
+
+Therefore bot-generated links are one-member invite links with expiration.
+
+16.6. Manual link fallback
+
+If invite_link_type is manual or bot generation fails/unavailable:
+- backend uses channels.manual_invite_link.
+
+If no manual link and bot generation unavailable:
+- 409 invite link is not configured.
+
+16.7. Admin-issued invite
+
+Route:
+- POST /api/admin/channels/{id}/issue-invite
+
+Body:
+- {"user_id":123}
+
+Backend:
+- handleAdminIssueInvite()
+
+Important current behavior:
+- Admin issue route does not check whether target user satisfies channel access requirements.
+- It records invite link for requested user_id if link exists/generated.
+
+17. BROWSER ADMIN PANEL
+
+17.1. /admin boot flow
+
+Route:
+- GET /admin
+
+Backend:
+- serveIndex() returns static/index.html.
+
+Frontend:
+- boot()
+- detects path /admin
+- adds browser-admin-mode classes
+- state.mode = "admin"
+- bootBrowserAdmin()
+
+17.2. Browser auth login
+
+Frontend:
+- showAdminLogin()
+- adminLoginForm submit
+- api("/api/browser-auth/login")
+
+Backend:
+- handleBrowserLogin()
+
+Auth rules:
+- If cfg.AdminPasswordHash != "":
+  bcrypt.CompareHashAndPassword()
+- Else if cfg.Env == "development":
+  password must be "admin"
+- Else unauthorized
+
+Login field in request struct exists but is not used.
+staff_users table is not used by current browser auth.
+
+17.3. Cookie session
+
+Cookie:
+- zo_admin_session
+
+Created by:
+- handleBrowserLogin()
+
+Cookie attributes:
+- Path /
+- MaxAge cfg.BrowserSessionTTL
+- HttpOnly true
+- Secure cfg.IsProduction()
+- SameSite Lax
+
+17.4. Redis/in-memory session
+
+SessionManager stores:
+- key browser_session:{token}
+- value JSON BrowserSession
+- ttl cfg.BrowserSessionTTL
+
+KV backend:
+- RedisKV if Redis connected
+- MemoryKV fallback
+
+17.5. Role checking
+
+Middleware:
+- withBrowserAuth()
+- withRole()
+
+Browser session role:
+- handleBrowserLogin() always creates RoleSuperAdmin.
+
+Roles defined:
+- super_admin
+- content_manager
+- support
+- analyst
+
+staff_users role system:
+Table exists, but no login/query usage found.
+
+17.6. Admin layout
+
+Frontend:
+- #adminApp
+- #adminSidebar
+- #adminNav
+- #adminContent
+- responsive sidebar controlled by adminNavToggle and CSS .nav-open.
+
+17.7. Admin sections
+
+adminScreens:
+- dashboard
+- users
+- payments
+- subscriptions
+- levels
+- lessons
+- tests
+- assignments
+- referrals
+- coins
+- channels
+- streams
+- broadcast
+- analytics
+- settings
+- audit
+
+17.8. API routes by admin section
+
+Dashboard / Analytics:
+- GET /api/admin/stats
+
+Users:
+- GET /api/admin/users
+- Search uses GET /api/admin/users?q=...
+
+Payments:
+- GET /api/admin/payments
+- POST /api/admin/payments/{id}/approve
+- POST /api/admin/payments/{id}/reject
+
+Subscriptions:
+- GET /api/admin/subscriptions
+
+Levels:
+- GET /api/admin/levels
+
+Lessons:
+- GET /api/admin/lessons
+
+Tests:
+- GET /api/admin/tests
+
+Assignments:
+- GET /api/admin/assignments/submissions
+
+Referrals:
+- GET /api/admin/referrals
+
+Coins:
+- GET /api/admin/coins
+
+Channels:
+- GET /api/admin/channels
+- POST /api/admin/channels
+
+Streams:
+- GET /api/admin/streams
+
+Broadcast:
+- POST /api/admin/broadcast
+
+Settings:
+- GET /api/admin/settings
+
+Audit:
+- GET /api/admin/audit
+
+Backend routes exist but frontend not currently wired:
+- GET /api/admin/users/{id}
+- PATCH /api/admin/users/{id}/access
+- POST /api/admin/users/{id}/bonus
+- GET /api/admin/payments/{id}
+- PATCH /api/admin/subscriptions/{id}
+- POST/PATCH/DELETE /api/admin/levels
+- POST/PATCH/DELETE /api/admin/lessons
+- POST/PATCH/DELETE /api/admin/tests
+- GET /api/admin/assignments
+- PATCH /api/admin/assignments/submissions/{id}
+- POST /api/admin/coins/adjust
+- PATCH/DELETE /api/admin/channels/{id}
+- POST /api/admin/channels/{id}/issue-invite
+- POST/PATCH/DELETE /api/admin/streams
+- PATCH /api/admin/settings
+
+18. DESIGN SYSTEM AND RESPONSIVE LAYOUT
+
+18.1. Visual system
+
+File:
+- static/css/style.css
+
+Theme:
+- dark premium ZHENIS ORDA style
+- black/brown backgrounds
+- gold/bronze accents
+- high contrast text
+
+18.2. Color tokens
+
+:root includes:
+- --bg
+- --bg-soft
+- --surface
+- --surface-2
+- --surface-3
+- --surface-glass
+- --gold
+- --gold-soft
+- --gold-bright
+- --bronze
+- --brown
+- --text
+- --text-soft
+- --muted
+- --muted-2
+- --border
+- --border-soft
+- --border-strong
+- --danger
+- --success
+- --warning
+
+18.3. Typography
+
+Global font stack:
+- Inter
+- SF Pro Text
+- Segoe UI
+- system sans-serif
+
+h1/h2/h3 use strong font weights and responsive clamp sizes.
+Eyebrow text uses uppercase, gold color and letter spacing.
+
+18.4. Cards
+
+Classes:
+- .card
+- .metric
+- .lesson-card
+- .tariff-card
+- .admin-card
+
+Cards use:
+- border
+- gradient surfaces
+- box shadow
+- rounded corners
+- internal pseudo-element overlay
+
+18.5. Buttons
+
+Classes:
+- .gold-btn
+- .ghost-btn
+- .danger-btn
+- .tool-btn
+- .icon-only
+
+Loading:
+- .is-loading
+- .btn-spinner
+
+18.6. Forms
+
+Classes:
+- .form
+- .field
+- .input-wrap
+- .input-toggle
+- .form-error
+- .test-option
+
+18.7. Admin layout
+
+Classes:
+- .admin-shell
+- .admin-sidebar
+- .admin-main
+- .admin-topbar
+- .admin-nav
+- .admin-content
+- .table-wrap
+
+Responsive:
+- at max-width 960px sidebar becomes off-canvas.
+
+18.8. Mini App layout
+
+Classes:
+- .app-shell
+- .content
+- .user-header
+- .bottom-cta
+- .tabbar
+
+Mini App body is fixed and content scrolls inside .content.
+
+18.9. Breakpoints
+
+Found:
+- min-width 600px: .grid.two -> 2 columns
+- min-width 760px: .grid.three -> 3 columns, .grid.four -> 2 columns
+- min-width 1100px: .grid.four -> 4 columns
+- max-width 960px: admin sidebar mobile
+- max-width 720px: admin adjustments
+- max-width 520px: smaller gutters/cards/tab icons
+- max-width 360px: hide header action text
+- min-width 1180px: content padding top
+
+18.10. Safe-area rules
+
+JS sets CSS variables from Telegram viewport.
+CSS uses:
+- height: var(--viewport-stable-height)
+- padding-top: var(--app-top-padding)
+- padding-bottom: var(--app-bottom-padding)
+- env(safe-area-inset-left/right)
+
+18.11. Content scroll rules
+
+Mini App:
+- html/body fixed
+- .content overflow-y auto
+- overscroll-behavior contain
+- -webkit-overflow-scrolling touch
+
+Browser admin/landing:
+- natural document scroll
+
+18.12. Bottom CTA rules
+
+.bottom-cta:
+- sits in app-shell third grid row
+- has glass background
+- tabbar with 5 buttons
+- content has bottom padding to avoid being hidden behind footer
+
+18.13. Modal rules
+
+.modal-backdrop fixed full viewport.
+.modal max-height respects browser viewport height and app padding variables.
+
+19. BASE URL AND ROUTING
+
+19.1. GET /
+
+Backend:
+- Routes(): mux.HandleFunc("GET /", s.serveIndex)
+- serveIndex() serves static/index.html
+
+Frontend behavior:
+- If Telegram Mini App: opens Mini App.
+- If ?miniapp_dev=1: opens dev Mini App.
+- Otherwise: shows landing fallback.
+
+19.2. /admin
+
+Backend:
+- Routes(): mux.HandleFunc("GET /admin", s.serveIndex)
+
+Frontend:
+- boot() detects /admin and launches browser admin.
+
+19.3. Swagger
+
+Swagger route:
+Not found in current codebase.
+
+Current behavior:
+- GET / serves static/index.html, not Swagger.
+
+19.4. Static assets
+
+Routes:
+- GET /static/ -> http.FileServer(http.Dir("static"))
+- GET /uploads/ -> http.FileServer(http.Dir(s.cfg.UploadDir))
+
+19.5. Mini App URL configuration
+
+Config:
+- MINI_APP_URL
+
+Used in:
+- cmd/main.go NewTelegramBot(... cfg.MiniAppURL ...)
+- TelegramBot.inlineMiniAppMarkup()
+
+The Telegram WebApp button opens b.miniAppURL.
+
+19.6. BASE_URL usage
+
+Config:
+- BASE_URL
+
+Found:
+- loaded
+- validated
+- included in Config.String()
+
+Direct runtime usage in routes/handlers:
+Not found in current codebase.
+
+19.7. Referral bot username
+
+ReferralSummary() can accept botUsername.
+Handlers currently pass hardcoded:
+- "zhenisorda_bot"
+
+Configurable bot username:
+Not found in current codebase.
+
+20. DATABASE OVERVIEW
+
+Schema source:
+- traits/database/schema.go
+
+20.1. schema_migrations
+
+Purpose:
+- migration version tracking
+
+Columns:
+- version
+- name
+- applied_at
+
+20.2. users
+
+Purpose:
+- Telegram users and platform state.
+
+Important columns:
+- telegram_id unique
+- username
+- first_name
+- last_name
+- language
+- phone
+- referral_code unique
+- invited_by_user_id
+- current_level
+- access_closed
+- last_seen_at
+
+20.3. admins
+
+Purpose:
+- Telegram admin IDs.
+
+Current usage:
+Not found in current codebase for auth.
+
+20.4. staff_users
+
+Purpose:
+- Staff login/role table.
+
+Current usage:
+Not found in current browser auth flow.
+
+20.5. diagnostics
+
+Purpose:
+- Stores diagnostics answers.
+
+Written by:
+- Store.SaveDiagnostics()
+
+20.6. tariffs
+
+Purpose:
+- BASIC/STANDARD/VIP pricing and feature list.
+
+Seeded by:
+- seedTariffs()
+
+20.7. subscriptions
+
+Purpose:
+- User access period by tariff.
+
+Statuses:
+- active
+- expired
+- cancelled
+- paused
+
+20.8. payments
+
+Purpose:
+- Payment requests and manual verification state.
+
+Providers:
+- kaspi_qr
+- kaspi_pay
+- halyk
+- bank_card
+
+Statuses:
+- pending
+- uploaded_receipt
+- approved
+- rejected
+- expired
+- cancelled
+
+20.9. payment_receipts
+
+Purpose:
+- Receipt file records.
+
+Written by:
+- Store.AttachReceipt()
+
+20.10. levels
+
+Purpose:
+- 12 learning levels.
+
+Important columns:
+- number unique
+- title_kk
+- title_ru
+- description_kk
+- description_ru
+- sort_order
+- is_active
+
+20.11. lessons
+
+Purpose:
+- Lessons attached to levels.
+
+Important columns:
+- level_id
+- title_kk
+- title_ru
+- description_kk
+- description_ru
+- video_url
+- sort_order
+- is_active
+
+Constraint:
+- UNIQUE(level_id, sort_order)
+
+20.12. lesson_progress
+
+Purpose:
+- Per-user lesson watched state.
+
+Primary key:
+- user_id, lesson_id
+
+Important columns:
+- watched
+- watched_at
+- coin_granted
+
+20.13. tests
+
+Purpose:
+- One active test per level.
+
+Constraint:
+- UNIQUE(level_id)
+
+20.14. test_questions
+
+Purpose:
+- Questions for tests.
+
+Constraint:
+- UNIQUE(test_id, sort_order)
+
+20.15. test_options
+
+Purpose:
+- Options for test questions.
+
+Constraint:
+- UNIQUE(question_id, sort_order)
+
+20.16. test_attempts
+
+Purpose:
+- User test attempt results.
+
+Important columns:
+- score_percent
+- correct_count
+- total_count
+- passed
+
+20.17. test_answers
+
+Purpose:
+- Per-question selected answer for a test_attempt.
+
+20.18. assignments
+
+Purpose:
+- One assignment per level.
+
+Constraint:
+- UNIQUE(level_id)
+
+20.19. assignment_submissions
+
+Purpose:
+- User submissions for assignments.
+
+Statuses:
+- submitted
+- reviewed
+- rejected
+
+20.20. referrals
+
+Purpose:
+- Referral relation between inviter and invited user.
+
+Statuses:
+- registered
+- paid
+- rewarded
+- cancelled
+
+Constraint:
+- UNIQUE(invited_user_id)
+
+20.21. referral_rewards
+
+Purpose:
+- Threshold rewards for inviter.
+
+Constraint:
+- UNIQUE(user_id, threshold_count)
+
+20.22. coin_transactions
+
+Purpose:
+- ZHENIS Coin ledger.
+
+Constraint:
+- UNIQUE(user_id, reason, source_type, source_id)
+
+20.23. channels
+
+Purpose:
+- Closed Telegram channel access rules.
+
+Important columns:
+- telegram_chat_id
+- invite_link_type
+- manual_invite_link
+- tariff_requirement
+- level_requirement
+- is_active
+
+20.24. channel_invite_links
+
+Purpose:
+- Issued invite links.
+
+Statuses:
+- issued
+- used
+- expired
+- revoked
+
+Current automatic status update:
+Not found in current codebase.
+
+20.25. live_streams
+
+Purpose:
+- Scheduled/live/finished/cancelled streams.
+
+20.26. live_stream_reminders
+
+Purpose:
+- Appears intended for reminder tracking.
+
+Current usage:
+Not found in current codebase. Scheduler uses KV keys instead.
+
+20.27. live_stream_recordings
+
+Purpose:
+- Recordings for streams.
+
+Current write route:
+Not found in current codebase.
+
+20.28. user_stream_attendance
+
+Purpose:
+- Stream attendance and possible coin_granted tracking.
+
+Current handler/repository usage:
+Not found in current codebase.
+
+20.29. broadcasts
+
+Purpose:
+- Broadcast queue.
+
+Written by:
+- Store.Broadcast()
+
+20.30. broadcast_messages
+
+Purpose:
+- Per-user broadcast delivery state.
+
+Current population/sending:
+Not found in current codebase.
+
+20.31. support_messages
+
+Purpose:
+- User support requests.
+
+Written by:
+- Store.CreateSupportMessage()
+
+20.32. admin_actions
+
+Purpose:
+- Audit log for admin mutations.
+
+Written by:
+- Store.Audit()
+
+20.33. app_settings
+
+Purpose:
+- Key/value app settings.
+
+Seeded keys:
+- platform_name
+- brand_line
+- stream_name
+
+21. IMPORTANT BACKEND METHODS
+
+21.1. Handler methods
+
+HTTP routing and auth:
+- Server.Routes(): registers all routes.
+- serveIndex(): serves static/index.html for / and /admin.
+- withCORS(): handles allowed origins and OPTIONS.
+- withMiniAppAuth(): requires Telegram initData or dev Mini App auth.
+- userFromMiniApp(): validates Telegram initData or creates dev user.
+- withBrowserAuth(): requires zo_admin_session cookie.
+- withRole(): checks admin role.
+- mapRepoError(): maps repository errors to HTTP.
+
+Mini App API:
+- handleMe(): user/profile/progress bootstrap.
+- handlePlatform(): platform texts, tariffs, providers.
+- handleDiagnostics(): saves diagnostics.
+- handleCreatePayment(): creates pending payment.
+- handleLessonWatched(): marks lesson watched.
+- handleSubmitTest(): submits test attempt.
+- handleSubmitAssignment(): submits assignment.
+- handleIssueInvite(): issues channel invite.
+
+Admin API:
+- handleAdminApprovePayment(): approves payment and notifies user.
+- handleAdminRejectPayment(): rejects payment and notifies user.
+- handleAdminPostLesson(): creates/updates lesson.
+- handleAdminPostTest(): creates/updates test/questions/options.
+- handleAdminBroadcast(): queues broadcast.
+- handleAdminPatchSettings(): patches app settings.
+
+Telegram:
+- StartLongPolling(): bot polling loop.
+- handleUpdate(): main Telegram message dispatcher.
+- sendMainMenu(): main keyboard + Mini App button.
+- handleReceiptUpload(): receipt upload flow.
+- CreateInviteLink(): Telegram one-member invite link.
+
+Schedulers:
+- StartSchedulers()
+- runMinuteJobs()
+- runInactiveReminderJob()
+- runDailyJobs()
+- runLiveStreamReminderJob()
+
+21.2. Repository methods
+
+Users/referrals:
+- RegisterOrUpdateTelegramUser()
+- SetLanguage()
+- SaveDiagnostics()
+- ReferralSummary()
+- ListReferralRewards()
+
+Payments/subscriptions:
+- CreatePayment()
+- AttachReceipt()
+- ApprovePayment()
+- RejectPayment()
+- ExpirePendingPayments()
+- ExpireSubscriptions()
+- ManualAddSubscriptionDays()
+
+Progress/content:
+- CanAccessLevel()
+- CanUnlockNextLevel()
+- RecalculateUserProgress()
+- CurrentProgress()
+- ListLevels()
+- GetLevel()
+- ListLessons()
+- GetLesson()
+- MarkLessonWatched()
+- GetTestByLevel()
+- SubmitTest()
+- GetAssignmentByLevel()
+- SubmitAssignment()
+
+Admin/content:
+- AdminStats()
+- ListUsers()
+- SetUserAccessClosed()
+- ListPayments()
+- ListSubscriptions()
+- UpdateSubscriptionStatus()
+- UpsertLevel()
+- DeleteLevel()
+- UpsertLesson()
+- DeleteLesson()
+- UpsertTest()
+- DeleteTest()
+- ReviewAssignmentSubmission()
+- UpsertTariff()
+- ListChannels()
+- UpsertChannel()
+- DeleteChannel()
+- RecordInviteLink()
+- ListStreams()
+- UpsertStream()
+- DeleteStream()
+- Broadcast()
+- CreateSupportMessage()
+- ListAudit()
+- Settings()
+- PatchSettings()
+- PlaceholderList()
+
+Coins:
+- CoinBalance()
+- AddCoins()
+- AddCoinsTx()
+- ManualAdjustCoins()
+
+21.3. Service methods
+
+- NewTelegramInitValidator()
+- TelegramInitValidator.Validate()
+- SupportedPaymentProviders()
+- TariffRank()
+- ReferralRewardLabel()
+- BrandTexts()
+
+21.4. Database migration functions
+
+- database.Open()
+- database.Migrate()
+- database.Seed()
+- seedTariffs()
+- seedSettings()
+- seedLevels()
+
+21.5. Auth middleware
+
+Mini App:
+- withMiniAppAuth()
+- userFromMiniApp()
+- TelegramInitValidator.Validate()
+
+Browser admin:
+- withBrowserAuth()
+- withRole()
+- SessionManager.Create()
+- SessionManager.Get()
+- SessionManager.Delete()
+
+21.6. Scheduler functions
+
+- runMinuteJobs(): expires payments/subscriptions.
+- runInactiveReminderJob(): sends inactive reminders.
+- runDailyJobs(): sends subscription ending reminders.
+- runLiveStreamReminderJob(): sends stream reminders.
+
+Broadcast scheduler:
+Not found in current codebase.
+
+22. IMPORTANT FRONTEND FUNCTIONS
+
+22.1. boot()
+
+Main frontend entry point.
+Detects mode:
+- /admin -> bootBrowserAdmin()
+- Telegram.WebApp initData -> setupTelegramViewport() + bootMiniApp()
+- ?miniapp_dev=1 -> bootMiniApp()
+- otherwise renderLanding()
+
+22.2. bootMiniApp()
+
+Shows Mini App, renders loading state, loads:
+- /api/me
+- /api/platform
+- /api/levels
+
+Initializes state and renders first screen.
+
+22.3. bootBrowserAdmin()
+
+Calls /api/browser-auth/me.
+If authenticated:
+- showAdminAuthenticated()
+- renderAdminNav()
+- renderAdmin()
+
+If not authenticated:
+- showAdminLogin()
+
+22.4. setupTelegramViewport()
+
+Subscribes to Telegram viewport/safe-area/fullscreen events and browser viewport events.
+Calls forceExpand().
+
+22.5. forceExpand()
+
+Calls Telegram.WebApp.ready(), expand(), setBackgroundColor(), setHeaderColor(), disableVerticalSwipes(), requestFullscreen().
+Schedules repeated syncTelegramFrame() calls.
+
+22.6. syncTelegramFrame()
+
+Updates CSS viewport variables and calls tg.expand().
+
+22.7. updateViewportVars()
+
+Calculates viewport and safe-area CSS variables.
+
+22.8. renderHeader()
+
+Renders Telegram user name, login and avatar/fallback.
+
+22.9. api()
+
+Shared fetch wrapper for Mini App and browser admin.
+
+22.10. Dashboard functions
+
+- renderDashboard()
+- metric()
+- renderLevelStrip()
+- renderLevels()
+- levelCard()
+
+22.11. Lesson functions
+
+- renderLessons()
+- lessonCard()
+- markWatched()
+
+22.12. Test functions
+
+- renderTest()
+- questionBlock()
+
+22.13. Assignment functions
+
+- renderAssignment()
+
+22.14. Payment functions
+
+- renderTariffs()
+- tariffCard()
+- renderPayment()
+
+22.15. Referral/coin functions
+
+- renderReferral()
+- renderCoins()
+
+22.16. Channels/streams/support functions
+
+- renderStreams()
+- renderChannels()
+- renderSupport()
+
+22.17. Admin functions
+
+- renderAdminNav()
+- renderAdmin()
+- renderAdminDashboard()
+- renderAdminUsers()
+- renderAdminTable()
+- renderAdminItems()
+- renderAdminPayments()
+- renderAdminChannels()
+- renderAdminBroadcast()
+- renderAdminSettings()
+
+23. END-TO-END EXAMPLES
+
+23.1. Example A: New user enters bot and opens Mini App
+
+1. User sends /start to Telegram bot.
+2. TelegramBot.handleUpdate() extracts Telegram profile and optional startParam.
+3. Store.RegisterOrUpdateTelegramUser() inserts users row and referral_code.
+4. Bot sends main menu via sendMainMenu().
+5. Bot sends inline WebApp button via inlineMiniAppMarkup().
+6. User opens Mini App.
+7. static/index.html loads app.js.
+8. boot() detects Telegram Mini App.
+9. setupTelegramViewport() expands viewport.
+10. bootMiniApp() calls GET /api/me.
+11. withMiniAppAuth() validates X-Telegram-Init-Data.
+12. handleMe() returns user/progress/texts.
+13. renderHeader() displays Telegram profile.
+
+DB effect:
+- users row created/updated
+- referrals row created only if valid ref payload exists
+
+23.2. Example B: User completes diagnostics
+
+Frontend:
+- renderDiagnostics()
+- diagnosticsForm submit
+
+API:
+- POST /api/diagnostics
+
+Backend:
+- handleDiagnostics()
+- Store.SaveDiagnostics()
+
+DB:
+- INSERT INTO diagnostics
+
+Frontend result:
+- toast message
+- setScreen("tariffs")
+
+Bot alternative:
+- startDiagnostics()
+- handleDiagnosticsText()
+- Store.SaveDiagnostics()
+
+23.3. Example C: User selects tariff and creates payment
+
+Frontend:
+- renderTariffs()
+- tariffCard()
+- state.selectedTariff
+- renderPayment()
+
+API:
+- POST /api/payments
+
+Request:
+- tariff_code
+- provider
+
+Backend:
+- handleCreatePayment()
+- Store.CreatePayment()
+
+DB:
+- INSERT INTO payments status pending
+
+Frontend result:
+- payment id and amount displayed
+- instructions tell user to upload receipt to Telegram bot
+
+23.4. Example D: User uploads receipt and admin approves
+
+User side:
+1. User sends PDF/image receipt to Telegram bot.
+2. handleReceiptUpload() validates extension/size.
+3. downloadTelegramFile() stores file under uploads/receipts/YYYY/MM.
+4. Store.AttachReceipt() inserts payment_receipts and sets payments.status = uploaded_receipt.
+5. Bot notifies user and adminIDs.
+
+Admin side:
+1. Admin opens /admin.
+2. bootBrowserAdmin() authenticates with cookie or shows login.
+3. renderAdminPayments() loads GET /api/admin/payments.
+4. Admin submits approve in paymentAction form.
+5. POST /api/admin/payments/{id}/approve.
+6. handleAdminApprovePayment() calls Store.ApprovePayment().
+7. Store.ApprovePayment() creates/extends subscription, sets payment approved, sets current_level >= 1, applies referral rewards.
+8. Bot sends payment_approved to user.
+
+DB:
+- payment_receipts
+- payments
+- subscriptions
+- users
+- referrals/referral_rewards/coin_transactions if referral applies
+- admin_actions
+
+23.5. Example E: User opens LEVEL 1 lesson
+
+Frontend:
+- renderLessons()
+
+API:
+- GET /api/lessons?level=1
+
+Backend:
+- handleLessons()
+- Store.ListLessons()
+
+Access:
+- CanAccessLevel() requires active subscription and current_level >= 1.
+
+DB read:
+- users
+- subscriptions
+- levels
+- lessons
+- lesson_progress
+
+Frontend:
+- lessonCard() displays lesson title/description and watched button.
+
+23.6. Example F: User watches lessons and passes test
+
+Lesson:
+1. User clicks watched button.
+2. markWatched()
+3. POST /api/lessons/{id}/watched
+4. handleLessonWatched()
+5. Store.MarkLessonWatched()
+6. Writes lesson_progress.
+7. Adds +5 coin.
+8. Recalculates progress.
+
+Test:
+1. User opens renderTest().
+2. GET /api/tests/{level}.
+3. User submits answers.
+4. POST /api/tests/{level}/submit.
+5. Store.SubmitTest() calculates score.
+6. Writes test_attempts and test_answers.
+7. If passed, adds +20 coin.
+8. Recalculates progress.
+
+23.7. Example G: LEVEL 2 unlocks
+
+Trigger:
+- Store.recalculateUserProgressTx() after lesson watched or test submit.
+
+Requirement:
+- active subscription
+- all active LEVEL 1 lessons watched
+- LEVEL 1 test passed
+
+DB effect:
+- UPDATE users SET current_level = 2
+
+Frontend:
+- markWatched() or test submit reloads /api/me and /api/levels.
+- dashboard/level strip shows LEVEL 2 as current/open.
+
+23.8. Example H: Admin adds a new lesson
+
+Current browser UI:
+- Lessons section only lists table.
+- Lesson form not found in current frontend.
+
+Backend/API flow:
+1. Admin authenticates.
+2. External client or future frontend calls POST /api/admin/lessons.
+3. handleAdminPostLesson() decodes repository.Lesson.
+4. Store.UpsertLesson() inserts into lessons.
+5. Store.Audit() writes admin_actions.
+6. User later sees lesson through GET /api/lessons?level={levelNumber}, if is_active=1 and level_id points to that level.
+
+DB:
+- lessons
+- admin_actions
+
+23.9. Example I: Admin creates test questions
+
+Current browser UI:
+- Test creation form not found in current frontend.
+
+Backend/API flow:
+1. Admin authenticates.
+2. External client or future frontend calls POST /api/admin/tests with Test JSON including questions/options.
+3. handleAdminPostTest() calls Store.UpsertTest().
+4. Store.UpsertTest() upserts tests row and inserts/updates test_questions/test_options.
+5. Store.Audit() writes admin_actions.
+6. User sees test via GET /api/tests/{level_id}.
+
+DB:
+- tests
+- test_questions
+- test_options
+- admin_actions
+
+23.10. Example J: User invites friend through referral link
+
+1. User opens renderReferral().
+2. GET /api/referral.
+3. handleReferral() calls Store.ReferralSummary().
+4. Frontend displays t.me/zhenisorda_bot?start={referral_code}.
+5. Friend opens bot with /start ref...
+6. handleUpdate() passes startParam to Store.RegisterOrUpdateTelegramUser().
+7. Store creates referrals row if inviter exists and not self.
+8. When friend payment is approved, applyReferralPaymentRewardsTx() marks referral paid, grants +100 coins to inviter and threshold rewards.
+
+DB:
+- users
+- referrals
+- referral_rewards
+- coin_transactions
+- subscriptions for threshold 1/3 if applicable
+
+23.11. Example K: Admin sends broadcast
+
+Frontend:
+- renderAdminBroadcast()
+
+API:
+- POST /api/admin/broadcast
+
+Backend:
+- handleAdminBroadcast()
+- Store.Broadcast()
+- Store.Audit()
+
+DB:
+- INSERT INTO broadcasts status queued
+- INSERT INTO admin_actions
+
+Actual sending to users:
+Not found in current codebase.
+broadcast_messages population:
+Not found in current codebase.
+
+23.12. Example L: User requests closed channel invite link
+
+Frontend:
+- renderChannels()
+- button data-invite
+
+API:
+- POST /api/channels/{id}/invite
+
+Backend:
+- handleIssueInvite()
+- Store.GetChannel()
+- Store.CanAccessChannel()
+
+Access requirements:
+- active subscription
+- user.current_level >= channel.level_requirement
+- subscription tariff rank >= channel.tariff_requirement
+- access_closed false
+
+Invite:
+- if bot channel: TelegramBot.CreateInviteLink() with member_limit 1 and 24h expiration
+- else manual_invite_link
+
+DB:
+- INSERT INTO channel_invite_links
+
+Frontend:
+- modal displays invite_link.
+
+24. TROUBLESHOOTING
+
+24.1. Mini App does not open fullscreen
+
+Check:
+- static/js/app.js setupTelegramViewport()
+- forceExpand()
+- requestFullscreen support in current Telegram client
+- fullscreenFailed event
+- state.fullscreenRequested
+
+Also check:
+- Mini App must be opened inside Telegram, not normal browser.
+- isTelegramMiniAppLaunch() requires tg.initData and tg.initDataUnsafe.user.
+
+24.2. Header goes under Telegram buttons
+
+Check:
+- updateViewportVars()
+- getAppTopPadding()
+- Telegram safeAreaInset/contentSafeAreaInset values
+- CSS variables --app-top-padding and --tg-content-safe-area-inset-top
+- .app-shell padding-top in static/css/style.css
+
+24.3. Username/avatar not displayed
+
+Check:
+- renderHeader()
+- readTelegramUser()
+- buildDisplayName()
+- buildLogin()
+- buildPhotoUrl()
+- Telegram initDataUnsafe.user fields
+
+Important:
+- Backend User does not contain photo_url.
+- Avatar depends on Telegram initDataUnsafe.user.photo_url.
+
+24.4. / opens Swagger instead of Mini App
+
+Current code:
+- GET / serves static/index.html.
+- Swagger route not found.
+
+If Swagger appears in runtime, it is not from current codebase or needs verification in deployment/proxy.
+
+24.5. Admin login does not work
+
+Check:
+- /api/browser-auth/login
+- handleBrowserLogin()
+- cfg.AdminPasswordHash
+- cfg.Env
+- BrowserSessionTTL
+- Redis availability or MemoryKV fallback
+- cookie zo_admin_session
+- Secure cookie in production
+
+Development:
+- password admin works only when ADMIN_PASSWORD_HASH is empty and ENV=development.
+
+24.6. Payment does not activate subscription
+
+Check:
+- payments.status before approval
+- handleAdminApprovePayment()
+- Store.ApprovePayment()
+- status must be pending or uploaded_receipt
+- SubscriptionDefaultDays or request days
+- subscriptions table
+- users.current_level update
+
+Also check:
+- Admin frontend sends {"days":30} in renderAdminPayments().
+
+24.7. Lesson does not unlock
+
+Check:
+- active subscription exists
+- users.current_level
+- users.access_closed
+- lessons.is_active
+- level number 1..12
+- Store.CanAccessLevel()
+- canAccessLevelQuery()
+
+24.8. Test pass does not unlock next level
+
+Check:
+- all active lessons watched in lesson_progress
+- test_attempts.passed = 1
+- test.pass_percent
+- SubmitTest()
+- testPassed()
+- recalculateUserProgressTx()
+- users.current_level
+
+Important:
+- Passing test alone is not enough; all active lessons must be watched.
+
+24.9. Referral is not counted
+
+Check:
+- start payload must begin with ref
+- users.referral_code of inviter
+- new user only; existing users do not get new invited_by_user_id
+- self-referral blocked by telegram_id check
+- referrals UNIQUE(invited_user_id)
+- payment approval triggers paid reward, not registration alone
+- applyReferralPaymentRewardsTx()
+
+24.10. Channel invite link is not generated
+
+Check:
+- channels.invite_link_type
+- channels.telegram_chat_id
+- bot configured and not disabled
+- Telegram bot permissions to create invite links in target chat
+- TelegramBot.CreateInviteLink()
+- manual_invite_link fallback
+- handleIssueInvite()
+- Store.CanAccessChannel()
+
+If no bot and no manual link:
+- backend returns 409 "invite link is not configured".
+
+24.11. Broadcast does not reach users
+
+Check:
+- handleAdminBroadcast()
+- broadcasts table
+
+Actual broadcast worker/sender:
+Not found in current codebase.
+
+24.12. Coins list shows unexpected users
+
+Check:
+- handleCoins()
+- Store.PlaceholderList("coins")
+
+Current behavior:
+- balance is current user only
+- transactions list is not filtered by current user. Needs verification.
+
+24.13. Assignment review does not change unlock
+
+Check:
+- ReviewAssignmentSubmission()
+- assignment_submissions.status
+- canUnlockNextLevel()
+
+Current behavior:
+- assignment submission affects progress percentage.
+- assignment review status is not used for next level unlock.
+
+25. FINAL SUMMARY
+
+This project is a Go-based Telegram Bot, Telegram Mini App, and browser admin panel for a subscription education platform called ZHENIS ORDA INSIDE / Genius Orda.
+
+The backend starts in cmd/main.go, loads config, opens SQLite, runs schema/seed migrations, creates repository and HTTP handlers, optionally starts Telegram long polling, and starts background schedulers.
+
+The frontend is a static SPA. static/index.html provides shells for Mini App, admin login, admin panel and landing. static/js/app.js detects Telegram/Admin/Dev modes, sends Telegram initData to backend, renders Mini App screens, and renders the browser admin panel. static/css/style.css defines the dark/gold design system and Telegram safe-area layout.
+
+Users are registered through Telegram bot or Mini App initData. Payments are created in Mini App, receipts are uploaded through Telegram bot, and admins approve/reject payments in /admin. Approved payments activate subscriptions and open LEVEL 1. Users progress through 12 levels by watching all active lessons and passing the active test for the current level. Lessons and tests are stored in SQLite and seeded by traits/database/database.go.
+
+Admin content APIs exist for levels, lessons, tests, channels, streams, settings and broadcasts. However, the current browser admin frontend only has full forms for payment verification, channels and broadcast. Lesson/test creation forms are not found in current frontend code, although backend endpoints exist.
+
+Most important files for future developers:
+- cmd/main.go
+- config/config.go
+- internal/handler/http.go
+- internal/handler/api.go
+- internal/handler/admin_http.go
+- internal/handler/telegram.go
+- internal/handler/scheduler.go
+- internal/repository/progress.go
+- internal/repository/payments.go
+- internal/repository/users.go
+- internal/repository/admin.go
+- traits/database/schema.go
+- traits/database/database.go
+- static/index.html
+- static/js/app.js
+- static/css/style.css
