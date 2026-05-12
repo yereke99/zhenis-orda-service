@@ -225,8 +225,8 @@
       webApp.expand();
     } catch (_) {}
     try {
-      if (typeof webApp.setBackgroundColor === "function") webApp.setBackgroundColor("#050403");
-      if (typeof webApp.setHeaderColor === "function") webApp.setHeaderColor("#050403");
+      if (typeof webApp.setBackgroundColor === "function") webApp.setBackgroundColor("#07090E");
+      if (typeof webApp.setHeaderColor === "function") webApp.setHeaderColor("#07090E");
     } catch (_) {}
     try {
       if (typeof webApp.disableVerticalSwipes === "function") webApp.disableVerticalSwipes();
@@ -648,7 +648,7 @@
       `;
 
       const foot = container.querySelector(".modal-foot");
-      (actions || [{ label: "OK", value: "ok", primary: true }]).forEach((action) => {
+      (actions || [{ label: "Жабу", value: "ok", primary: true }]).forEach((action) => {
         const btn = document.createElement("button");
         btn.className = action.primary ? "gold-btn" : action.danger ? "danger-btn" : "ghost-btn";
         btn.type = "button";
@@ -914,7 +914,7 @@
       ["lessons", "▤", "Сабақ"],
       ["referral", "↗", "Реф"],
       ["coins", "✦", "Coin"],
-      ["profile", "◐", "Профиль"],
+      ["profile", "◐", "Жеке"],
     ];
     els.bottomCta.classList.remove("hidden");
     els.bottomCta.innerHTML = `<div class="tabbar">${tabs
@@ -953,7 +953,7 @@
     html(`
       <section class="screen">
         <div class="error-card">
-          <p class="eyebrow">Қате · Error</p>
+          <p class="eyebrow">Қате</p>
           <h2>Жүктеу мүмкін болмады</h2>
           <p>${esc(message || "Белгісіз қате")}</p>
           <button class="ghost-btn" id="retryBoot" type="button">Қайталау</button>
@@ -1025,7 +1025,7 @@
               <p class="eyebrow">Unlock</p>
               <h2>Келесі талап</h2>
             </div>
-            <span class="status ${progress.can_unlock_next ? "ok" : "warn"}">${progress.can_unlock_next ? "Ready" : "Locked"}</span>
+            <span class="status ${progress.can_unlock_next ? "ok" : "warn"}">${progress.can_unlock_next ? "Дайын" : "Жабық"}</span>
           </div>
           <p class="muted">${esc(progress.next_requirement || "LEVEL 2 ашылуы үшін тест тапсырыңыз.")}</p>
           <div class="grid two tight" style="margin-top:6px">
@@ -1114,7 +1114,7 @@
           <p class="eyebrow">LEVEL ${esc(level.number)}</p>
           <h2>${esc(level.title_kk || `Level ${level.number}`)}</h2>
         </div>
-        <span class="status ${level.access ? "ok" : "bad"}">${level.access ? "Open" : "Locked"}</span>
+        <span class="status ${level.access ? "ok" : "bad"}">${level.access ? "Ашық" : "Жабық"}</span>
       </div>
       <div class="progress-track thin"><div class="progress-fill" style="--progress:${percent}%"></div></div>
       <div class="progress-row"><span>${progress.watched_lessons || 0}/${progress.total_lessons || 0} сабақ</span><strong>${percent}%</strong></div>
@@ -1167,9 +1167,9 @@
       <div class="card-header">
         <div>
           <p class="eyebrow">Сабақ ${esc(lesson.sort_order)}</p>
-          <h2>${esc(lesson.title_kk || "Lesson")}</h2>
+          <h2>${esc(lesson.title_kk || "Сабақ")}</h2>
         </div>
-        <span class="status ${watched ? "ok" : access ? "" : "bad"}">${watched ? "Watched" : access ? "Open" : "Locked"}</span>
+        <span class="status ${watched ? "ok" : access ? "" : "bad"}">${watched ? "Көрілді" : access ? "Ашық" : "Жабық"}</span>
       </div>
       <p class="muted">${esc(lesson.description_kk || "ZHENIS ORDA INSIDE")}</p>
       <div class="lesson-actions">
@@ -1234,7 +1234,7 @@
         const me = await api("/api/me");
         state.me = me;
         await refreshLevels();
-        toast(`Score: ${result.attempt.score_percent}% — ${result.attempt.passed ? "Passed" : "Try again"}`, result.attempt.passed ? "success" : "error");
+        toast(`Балл: ${result.attempt.score_percent}% — ${result.attempt.passed ? "Сәтті" : "Қайталау"}`, result.attempt.passed ? "success" : "error");
         setScreen("dashboard");
       } catch (error) {
         toast(error.message || "Тест жіберу мүмкін болмады", "error");
@@ -1321,7 +1321,7 @@
     html(`
       <section class="screen">
         <div class="card">
-          <p class="eyebrow">Free diagnostics</p>
+          <p class="eyebrow">Тегін диагностика</p>
           <h1>Диагностика</h1>
           <p class="muted">Нәтижеден кейін жүйе сізге бірінші фундаментті ұсынады.</p>
         </div>
@@ -1364,7 +1364,7 @@
     html(`
       <section class="screen">
         <div class="card">
-          <p class="eyebrow">Membership</p>
+          <p class="eyebrow">Жазылым</p>
           <h1>Тарифтер</h1>
           <p class="muted">LEVEL 1 төлемнен кейін ашылады. Контент саты-саты ашылады.</p>
         </div>
@@ -1516,9 +1516,9 @@
     html(`
       <section class="screen">
         <div class="hero">
-          <p class="eyebrow">Referral</p>
+          <p class="eyebrow">Реферал</p>
           <h1>Жаңа клиент шақырыңыз</h1>
-          <p class="muted">Тек төлемі мақұлданған клиенттер reward береді.</p>
+          <p class="muted">Тек төлемі мақұлданған клиенттер сыйақы береді.</p>
         </div>
         <div class="card">
           <p class="eyebrow">Сілтеме</p>
@@ -1529,8 +1529,8 @@
           </div>
         </div>
         <div class="grid two">
-          ${metric("Шақырылған", referral.invited_count || 0, "registered")}
-          ${metric("Төлем жасаған", referral.paid_count || 0, "approved")}
+          ${metric("Шақырылған", referral.invited_count || 0, "тіркелді")}
+          ${metric("Төлем жасаған", referral.paid_count || 0, "мақұлданды")}
         </div>
       </section>
     `);
@@ -1566,7 +1566,7 @@
         <div class="hero">
           <p class="eyebrow">ZHENIS COIN</p>
           <h1>${money(coins.balance)} <small style="color:var(--gold-soft);font-size:18px">coin</small></h1>
-          <p class="muted">Lesson watched +5, test passed +20, stream attended +30, referral +100.</p>
+          <p class="muted">Сабақ көрілді +5, тест тапсырылды +20, эфирге қатысты +30, реферал +100.</p>
         </div>
         <div class="card">
           <p class="eyebrow">Реферал бонустары</p>
@@ -1626,7 +1626,7 @@
     html(`
       <section class="screen">
         <div class="card">
-          <p class="eyebrow">Private access</p>
+          <p class="eyebrow">Жабық қол жетімділік</p>
           <h1>Жабық каналдар</h1>
         </div>
         <div class="grid">${
@@ -1636,9 +1636,9 @@
                   (channel) => `<div class="card">
                     <div class="card-header">
                       <div><h2>${esc(channel.title)}</h2><p class="muted">${esc(channel.tariff_requirement)} · LEVEL ${esc(channel.level_requirement)}</p></div>
-                      <span class="status ${channel.access ? "ok" : "bad"}">${channel.access ? "Open" : "Locked"}</span>
+                      <span class="status ${channel.access ? "ok" : "bad"}">${channel.access ? "Ашық" : "Жабық"}</span>
                     </div>
-                    <button class="gold-btn block" data-invite="${esc(channel.id)}" ${channel.access ? "" : "disabled"} type="button">Invite link алу</button>
+                    <button class="gold-btn block" data-invite="${esc(channel.id)}" ${channel.access ? "" : "disabled"} type="button">Сілтеме алу</button>
                   </div>`,
                 )
                 .join("")
@@ -1654,7 +1654,7 @@
             body: "{}",
           });
           await modal({
-            title: "Invite сілтеме",
+            title: "Шақыру сілтемесі",
             body: `<p class="muted">Сілтеме 24 сағат жарамды.</p><div class="referral-link">${esc(res.invite_link)}</div>`,
             actions: [{ label: "Жабу", value: "ok", primary: true }],
           });
@@ -1675,15 +1675,15 @@
     html(`
       <section class="screen">
         <div class="hero">
-          <p class="eyebrow">Profile</p>
+          <p class="eyebrow">Жеке кабинет</p>
           <h1>${esc(display)}</h1>
           <p class="muted">${esc(login)}</p>
         </div>
         <div class="grid two">
-          ${metric("Current tariff", sub.tariff_code || "None", sub.status || "inactive", subOk ? "ok" : "warn")}
-          ${metric("Expiration", sub.expires_at ? formatDate(sub.expires_at) : "—", "subscription")}
-          ${metric("Current level", `LEVEL ${user.current_level || 0}`, "12-month journey")}
-          ${metric("Coin balance", money(user.coin_balance), "ZHENIS COIN")}
+          ${metric("Қазіргі тариф", sub.tariff_code || "Жоқ", sub.status || "inactive", subOk ? "ok" : "warn")}
+          ${metric("Мерзімі", sub.expires_at ? formatDate(sub.expires_at) : "—", "жазылым")}
+          ${metric("Қазіргі деңгей", `LEVEL ${user.current_level || 0}`, "12 айлық жол")}
+          ${metric("Coin балансы", money(user.coin_balance), "ZHENIS COIN")}
         </div>
         <div class="grid two">
           <button class="ghost-btn" data-next="referral" type="button">Реферал</button>
@@ -1698,7 +1698,7 @@
     html(`
       <section class="screen">
         <div class="card">
-          <p class="eyebrow">Support</p>
+          <p class="eyebrow">Қолдау</p>
           <h1>Қолдау қызметі</h1>
           <p class="muted">Сұрағыңызды жазыңыз. Команда жауап береді.</p>
         </div>
@@ -1883,7 +1883,7 @@
   async function renderAdmin() {
     if (els.adminTitle) {
       const meta = adminScreens.find(([key]) => key === state.adminScreen);
-      els.adminTitle.textContent = meta ? meta[1] : "Dashboard";
+      els.adminTitle.textContent = meta ? meta[1] : "Басты бет";
     }
     const screen = state.adminScreen;
     if (!els.adminContent) return;
@@ -1927,7 +1927,7 @@
           "Аудит журналы",
         );
     } catch (error) {
-      els.adminContent.innerHTML = `<div class="error-card"><p class="eyebrow">Error</p><h2>Қате</h2><p>${esc(error.message)}</p></div>`;
+      els.adminContent.innerHTML = `<div class="error-card"><p class="eyebrow">Қате</p><h2>Қате</h2><p>${esc(error.message)}</p></div>`;
     }
   }
 
@@ -1960,7 +1960,7 @@
     };
     const metrics = ordered
       .filter((key) => key in stats)
-      .map((key) => `<div class="metric"><p class="eyebrow">${esc(metricLabels[key])}</p><strong>${esc(money(stats[key]))}</strong><span class="muted">live</span></div>`);
+      .map((key) => `<div class="metric"><p class="eyebrow">${esc(metricLabels[key])}</p><strong>${esc(money(stats[key]))}</strong><span class="muted">тірі</span></div>`);
     els.adminContent.innerHTML = `
       <div class="admin-grid">${metrics.join("")}</div>
       <div class="card">
@@ -2018,7 +2018,7 @@
     els.adminContent.innerHTML = `
       <div class="card">
         <div class="admin-section-head">
-          <div><p class="eyebrow">${esc(title || "Items")}</p><h2>${esc(title || "Items")}</h2></div>
+          <div><p class="eyebrow">${esc(title || "Жазбалар")}</p><h2>${esc(title || "Жазбалар")}</h2></div>
         </div>
         ${tableHtml(columns, rows)}
       </div>
@@ -2697,7 +2697,7 @@
         }
         renderAdminPayments();
       } catch (error) {
-        toast(error.message || "Action failed", "error");
+        toast(error.message || "Әрекет орындалмады", "error");
       }
     });
   }
@@ -2752,7 +2752,7 @@
         toast("Канал сақталды", "success");
         renderAdminChannels();
       } catch (error) {
-        toast(error.message || "Save failed", "error");
+        toast(error.message || "Сақтау сәтсіз", "error");
       }
     });
   }
@@ -2793,7 +2793,7 @@
         toast("Хабарлама кезекке қосылды", "success");
         renderAdminBroadcast();
       } catch (error) {
-        toast(error.message || "Broadcast failed", "error");
+        toast(error.message || "Хабарлама жіберілмеді", "error");
       }
     });
   }
