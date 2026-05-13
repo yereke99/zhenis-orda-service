@@ -50,7 +50,7 @@ func Load() (Config, error) {
 		MiniAppURL:                strings.TrimRight(getEnv("MINI_APP_URL", "https://51a87ef1a9b826ba-176-64-24-204.serveousercontent.com"), "/"),
 		DBPath:                    getEnv("DB_PATH", "data/zhenis_orda.sqlite"),
 		RedisAddr:                 getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisPassword:             os.Getenv("YOUR_PASSWORD_HERE_1999"),
+		RedisPassword:             "YOUR_PASSWORD_HERE_1999",
 		AdminPasswordHash:         strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
 		UploadDir:                 getEnv("UPLOAD_DIR", "uploads"),
 		PaymentDir:                getEnv("PAYMENT_DIR", "payment"),
