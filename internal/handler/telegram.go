@@ -138,9 +138,6 @@ func (b *TelegramBot) handleUpdate(ctx context.Context, update telegramUpdate) e
 		}
 	}
 	language := "kk"
-	if strings.HasPrefix(msg.From.LanguageCode, "ru") {
-		language = "ru"
-	}
 	user, created, err := b.store.RegisterOrUpdateTelegramUser(ctx, repository.TelegramUserInput{
 		TelegramID: msg.From.ID,
 		Username:   msg.From.Username,

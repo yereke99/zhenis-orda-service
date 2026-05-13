@@ -108,8 +108,8 @@ func TestMiniAppAcceptsSignedTelegramInitData(t *testing.T) {
 	if body.User.TelegramID != 99112233 {
 		t.Fatalf("expected telegram id 99112233, got %d", body.User.TelegramID)
 	}
-	if body.User.Language != "ru" {
-		t.Fatalf("expected ru language, got %q", body.User.Language)
+	if body.User.Language != "kk" {
+		t.Fatalf("expected kk language, got %q", body.User.Language)
 	}
 	if body.User.PhotoURL != "https://t.me/i/userpic/320/yasmina.jpg" {
 		t.Fatalf("expected photo url to be returned, got %q", body.User.PhotoURL)

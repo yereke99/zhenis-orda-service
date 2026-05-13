@@ -236,17 +236,13 @@ func (s *Server) userFromMiniApp(r *http.Request) (repository.User, error) {
 	if err != nil {
 		return repository.User{}, err
 	}
-	language := "kk"
-	if strings.HasPrefix(initData.User.Language, "ru") {
-		language = "ru"
-	}
 	user, _, err := s.store.RegisterOrUpdateTelegramUser(r.Context(), repository.TelegramUserInput{
 		TelegramID: initData.User.ID,
 		Username:   initData.User.Username,
 		FirstName:  initData.User.FirstName,
 		LastName:   initData.User.LastName,
 		PhotoURL:   initData.User.PhotoURL,
-		Language:   language,
+		Language:   "kk",
 		StartParam: initData.StartParam,
 	})
 	if err == nil {

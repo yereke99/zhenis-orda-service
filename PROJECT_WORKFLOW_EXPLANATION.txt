@@ -658,8 +658,7 @@ Flow:
 2. Читает msg.Text.
 3. Если text starts with /start, извлекает startParam из второго слова.
 4. Определяет language:
-   - ru, если msg.From.LanguageCode начинается с ru
-   - иначе kk
+   - kk по умолчанию; язык Telegram-клиента не переключает пользователя на ru автоматически
 5. Вызывает Store.RegisterOrUpdateTelegramUser() с:
    - TelegramID
    - Username
@@ -675,7 +674,7 @@ Flow:
    - иначе sendMainMenu()
 
 Important current behavior:
-- RegisterOrUpdateTelegramUser() получает language уже как kk или ru, поэтому новый пользователь обычно сразу получает language и language selection может не показаться.
+- RegisterOrUpdateTelegramUser() получает language как kk, поэтому новый пользователь обычно сразу получает казахское меню и language selection может не показаться.
 - parseStartPayload() существует, но в handleUpdate() не используется.
 
 4.3. User registration/upsert
