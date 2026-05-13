@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"mime"
@@ -14,6 +15,8 @@ import (
 	"zhenis-orda-service/internal/i18n"
 	"zhenis-orda-service/internal/repository"
 	"zhenis-orda-service/internal/service"
+
+	"go.uber.org/zap"
 )
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +93,7 @@ func (s *Server) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 			"kaspi_pay_url":      s.cfg.KaspiPayURL,
 			"halyk_payment_url":  s.cfg.HalykPaymentURL,
 			"bank_card_url":      s.cfg.BankCardPaymentURL,
-			"text":               "Kaspi QR немесе Kaspi Pay арқылы төлем жасап, чекті Telegram ботқа PDF/image ретінде жіберіңіз.",
+			"text":               "Kaspi QR немесе Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF/image ретінде жіберіңіз.",
 		},
 	})
 }
@@ -366,12 +369,12 @@ func (s *Server) handleBonuses(w http.ResponseWriter, r *http.Request) {
 		"paid_referrals": summary.PaidCount,
 		"rewards":        summary.Rewards,
 		"plan": []map[string]any{
-			{"count": 1, "reward": "7 days free"},
-			{"count": 3, "reward": "1 month free"},
-			{"count": 5, "reward": "closed VIP stream"},
-			{"count": 10, "reward": "personal mini-review"},
-			{"count": 20, "reward": "1 month VIP tariff access"},
-			{"count": 50, "reward": "personal Zoom with mentor"},
+			{"count": 1, "reward": "7 күн тегін"},
+			{"count": 3, "reward": "1 ай тегін"},
+			{"count": 5, "reward": "жабық VIP эфир"},
+			{"count": 10, "reward": "жеке мини-талдау"},
+			{"count": 20, "reward": "VIP тарифіне 1 ай қолжетімділік"},
+			{"count": 50, "reward": "ментормен жеке Zoom"},
 		},
 	})
 }
@@ -444,14 +447,90 @@ func (s *Server) handleSupport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Body string `json:"body"`
 	}
-	if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.Body) == "" {
-		writeError(w, http.StatusBadRequest, "empty support message")
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Хабарлама мәтінін жазыңыз.")
 		return
 	}
-	if err := s.store.CreateSupportMessage(r.Context(), user.ID, req.Body); mapRepoError(w, err) {
+	body := strings.TrimSpace(req.Body)
+	if body == "" {
+		writeError(w, http.StatusBadRequest, "Хабарлама мәтінін жазыңыз.")
+		return
+	}
+	if err := s.store.CreateSupportMessage(r.Context(), user.ID, body); err != nil {
+		if s.logger != nil {
+			s.logger.Error("support message save failed", zap.String("user_id", user.ID), zap.Int64("telegram_id", user.TelegramID), zap.Error(err))
+		}
+		writeError(w, http.StatusInternalServerError, i18n.T(user.Language, "support_failed"))
+		return
+	}
+	if err := s.notifySupportAdmins(r.Context(), user, body); err != nil {
+		writeError(w, http.StatusBadGateway, i18n.T(user.Language, "support_failed"))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(user.Language, "support_received")})
+}
+
+func (s *Server) notifySupportAdmins(ctx context.Context, user repository.User, body string) error {
+	if s.bot == nil {
+		err := fmt.Errorf("telegram bot is not configured")
+		s.logSupportNotificationError(err, user, 0)
+		return err
+	}
+	if len(s.cfg.AdminIDs) == 0 {
+		err := fmt.Errorf("admin ids are not configured")
+		s.logSupportNotificationError(err, user, 0)
+		return err
+	}
+
+	text := formatSupportAdminMessage(user, body)
+	sent := 0
+	var lastErr error
+	for _, adminID := range s.cfg.AdminIDs {
+		if adminID == 0 {
+			continue
+		}
+		if err := s.bot.SendMessage(ctx, adminID, text); err != nil {
+			lastErr = err
+			s.logSupportNotificationError(err, user, adminID)
+			continue
+		}
+		sent++
+	}
+	if sent == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no valid admin ids configured")
+			s.logSupportNotificationError(lastErr, user, 0)
+		}
+		return lastErr
+	}
+	return nil
+}
+
+func (s *Server) logSupportNotificationError(err error, user repository.User, adminID int64) {
+	if s.logger == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("user_id", user.ID),
+		zap.Int64("telegram_id", user.TelegramID),
+		zap.Error(err),
+	}
+	if adminID != 0 {
+		fields = append(fields, zap.Int64("admin_id", adminID))
+	}
+	s.logger.Error("support admin notification failed", fields...)
+}
+
+func formatSupportAdminMessage(user repository.User, body string) string {
+	username := "—"
+	if strings.TrimSpace(user.Username) != "" {
+		username = "@" + strings.TrimPrefix(strings.TrimSpace(user.Username), "@")
+	}
+	name := strings.TrimSpace(strings.TrimSpace(user.FirstName) + " " + strings.TrimSpace(user.LastName))
+	if name == "" {
+		name = "—"
+	}
+	return fmt.Sprintf("📩 Жаңа қолдау хабарламасы\n\nSource: ZHENIS ORDA Mini App support\nUser ID: %d\nUsername: %s\nАты: %s\n\nХабарлама:\n%s", user.TelegramID, username, name, strings.TrimSpace(body))
 }
 
 func miniMenu(language string) []string {

@@ -26,6 +26,10 @@ import (
 )
 
 func newTestHTTPServer(t *testing.T, env string) *handler.Server {
+	return newTestHTTPServerWithConfig(t, env, nil)
+}
+
+func newTestHTTPServerWithConfig(t *testing.T, env string, configure func(*config.Config)) *handler.Server {
 	t.Helper()
 	ctx := context.Background()
 	db, err := database.Open(ctx, ":memory:")
@@ -52,7 +56,28 @@ func newTestHTTPServer(t *testing.T, env string) *handler.Server {
 		BrowserSessionTTL:       time.Hour,
 		TelegramInitDataMaxAge:  time.Hour,
 	}
+	if configure != nil {
+		configure(&cfg)
+	}
 	return handler.NewServer(cfg, repository.New(db), handler.NewMemoryKV(), zap.NewNop())
+}
+
+type sentBotMessage struct {
+	chatID int64
+	text   string
+}
+
+type testInviteBot struct {
+	messages []sentBotMessage
+}
+
+func (b *testInviteBot) CreateInviteLink(ctx context.Context, chatID, name string, expiresAt time.Time) (string, error) {
+	return "https://t.me/+test", nil
+}
+
+func (b *testInviteBot) SendMessage(ctx context.Context, chatID int64, text string) error {
+	b.messages = append(b.messages, sentBotMessage{chatID: chatID, text: text})
+	return nil
 }
 
 func TestMiniAppDevAuth(t *testing.T) {
@@ -244,6 +269,54 @@ func TestMiniAppReceiptUpload(t *testing.T) {
 	srv.Routes().ServeHTTP(uploadRec, uploadReq)
 	if uploadRec.Code != http.StatusOK {
 		t.Fatalf("upload expected 200, got %d: %s", uploadRec.Code, uploadRec.Body.String())
+	}
+}
+
+func TestMiniAppSupportNotifiesAdmins(t *testing.T) {
+	srv := newTestHTTPServerWithConfig(t, "development", func(cfg *config.Config) {
+		cfg.AdminIDs = []int64{111222}
+	})
+	bot := &testInviteBot{}
+	srv.SetBot(bot)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/support?miniapp_dev=1&telegram_id=555777&username=aliya&first_name="+url.QueryEscape("Әлия"),
+		bytes.NewBufferString(`{"body":"Сәлем, көмек керек"}`),
+	)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("support expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	want := "Хабарламаңыз әкімшіге жіберілді. Жауапты осы чаттан күтіңіз."
+	if body.Message != want {
+		t.Fatalf("support message = %q, want %q", body.Message, want)
+	}
+	if len(bot.messages) != 1 {
+		t.Fatalf("expected 1 admin notification, got %d", len(bot.messages))
+	}
+	if bot.messages[0].chatID != 111222 {
+		t.Fatalf("admin chat id = %d", bot.messages[0].chatID)
+	}
+	adminText := bot.messages[0].text
+	for _, fragment := range []string{
+		"Source: ZHENIS ORDA Mini App support",
+		"User ID: 555777",
+		"Username: @aliya",
+		"Аты: Әлия",
+		"Хабарлама:",
+		"Сәлем, көмек керек",
+	} {
+		if !strings.Contains(adminText, fragment) {
+			t.Fatalf("admin notification missing %q in %s", fragment, adminText)
+		}
 	}
 }
 

@@ -381,7 +381,7 @@
     );
     if (tid) return `ID ${tid}`;
 
-    return "Telegram user";
+    return "Telegram қолданушысы";
   }
 
   function buildPhotoUrl(tgUser, apiUser) {
@@ -489,7 +489,7 @@
   }
 
   function money(value) {
-    return num(value).toLocaleString("ru-RU");
+    return num(value).toLocaleString("kk-KZ");
   }
 
   function shortId(value) {
@@ -523,14 +523,14 @@
     if (!value) return "—";
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "short", year: "numeric" });
+    return d.toLocaleDateString("kk-KZ", { day: "2-digit", month: "short", year: "numeric" });
   }
 
   function formatDateTime(value) {
     if (!value) return "—";
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return "—";
-    return d.toLocaleString("ru-RU", {
+    return d.toLocaleString("kk-KZ", {
       day: "2-digit",
       month: "short",
       hour: "2-digit",
@@ -546,12 +546,12 @@
     first_name: "Аты",
     current_level: "Деңгей",
     coin_balance: "Coin",
-    access_closed: "Доступ",
+    access_closed: "Қолжетімділік",
     tariff_code: "Тариф",
     amount_kzt: "Сома",
     provider: "Провайдер",
     status: "Статус",
-    receipt_file_path: "Чек",
+    receipt_file_path: "Түбіртек",
     expires_at: "Аяқталуы",
     number: "Деңгей",
     title_kk: "Қазақша атауы",
@@ -581,7 +581,7 @@
     active: "Белсенді",
     inactive: "Белсенді емес",
     pending: "Кезекте",
-    uploaded_receipt: "Чек жүктелді",
+    uploaded_receipt: "Түбіртек жүктелді",
     approved: "Қабылданды",
     rejected: "Қабылданбады",
     expired: "Мерзімі өтті",
@@ -593,8 +593,8 @@
     valid_candidate: "Тексеруге дайын",
     parse_partial: "Қолмен тексеру қажет",
     parse_failed: "Қолмен тексеру қажет",
-    suspicious: "Күдікті чек",
-    duplicate: "Қайталанған чек",
+    suspicious: "Күдікті түбіртек",
+    duplicate: "Қайталанған түбіртек",
     uploaded: "Жүктелді",
     sent: "Жіберілді",
   };
@@ -969,9 +969,9 @@
         <div class="hero">
           <p class="eyebrow">ZHENIS ORDA INSIDE</p>
           <h1>Бұл жай курс емес. Бұл 12 айлық жүйелі өсу жолы.</h1>
-          <p class="muted">Сіз ойлау, қаржы, бизнес, проработка және лидерлік бойынша саты-саты өтіп, өзіңізді жаңа деңгейге шығарасыз.</p>
+          <p class="muted">Сіз ойлау, қаржы, бизнес, ішкі жұмыс және көшбасшылық бойынша саты-саты өтіп, өзіңізді жаңа деңгейге шығарасыз.</p>
           <div class="pill-row">
-            <span class="pill">Статус</span>
+            <span class="pill">Мәртебе</span>
             <span class="pill">Мақтаныш</span>
             <span class="pill">Мотивация</span>
           </div>
@@ -981,9 +981,9 @@
           <button class="ghost-btn lg" id="goTariffs" type="button">Тариф таңдау</button>
         </div>
         <div class="card">
-          <p class="eyebrow">Premium private club</p>
-          <h2>Жабық membership</h2>
-          <p class="muted">Тек тариф ашқан клиенттер ғана сабақтарға, тестке, эфирге және жеке каналдарға қол жеткізе алады.</p>
+          <p class="eyebrow">Premium жабық клуб</p>
+          <h2>Жабық мүшелік</h2>
+          <p class="muted">Тек тариф ашқан клиенттер ғана сабақтарға, тестке, эфирге және жеке арналарға қол жеткізе алады.</p>
         </div>
       </section>
     `);
@@ -1014,15 +1014,15 @@
         </div>
 
         <div class="grid three">
-          ${metric("Тариф", sub.tariff_code || "Жоқ", subOk ? "active" : subStatus, subOk ? "ok" : subStatus === "expired" ? "bad" : "warn")}
-          ${metric("Деңгей", `LEVEL ${currentLevel}`, currentLevel ? "open" : "locked", currentLevel ? "ok" : "warn")}
+          ${metric("Тариф", sub.tariff_code || "Жоқ", statusText[subStatus] || subStatus, subOk ? "ok" : subStatus === "expired" ? "bad" : "warn")}
+          ${metric("Деңгей", `LEVEL ${currentLevel}`, currentLevel ? "Ашық" : "Жабық", currentLevel ? "ok" : "warn")}
           ${metric("ZHENIS Coin", money(user.coin_balance), "ішкі валюта")}
         </div>
 
         <div class="card">
           <div class="card-header">
             <div>
-              <p class="eyebrow">Unlock</p>
+              <p class="eyebrow">Келесі қадам</p>
               <h2>Келесі талап</h2>
             </div>
             <span class="status ${progress.can_unlock_next ? "ok" : "warn"}">${progress.can_unlock_next ? "Дайын" : "Жабық"}</span>
@@ -1046,7 +1046,7 @@
           <button class="ghost-btn lg" data-next="tariffs" type="button">Тарифтер</button>
           <button class="ghost-btn lg" data-next="referral" type="button">Реферал сілтемем</button>
           <button class="ghost-btn lg" data-next="streams" type="button">Жабық эфир</button>
-          <button class="ghost-btn lg" data-next="channels" type="button">Жабық каналдар</button>
+          <button class="ghost-btn lg" data-next="channels" type="button">Жабық арналар</button>
           <button class="ghost-btn lg" data-next="assignment" type="button">Тапсырмаларым</button>
           <button class="ghost-btn lg" data-next="support" type="button">Қолдау қызметі</button>
         </div>
@@ -1323,7 +1323,7 @@
         <div class="card">
           <p class="eyebrow">Тегін диагностика</p>
           <h1>Диагностика</h1>
-          <p class="muted">Нәтижеден кейін жүйе сізге бірінші фундаментті ұсынады.</p>
+          <p class="muted">Нәтижеден кейін жүйе сізге бірінші іргетасты ұсынады.</p>
         </div>
         <form id="diagnosticsForm" class="form">
           ${fields.map(([key, label]) => `<label class="field"><span>${esc(label)}</span><input name="${key}" required /></label>`).join("")}
@@ -1400,7 +1400,7 @@
         <div class="card">
           <p class="eyebrow">Төлем</p>
           <h1>${esc(tariff)}</h1>
-          <p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, чекті Telegram ботқа PDF/image ретінде жіберіңіз.</p>
+          <p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF/image ретінде жіберіңіз.</p>
         </div>
         <form id="paymentForm" class="form">
           <label class="field">
@@ -1409,7 +1409,7 @@
               <option value="kaspi_qr">Kaspi QR</option>
               <option value="kaspi_pay">Kaspi Pay</option>
               <option value="halyk">Halyk</option>
-              <option value="bank_card">Bank card</option>
+              <option value="bank_card">Банк картасы</option>
             </select>
           </label>
           <button class="gold-btn lg" type="submit"><span class="btn-label">Төлем құру</span><span class="btn-spinner"></span></button>
@@ -1451,7 +1451,7 @@
       <div class="card receipt-upload-card">
         <div class="card-header">
           <div>
-            <p class="eyebrow">Чек жүктеу</p>
+            <p class="eyebrow">Түбіртек жүктеу</p>
             <h2>PDF немесе сурет жүктеңіз</h2>
           </div>
           <span class="status warn">Қолмен тексеріледі</span>
@@ -1459,7 +1459,7 @@
         <form id="receiptUploadForm" class="form">
           <label class="upload-drop">
             <input name="receipt" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" required />
-            <span class="upload-title">Чек жүктеу</span>
+            <span class="upload-title">Түбіртек жүктеу</span>
             <small>PDF, JPG, PNG немесе WEBP</small>
             <strong id="receiptFileName">Файл таңдалмады</strong>
           </label>
@@ -1467,7 +1467,7 @@
             <span class="btn-label">Тексеруге жіберу</span><span class="btn-spinner"></span>
           </button>
         </form>
-        <div id="receiptUploadState" class="muted small">Админ тексергеннен кейін доступ ашылады.</div>
+        <div id="receiptUploadState" class="muted small">Әкімші тексергеннен кейін қолжетімділік ашылады.</div>
       </div>
     `;
   }
@@ -1491,11 +1491,11 @@
           method: "POST",
           body: fd,
         });
-        stateNode.innerHTML = `${statusBadge(res.receipt.validation_status)} <span>Чек тексеруге жіберілді</span>`;
-        toast("Чек тексеруге жіберілді", "success");
+        stateNode.innerHTML = `${statusBadge(res.receipt.validation_status)} <span>Түбіртек тексеруге жіберілді</span>`;
+        toast("Түбіртек тексеруге жіберілді", "success");
       } catch (error) {
-        stateNode.textContent = error.message || "Чек жүктеу мүмкін болмады";
-        toast(error.message || "Чек жүктеу мүмкін болмады", "error");
+        stateNode.textContent = error.message || "Түбіртек жүктеу мүмкін болмады";
+        toast(error.message || "Түбіртек жүктеу мүмкін болмады", "error");
       } finally {
         submitBtn.classList.remove("is-loading");
       }
@@ -1538,7 +1538,7 @@
       if (navigator.clipboard) {
         navigator.clipboard.writeText(referral.referral_link).then(() => toast("Сілтеме көшірілді", "success"));
       } else {
-        toast("Clipboard қол жетімді емес", "error");
+        toast("Көшіру қолжетімді емес", "error");
       }
     });
     on("shareRef", () => {
@@ -1571,7 +1571,7 @@
         <div class="card">
           <p class="eyebrow">Реферал бонустары</p>
           <h2>Жоспар</h2>
-          <div class="grid">${(bonuses.plan || []).map((item) => `<div class="card" style="margin:0;padding:14px"><strong style="color:var(--gold-bright)">${esc(item.count)} referral</strong><p class="muted" style="margin-top:4px">${esc(item.reward)}</p></div>`).join("")}</div>
+          <div class="grid">${(bonuses.plan || []).map((item) => `<div class="card" style="margin:0;padding:14px"><strong style="color:var(--gold-bright)">${esc(item.count)} шақыру</strong><p class="muted" style="margin-top:4px">${esc(item.reward)}</p></div>`).join("")}</div>
         </div>
       </section>
     `);
@@ -1619,7 +1619,7 @@
     try {
       data = await api("/api/channels");
     } catch (error) {
-      html(`<section class="screen"><h1>Жабық каналдар</h1>${emptyState(error.message)}</section>`);
+      html(`<section class="screen"><h1>Жабық арналар</h1>${emptyState(error.message)}</section>`);
       return;
     }
     const channels = data.channels || [];
@@ -1627,7 +1627,7 @@
       <section class="screen">
         <div class="card">
           <p class="eyebrow">Жабық қол жетімділік</p>
-          <h1>Жабық каналдар</h1>
+          <h1>Жабық арналар</h1>
         </div>
         <div class="grid">${
           channels.length
@@ -1642,7 +1642,7 @@
                   </div>`,
                 )
                 .join("")
-            : emptyState("Каналдар жоқ")
+            : emptyState("Арналар жоқ")
         }</div>
       </section>
     `);
@@ -1659,7 +1659,7 @@
             actions: [{ label: "Жабу", value: "ok", primary: true }],
           });
         } catch (error) {
-          toast(error.message || "Канал жабық", "error");
+          toast(error.message || "Арна жабық", "error");
         }
       }),
     );
@@ -1680,7 +1680,7 @@
           <p class="muted">${esc(login)}</p>
         </div>
         <div class="grid two">
-          ${metric("Қазіргі тариф", sub.tariff_code || "Жоқ", sub.status || "inactive", subOk ? "ok" : "warn")}
+          ${metric("Қазіргі тариф", sub.tariff_code || "Жоқ", statusText[sub.status] || sub.status || "Белсенді емес", subOk ? "ok" : "warn")}
           ${metric("Мерзімі", sub.expires_at ? formatDate(sub.expires_at) : "—", "жазылым")}
           ${metric("Қазіргі деңгей", `LEVEL ${user.current_level || 0}`, "12 айлық жол")}
           ${metric("Coin балансы", money(user.coin_balance), "ZHENIS COIN")}
@@ -1718,10 +1718,10 @@
           method: "POST",
           body: JSON.stringify({ body }),
         });
-        toast(res.message || "Хабарлама жіберілді", "success");
+        toast(res.message || "Хабарламаңыз әкімшіге жіберілді. Жауапты осы чаттан күтіңіз.", "success");
         setScreen("dashboard");
       } catch (error) {
-        toast(error.message || "Жіберу мүмкін болмады", "error");
+        toast(error.message || "Хабарламаны жіберу мүмкін болмады. Кейінірек қайталап көріңіз.", "error");
       } finally {
         submitBtn.classList.remove("is-loading");
       }

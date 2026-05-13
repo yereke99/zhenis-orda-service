@@ -110,7 +110,7 @@ func (s *Store) progressForLevel(ctx context.Context, q queryer, userID string, 
 	}
 	progress.SubscriptionOK = active
 	if !active {
-		progress.NextRequirement = "Подпискаңызды ұзартыңыз."
+		progress.NextRequirement = "Жазылымыңызды ұзартыңыз."
 	}
 
 	if err := q.QueryRowContext(ctx, `

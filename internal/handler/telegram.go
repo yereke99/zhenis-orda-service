@@ -164,10 +164,10 @@ func (b *TelegramBot) handleUpdate(ctx context.Context, update telegramUpdate) e
 		return b.sendMainMenu(ctx, msg.Chat.ID, "kk")
 	}
 	if strings.EqualFold(text, "Русский") {
-		if err := b.store.SetLanguage(ctx, user.ID, "ru"); err != nil {
+		if err := b.store.SetLanguage(ctx, user.ID, "kk"); err != nil {
 			return err
 		}
-		return b.sendMainMenu(ctx, msg.Chat.ID, "ru")
+		return b.sendMainMenu(ctx, msg.Chat.ID, "kk")
 	}
 
 	if action := matchMainMenuAction(text, user.Language); action != "" {
@@ -203,7 +203,7 @@ func (b *TelegramBot) handleUpdate(ctx context.Context, update telegramUpdate) e
 
 func (b *TelegramBot) sendLanguageSelection(ctx context.Context, chatID int64) error {
 	return b.sendMessage(ctx, chatID, i18n.T("kk", "choose_language"), map[string]any{
-		"keyboard":          [][]map[string]string{{{"text": "Қазақша"}, {"text": "Русский"}}},
+		"keyboard":          [][]map[string]string{{{"text": "Қазақша"}}},
 		"resize_keyboard":   true,
 		"one_time_keyboard": true,
 	})
@@ -217,7 +217,7 @@ func (b *TelegramBot) sendMainMenu(ctx context.Context, chatID int64, language s
 			{{"text": menuButtonLabel(language, "menu_test")}, {"text": menuButtonLabel(language, "menu_assignments")}},
 			{{"text": menuButtonLabel(language, "menu_stream")}, {"text": menuButtonLabel(language, "menu_referral")}},
 			{{"text": menuButtonLabel(language, "menu_bonuses")}, {"text": menuButtonLabel(language, "menu_payment")}},
-			{{"text": menuButtonLabel(language, "menu_support")}, {"text": menuButtonLabel(language, "open_mini_app"), "web_app": map[string]string{"url": b.miniAppURL}}},
+			{{"text": menuButtonLabel(language, "menu_support")}},
 		},
 		"resize_keyboard": true,
 		"is_persistent":   true,
@@ -254,9 +254,9 @@ func (b *TelegramBot) handleMainMenuAction(ctx context.Context, user repository.
 	case "payment":
 		sub, _ := b.store.GetActiveSubscription(ctx, user.ID)
 		if sub == nil {
-			return b.sendMessage(ctx, chatID, "Актив подписка жоқ.", b.inlineMiniAppMarkup(user.Language))
+			return b.sendMessage(ctx, chatID, "Белсенді жазылым жоқ.", b.inlineMiniAppMarkup(user.Language))
 		}
-		return b.sendMessage(ctx, chatID, fmt.Sprintf("Подписка: %s\nМерзімі: %s", sub.TariffCode, sub.ExpiresAt.Format("2006-01-02")), b.inlineMiniAppMarkup(user.Language))
+		return b.sendMessage(ctx, chatID, fmt.Sprintf("Жазылым: %s\nМерзімі: %s", sub.TariffCode, sub.ExpiresAt.Format("2006-01-02")), b.inlineMiniAppMarkup(user.Language))
 	case "support":
 		return b.sendMessage(ctx, chatID, "Қолдау қызметіне сұрағыңызды Mini App арқылы жіберіңіз.", b.inlineMiniAppMarkup(user.Language))
 	case "miniapp":
@@ -330,13 +330,41 @@ func matchMainMenuAction(text, language string) string {
 }
 
 func menuAliases(language, key string) []string {
-	return []string{
+	aliases := []string{
 		i18n.T(language, key),
 		menuButtonLabel(language, key),
 		i18n.T("kk", key),
 		menuButtonLabel("kk", key),
 		i18n.T("ru", key),
 		menuButtonLabel("ru", key),
+	}
+	return append(aliases, legacyMenuAliases(key)...)
+}
+
+func legacyMenuAliases(key string) []string {
+	switch key {
+	case "menu_level":
+		return []string{"Мой уровень", "📍 Мой уровень"}
+	case "menu_lessons":
+		return []string{"Мои уроки", "📚 Мои уроки"}
+	case "menu_test":
+		return []string{"Пройти тест", "📝 Пройти тест"}
+	case "menu_assignments":
+		return []string{"Мои задания", "✅ Мои задания"}
+	case "menu_stream":
+		return []string{"Закрытый эфир", "🎥 Закрытый эфир"}
+	case "menu_referral":
+		return []string{"Реферальная ссылка", "🔗 Реферальная ссылка", "Реферал сілтемем", "🔗 Реферал сілтемем"}
+	case "menu_bonuses":
+		return []string{"Бонусы", "🪙 Бонусы", "Бонустарым", "🪙 Бонустарым"}
+	case "menu_payment":
+		return []string{"Срок оплаты", "⏳ Срок оплаты"}
+	case "menu_support":
+		return []string{"Поддержка", "💬 Поддержка", "Қолдау қызметі", "💬 Қолдау қызметі"}
+	case "open_mini_app":
+		return []string{"Открыть Mini App", "🚀 Открыть Mini App", "Mini App ашу", "🚀 Mini App ашу"}
+	default:
+		return nil
 	}
 }
 
@@ -351,7 +379,7 @@ func normalizeMenuText(text string) string {
 func (b *TelegramBot) inlineMiniAppMarkup(language string) map[string]any {
 	return map[string]any{
 		"inline_keyboard": [][]map[string]any{{
-			{"text": i18n.T(language, "open_mini_app"), "web_app": map[string]string{"url": b.miniAppURL}},
+			{"text": menuButtonLabel(language, "open_mini_app"), "web_app": map[string]string{"url": b.miniAppURL}},
 		}},
 	}
 }
@@ -395,9 +423,6 @@ func (b *TelegramBot) handleDiagnosticsText(ctx context.Context, user repository
 }
 
 func diagnosticsQuestions(language string) []string {
-	if language == "ru" {
-		return []string{"Ваше имя", "Ваш город", "Ваш возраст", "Ваш текущий доход", "Есть ли долги?", "Есть ли бизнес?", "Какая основная проблема?", "В какой сфере хотите вырасти?"}
-	}
 	return []string{"Атыңыз", "Қалаңыз", "Жасыңыз", "Қазіргі табысыңыз", "Қарызыңыз бар ма?", "Бизнесіңіз бар ма?", "Негізгі проблемаңыз қандай?", "Қай салада өскіңіз келеді?"}
 }
 

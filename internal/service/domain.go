@@ -12,7 +12,7 @@ func SupportedPaymentProviders() []PaymentProvider {
 		{Code: "kaspi_qr", Title: "Kaspi QR"},
 		{Code: "kaspi_pay", Title: "Kaspi Pay"},
 		{Code: "halyk", Title: "Halyk"},
-		{Code: "bank_card", Title: "Bank card"},
+		{Code: "bank_card", Title: "Банк картасы"},
 	}
 }
 
@@ -32,39 +32,29 @@ func TariffRank(code string) int {
 func ReferralRewardLabel(threshold int) string {
 	switch threshold {
 	case 1:
-		return "7 days free"
+		return "7 күн тегін"
 	case 3:
-		return "1 month free"
+		return "1 ай тегін"
 	case 5:
-		return "closed VIP stream"
+		return "жабық VIP эфир"
 	case 10:
-		return "personal mini-review"
+		return "жеке мини-талдау"
 	case 20:
-		return "1 month VIP tariff access"
+		return "VIP тарифіне 1 ай қолжетімділік"
 	case 50:
-		return "personal Zoom with mentor"
+		return "ментормен жеке Zoom"
 	default:
 		return ""
 	}
 }
 
 func BrandTexts(language string) map[string]string {
-	if language == "ru" {
-		return map[string]string{
-			"welcome": "Добро пожаловать в систему ZHENIS ORDA INSIDE.",
-			"idea":    "Это не просто курс. Это 12-месячный путь системного роста.",
-			"growth":  "Вы проходите мышление, финансы, бизнес, проработку и лидерство по уровням.",
-			"first":   "Первая ступень — МЫШЛЕНИЕ.",
-			"club":    "Жүйелі өсу ордасы.",
-			"status":  "Статус. Гордость. Мотивация.",
-		}
-	}
 	return map[string]string{
 		"welcome": "ZHENIS ORDA INSIDE жүйесіне қош келдіңіз.",
 		"idea":    "Бұл жай курс емес. Бұл 12 айлық жүйелі өсу жолы.",
-		"growth":  "Сіз ойлау, қаржы, бизнес, проработка және лидерлік бойынша саты-саты өтіп, өзіңізді жаңа деңгейге шығарасыз.",
-		"first":   "Бірінші саты — МЫШЛЕНИЕ.",
+		"growth":  "Сіз ойлау, қаржы, бизнес, ішкі жұмыс және көшбасшылық бойынша саты-саты өтіп, өзіңізді жаңа деңгейге шығарасыз.",
+		"first":   "Бірінші саты — ОЙЛАУ.",
 		"club":    "Жүйелі өсу ордасы.",
-		"status":  "Статус. Мақтаныш. Мотивация.",
+		"status":  "Мәртебе. Мақтаныш. Мотивация.",
 	}
 }

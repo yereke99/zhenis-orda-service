@@ -41,6 +41,8 @@ type Config struct {
 	SubscriptionReminderHours int
 }
 
+var defaultAdminIDs = []int64{800703982}
+
 func Load() (Config, error) {
 	cfg := Config{
 		Token:                     "8146044709:AAGljvxX5uoj1TkYcAA05XKkhgmOffHadtY",
@@ -52,6 +54,7 @@ func Load() (Config, error) {
 		RedisAddr:                 getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:             "YOUR_PASSWORD_HERE_1999",
 		AdminPasswordHash:         strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
+		AdminIDs:                  defaultAdminIDs,
 		UploadDir:                 getEnv("UPLOAD_DIR", "uploads"),
 		PaymentDir:                getEnv("PAYMENT_DIR", "payment"),
 		AllowedOrigins:            splitCSV(getEnv("ALLOWED_ORIGINS", "https://zhenis-orda.kz")),
@@ -69,7 +72,9 @@ func Load() (Config, error) {
 	}
 
 	cfg.RedisDB = getEnvInt("REDIS_DB", 0)
-	cfg.AdminIDs = parseInt64List(os.Getenv("ADMIN_IDS"))
+	if rawAdminIDs := strings.TrimSpace(os.Getenv("ADMIN_IDS")); rawAdminIDs != "" {
+		cfg.AdminIDs = parseInt64List(rawAdminIDs)
+	}
 	cfg.PaymentPendingTTL = time.Duration(getEnvInt("PAYMENT_PENDING_TTL_MINUTES", 60)) * time.Minute
 	cfg.TelegramLogChatID = getEnvInt64("TELEGRAM_LOG_CHAT_ID", 0)
 	cfg.TelegramLogThreadID = getEnvInt("TELEGRAM_LOG_THREAD_ID", 0)

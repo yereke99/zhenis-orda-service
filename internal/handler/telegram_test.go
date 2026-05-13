@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"zhenis-orda-service/internal/i18n"
 	"zhenis-orda-service/internal/repository"
 	"zhenis-orda-service/traits/database"
 )
@@ -71,15 +72,33 @@ func TestTelegramStartDefaultsToKazakhWhenTelegramClientIsRussian(t *testing.T) 
 	if len(payloads) == 0 {
 		t.Fatal("expected telegram sendMessage payload")
 	}
+	if text, _ := payloads[0]["text"].(string); text != i18n.T("kk", "start") {
+		t.Fatalf("unexpected start text: %q", text)
+	}
 	rawMenu, err := json.Marshal(payloads[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	menu := string(rawMenu)
-	if !strings.Contains(menu, "Менің деңгейім") {
-		t.Fatalf("expected Kazakh menu button, got %s", menu)
+	for _, expected := range []string{
+		"📍 Менің деңгейім",
+		"📚 Сабақтарым",
+		"📝 Тест тапсыру",
+		"✅ Тапсырмаларым",
+		"🎥 Жабық эфир",
+		"🔗 Рефералдық сілтеме",
+		"🪙 Бонустар",
+		"⏳ Төлем мерзімі",
+		"💬 Қолдау",
+	} {
+		if !strings.Contains(menu, expected) {
+			t.Fatalf("expected Kazakh menu button %q, got %s", expected, menu)
+		}
 	}
 	if strings.Contains(menu, "Мой уровень") {
 		t.Fatalf("expected no Russian menu button, got %s", menu)
+	}
+	if strings.Contains(menu, "web_app") || strings.Contains(menu, "Қолданбаны ашу") {
+		t.Fatalf("expected Mini App launch outside reply keyboard, got %s", menu)
 	}
 }
