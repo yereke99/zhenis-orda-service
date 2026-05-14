@@ -1330,6 +1330,7 @@
   function renderOnboarding() {
     html(`
       <section class="screen">
+        ${financialIqCtaCard()}
         <div class="hero">
 	          <p class="eyebrow">ZHENIS ORDA UNIVERSE</p>
 	          <h1>Қош келдіңіз! Сіз жай курсқа емес, жүйелі даму ортасына кірдіңіз.</h1>
@@ -1340,7 +1341,6 @@
             <span class="pill">Мотивация</span>
           </div>
         </div>
-        ${financialIqCtaCard()}
         <div class="grid two">
           <button class="gold-btn lg" id="goDiagnostics" type="button">Тегін диагностика</button>
           <button class="ghost-btn lg" id="goTariffs" type="button">Тариф таңдау</button>
@@ -1368,6 +1368,7 @@
 
     html(`
       <section class="screen">
+        ${financialIqCtaCard()}
         <div class="hero">
 	          <p class="eyebrow">Жүйелі даму платформасы</p>
 	          <h1>ZHENIS ORDA UNIVERSE</h1>
@@ -1381,8 +1382,6 @@
 	            <strong>${percent}%</strong>
 	          </div>
         </div>
-
-        ${financialIqCtaCard()}
 
         <div class="grid three">
           ${metric("Тариф", sub.tariff_code || "Жоқ", statusText[subStatus] || subStatus, subOk ? "ok" : subStatus === "expired" ? "bad" : "warn")}
