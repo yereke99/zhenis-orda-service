@@ -109,7 +109,8 @@ func (s *Store) SaveDiagnostics(ctx context.Context, userID string, answers map[
 }
 
 func (s *Store) ListTariffs(ctx context.Context, onlyActive bool) ([]Tariff, error) {
-	query := `SELECT id, code, title, price_kzt, features_json, sort_order, is_active FROM tariffs`
+	query := `SELECT id, code, title, price_kzt, COALESCE(short_description_kk, ''), COALESCE(full_description_kk, ''),
+		features_json, COALESCE(image_url, ''), COALESCE(image_file_path, ''), COALESCE(image_source, 'none'), sort_order, is_active FROM tariffs`
 	if onlyActive {
 		query += ` WHERE is_active = 1`
 	}
@@ -121,27 +122,61 @@ func (s *Store) ListTariffs(ctx context.Context, onlyActive bool) ([]Tariff, err
 	defer rows.Close()
 	var tariffs []Tariff
 	for rows.Next() {
-		var tariff Tariff
-		var active int
-		if err := rows.Scan(&tariff.ID, &tariff.Code, &tariff.Title, &tariff.PriceKZT, &tariff.FeaturesJSON, &tariff.SortOrder, &active); err != nil {
+		tariff, err := scanTariff(rows)
+		if err != nil {
 			return nil, err
 		}
-		tariff.IsActive = active == 1
-		tariff.Features = parseFeatures(tariff.FeaturesJSON)
 		tariffs = append(tariffs, tariff)
 	}
 	return tariffs, rows.Err()
 }
 
 func (s *Store) GetTariffByCode(ctx context.Context, code string) (Tariff, error) {
-	var tariff Tariff
-	var active int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, code, title, price_kzt, features_json, sort_order, is_active
+	tariff, err := scanTariff(s.db.QueryRowContext(ctx, `
+		SELECT id, code, title, price_kzt, COALESCE(short_description_kk, ''), COALESCE(full_description_kk, ''),
+			features_json, COALESCE(image_url, ''), COALESCE(image_file_path, ''), COALESCE(image_source, 'none'), sort_order, is_active
 		FROM tariffs WHERE code = ?;
-	`, strings.ToUpper(code)).Scan(&tariff.ID, &tariff.Code, &tariff.Title, &tariff.PriceKZT, &tariff.FeaturesJSON, &tariff.SortOrder, &active)
+	`, strings.ToUpper(code)))
 	if err != nil {
 		return Tariff{}, rowErr(err)
+	}
+	return tariff, nil
+}
+
+func (s *Store) GetTariffByID(ctx context.Context, id string) (Tariff, error) {
+	tariff, err := scanTariff(s.db.QueryRowContext(ctx, `
+		SELECT id, code, title, price_kzt, COALESCE(short_description_kk, ''), COALESCE(full_description_kk, ''),
+			features_json, COALESCE(image_url, ''), COALESCE(image_file_path, ''), COALESCE(image_source, 'none'), sort_order, is_active
+		FROM tariffs WHERE id = ?;
+	`, id))
+	if err != nil {
+		return Tariff{}, rowErr(err)
+	}
+	return tariff, nil
+}
+
+type tariffScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTariff(row tariffScanner) (Tariff, error) {
+	var tariff Tariff
+	var active int
+	if err := row.Scan(
+		&tariff.ID,
+		&tariff.Code,
+		&tariff.Title,
+		&tariff.PriceKZT,
+		&tariff.ShortDescriptionKK,
+		&tariff.FullDescriptionKK,
+		&tariff.FeaturesJSON,
+		&tariff.ImageURL,
+		&tariff.ImageFilePath,
+		&tariff.ImageSource,
+		&tariff.SortOrder,
+		&active,
+	); err != nil {
+		return Tariff{}, err
 	}
 	tariff.IsActive = active == 1
 	tariff.Features = parseFeatures(tariff.FeaturesJSON)
@@ -187,9 +222,9 @@ func (s *Store) ReferralSummary(ctx context.Context, userID string, botUsername 
 	if err != nil {
 		return ReferralSummary{}, err
 	}
-	link := fmt.Sprintf("t.me/zhenisorda_bot?start=%s", user.ReferralCode)
+	link := fmt.Sprintf("https://t.me/zhenisorda_bot?start=%s", user.ReferralCode)
 	if botUsername != "" {
-		link = fmt.Sprintf("t.me/%s?start=%s", strings.TrimPrefix(botUsername, "@"), user.ReferralCode)
+		link = fmt.Sprintf("https://t.me/%s?start=%s", strings.TrimPrefix(botUsername, "@"), user.ReferralCode)
 	}
 	return ReferralSummary{ReferralCode: user.ReferralCode, ReferralLink: link, InvitedCount: invited, PaidCount: paid, Rewards: rewards}, nil
 }

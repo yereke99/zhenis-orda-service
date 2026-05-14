@@ -86,7 +86,7 @@ func TestTelegramStartDefaultsToKazakhWhenTelegramClientIsRussian(t *testing.T) 
 		"📝 Тест тапсыру",
 		"✅ Тапсырмаларым",
 		"🎥 Жабық эфир",
-		"🔗 Рефералдық сілтеме",
+		"🔗 Дос шақыру",
 		"🪙 Бонустар",
 		"⏳ Төлем мерзімі",
 		"💬 Қолдау",

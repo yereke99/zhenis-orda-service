@@ -57,7 +57,12 @@ CREATE TABLE IF NOT EXISTS tariffs (
 	code TEXT NOT NULL UNIQUE,
 	title TEXT NOT NULL,
 	price_kzt INTEGER NOT NULL,
+	short_description_kk TEXT NOT NULL DEFAULT '',
+	full_description_kk TEXT NOT NULL DEFAULT '',
 	features_json TEXT NOT NULL DEFAULT '[]',
+	image_url TEXT,
+	image_file_path TEXT,
+	image_source TEXT NOT NULL DEFAULT 'none',
 	sort_order INTEGER NOT NULL DEFAULT 0,
 	is_active INTEGER NOT NULL DEFAULT 1,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -161,13 +166,13 @@ CREATE TABLE IF NOT EXISTS lesson_progress (
 
 CREATE TABLE IF NOT EXISTS tests (
 	id TEXT PRIMARY KEY,
-	level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
+	level_id TEXT REFERENCES levels(id) ON DELETE CASCADE,
+	lesson_id TEXT REFERENCES lessons(id) ON DELETE CASCADE,
 	title TEXT NOT NULL,
 	pass_percent INTEGER NOT NULL DEFAULT 70,
 	is_active INTEGER NOT NULL DEFAULT 1,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	UNIQUE(level_id)
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS test_questions (
@@ -400,6 +405,8 @@ CREATE INDEX IF NOT EXISTS idx_receipts_validation ON payment_receipts(validatio
 CREATE INDEX IF NOT EXISTS idx_lessons_level ON lessons(level_id);
 CREATE INDEX IF NOT EXISTS idx_lesson_progress_user ON lesson_progress(user_id);
 CREATE INDEX IF NOT EXISTS idx_tests_level ON tests(level_id);
+CREATE INDEX IF NOT EXISTS idx_tests_lesson ON tests(lesson_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tests_lesson_unique ON tests(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_test_attempts_user_test ON test_attempts(user_id, test_id);
 CREATE INDEX IF NOT EXISTS idx_assignment_submissions_user ON assignment_submissions(user_id);
 CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals(inviter_user_id);

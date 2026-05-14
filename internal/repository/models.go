@@ -67,14 +67,19 @@ type User struct {
 }
 
 type Tariff struct {
-	ID           string   `json:"id"`
-	Code         string   `json:"code"`
-	Title        string   `json:"title"`
-	PriceKZT     int      `json:"price_kzt"`
-	Features     []string `json:"features"`
-	FeaturesJSON string   `json:"-"`
-	SortOrder    int      `json:"sort_order"`
-	IsActive     bool     `json:"is_active"`
+	ID                 string   `json:"id"`
+	Code               string   `json:"code"`
+	Title              string   `json:"title"`
+	PriceKZT           int      `json:"price_kzt"`
+	ShortDescriptionKK string   `json:"short_description_kk"`
+	FullDescriptionKK  string   `json:"full_description_kk"`
+	Features           []string `json:"features"`
+	FeaturesJSON       string   `json:"-"`
+	ImageURL           string   `json:"image_url,omitempty"`
+	ImageFilePath      string   `json:"image_file_path,omitempty"`
+	ImageSource        string   `json:"image_source"`
+	SortOrder          int      `json:"sort_order"`
+	IsActive           bool     `json:"is_active"`
 }
 
 type Subscription struct {
@@ -187,13 +192,15 @@ type Progress struct {
 }
 
 type Test struct {
-	ID          string         `json:"id"`
-	LevelID     string         `json:"level_id"`
-	LevelNumber int            `json:"level_number"`
-	Title       string         `json:"title"`
-	PassPercent int            `json:"pass_percent"`
-	IsActive    bool           `json:"is_active"`
-	Questions   []TestQuestion `json:"questions,omitempty"`
+	ID            string         `json:"id"`
+	LevelID       string         `json:"level_id"`
+	LevelNumber   int            `json:"level_number"`
+	LessonID      string         `json:"lesson_id,omitempty"`
+	LessonTitleKK string         `json:"lesson_title_kk,omitempty"`
+	Title         string         `json:"title"`
+	PassPercent   int            `json:"pass_percent"`
+	IsActive      bool           `json:"is_active"`
+	Questions     []TestQuestion `json:"questions,omitempty"`
 }
 
 type TestQuestion struct {

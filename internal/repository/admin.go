@@ -18,6 +18,7 @@ type AdminLessonFilter struct {
 type AdminTestFilter struct {
 	Query  string
 	Level  int
+	Lesson string
 	Status string
 }
 
@@ -316,7 +317,7 @@ func (s *Store) ListAdminLessons(ctx context.Context, filter AdminLessonFilter) 
 }
 
 func (s *Store) UpsertTest(ctx context.Context, test Test) (Test, error) {
-	if strings.TrimSpace(test.LevelID) == "" {
+	if strings.TrimSpace(test.LessonID) == "" {
 		return Test{}, ErrInvalidState
 	}
 	if strings.TrimSpace(test.Title) == "" {
@@ -329,35 +330,46 @@ func (s *Store) UpsertTest(ctx context.Context, test Test) (Test, error) {
 		return Test{}, ErrInvalidState
 	}
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		var levelExists int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM levels WHERE id = ?`, test.LevelID).Scan(&levelExists); err != nil {
+		var lessonTitle string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT l.level_id, lv.number, l.title_kk
+			FROM lessons l
+			JOIN levels lv ON lv.id = l.level_id
+			WHERE l.id = ?;
+		`, test.LessonID).Scan(&test.LevelID, &test.LevelNumber, &lessonTitle); err != nil {
+			if err == sql.ErrNoRows {
+				return ErrNotFound
+			}
 			return err
 		}
-		if levelExists == 0 {
-			return ErrNotFound
-		}
+		test.LessonTitleKK = lessonTitle
 		if err := validateTestPayload(test); err != nil {
 			return err
 		}
 		if strings.TrimSpace(test.ID) == "" {
 			test.ID = newID()
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO tests(id, level_id, title, pass_percent, is_active)
-				VALUES (?, ?, ?, ?, ?)
-				ON CONFLICT(level_id) DO UPDATE SET title=excluded.title, pass_percent=excluded.pass_percent, is_active=excluded.is_active, updated_at=CURRENT_TIMESTAMP;
-			`, test.ID, test.LevelID, test.Title, test.PassPercent, boolInt(test.IsActive)); err != nil {
+				INSERT INTO tests(id, level_id, lesson_id, title, pass_percent, is_active)
+				VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(lesson_id) DO UPDATE SET
+					level_id=excluded.level_id,
+					title=excluded.title,
+					pass_percent=excluded.pass_percent,
+					is_active=excluded.is_active,
+					updated_at=CURRENT_TIMESTAMP;
+			`, test.ID, test.LevelID, test.LessonID, test.Title, test.PassPercent, boolInt(test.IsActive)); err != nil {
 				return err
 			}
 			var persistedID string
-			if err := tx.QueryRowContext(ctx, `SELECT id FROM tests WHERE level_id = ?`, test.LevelID).Scan(&persistedID); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT id FROM tests WHERE lesson_id = ?`, test.LessonID).Scan(&persistedID); err != nil {
 				return err
 			}
 			test.ID = persistedID
 		} else {
 			if _, err := tx.ExecContext(ctx, `
-				UPDATE tests SET level_id=?, title=?, pass_percent=?, is_active=?, updated_at=CURRENT_TIMESTAMP
+				UPDATE tests SET level_id=?, lesson_id=?, title=?, pass_percent=?, is_active=?, updated_at=CURRENT_TIMESTAMP
 				WHERE id=?;
-			`, test.LevelID, test.Title, test.PassPercent, boolInt(test.IsActive), test.ID); err != nil {
+			`, test.LevelID, test.LessonID, test.Title, test.PassPercent, boolInt(test.IsActive), test.ID); err != nil {
 				return err
 			}
 		}
@@ -434,6 +446,10 @@ func (s *Store) ListAdminTests(ctx context.Context, filter AdminTestFilter) ([]T
 		conditions = append(conditions, "lv.number = ?")
 		args = append(args, filter.Level)
 	}
+	if strings.TrimSpace(filter.Lesson) != "" {
+		conditions = append(conditions, "t.lesson_id = ?")
+		args = append(args, filter.Lesson)
+	}
 	switch filter.Status {
 	case "active":
 		conditions = append(conditions, "t.is_active = 1")
@@ -445,11 +461,12 @@ func (s *Store) ListAdminTests(ctx context.Context, filter AdminTestFilter) ([]T
 		args = append(args, sqlLike(filter.Query))
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT t.id, t.level_id, lv.number, t.title, t.pass_percent, t.is_active
+		SELECT t.id, COALESCE(t.level_id, l.level_id, ''), lv.number, COALESCE(t.lesson_id, ''), COALESCE(l.title_kk, ''), t.title, t.pass_percent, t.is_active
 		FROM tests t
-		JOIN levels lv ON lv.id = t.level_id
+		LEFT JOIN lessons l ON l.id = t.lesson_id
+		JOIN levels lv ON lv.id = COALESCE(l.level_id, t.level_id)
 		WHERE `+strings.Join(conditions, " AND ")+`
-		ORDER BY lv.number ASC, t.created_at DESC;
+		ORDER BY lv.number ASC, COALESCE(l.sort_order, 9999) ASC, t.created_at DESC;
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -459,7 +476,7 @@ func (s *Store) ListAdminTests(ctx context.Context, filter AdminTestFilter) ([]T
 	for rows.Next() {
 		var test Test
 		var active int
-		if err := rows.Scan(&test.ID, &test.LevelID, &test.LevelNumber, &test.Title, &test.PassPercent, &active); err != nil {
+		if err := rows.Scan(&test.ID, &test.LevelID, &test.LevelNumber, &test.LessonID, &test.LessonTitleKK, &test.Title, &test.PassPercent, &active); err != nil {
 			return nil, err
 		}
 		test.IsActive = active == 1
@@ -535,23 +552,66 @@ func (s *Store) ReviewAssignmentSubmission(ctx context.Context, submissionID str
 }
 
 func (s *Store) UpsertTariff(ctx context.Context, tariff Tariff) (Tariff, error) {
+	tariff.Code = strings.ToUpper(strings.TrimSpace(tariff.Code))
+	tariff.Title = strings.TrimSpace(tariff.Title)
+	tariff.ShortDescriptionKK = strings.TrimSpace(tariff.ShortDescriptionKK)
+	tariff.FullDescriptionKK = strings.TrimSpace(tariff.FullDescriptionKK)
+	tariff.ImageURL = strings.TrimSpace(tariff.ImageURL)
+	tariff.ImageFilePath = strings.TrimSpace(tariff.ImageFilePath)
+	tariff.ImageSource = strings.TrimSpace(tariff.ImageSource)
+	if tariff.Code == "" || tariff.Title == "" || tariff.PriceKZT <= 0 {
+		return Tariff{}, ErrInvalidState
+	}
+	if tariff.ImageSource == "" {
+		switch {
+		case tariff.ImageFilePath != "":
+			tariff.ImageSource = "uploaded"
+		case tariff.ImageURL != "":
+			tariff.ImageSource = "url"
+		default:
+			tariff.ImageSource = "none"
+		}
+	}
+	if tariff.ImageSource != "uploaded" && tariff.ImageSource != "url" {
+		tariff.ImageSource = "none"
+	}
+	if tariff.ImageSource == "uploaded" && tariff.ImageFilePath == "" {
+		tariff.ImageSource = "none"
+	}
+	if tariff.ImageSource == "url" && tariff.ImageURL == "" {
+		tariff.ImageSource = "none"
+	}
+	if tariff.SortOrder <= 0 {
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort_order), 0) + 1 FROM tariffs`).Scan(&tariff.SortOrder); err != nil {
+			return Tariff{}, err
+		}
+	}
 	features, _ := json.Marshal(tariff.Features)
 	if strings.TrimSpace(tariff.ID) == "" {
 		tariff.ID = newID()
 		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO tariffs(id, code, title, price_kzt, features_json, sort_order, is_active)
-			VALUES (?, ?, ?, ?, ?, ?, ?);
-		`, tariff.ID, strings.ToUpper(tariff.Code), tariff.Title, tariff.PriceKZT, string(features), tariff.SortOrder, boolInt(tariff.IsActive))
+			INSERT INTO tariffs(id, code, title, price_kzt, short_description_kk, full_description_kk, features_json, image_url, image_file_path, image_source, sort_order, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+		`, tariff.ID, tariff.Code, tariff.Title, tariff.PriceKZT, tariff.ShortDescriptionKK, tariff.FullDescriptionKK, string(features), nullableString(tariff.ImageURL), nullableString(tariff.ImageFilePath), tariff.ImageSource, tariff.SortOrder, boolInt(tariff.IsActive))
 		if err != nil {
 			return Tariff{}, err
 		}
-		return tariff, nil
+		return s.GetTariffByID(ctx, tariff.ID)
 	}
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE tariffs SET code=?, title=?, price_kzt=?, features_json=?, sort_order=?, is_active=?, updated_at=CURRENT_TIMESTAMP
+		UPDATE tariffs SET code=?, title=?, price_kzt=?, short_description_kk=?, full_description_kk=?,
+			features_json=?, image_url=?, image_file_path=?, image_source=?, sort_order=?, is_active=?, updated_at=CURRENT_TIMESTAMP
 		WHERE id=?;
-	`, strings.ToUpper(tariff.Code), tariff.Title, tariff.PriceKZT, string(features), tariff.SortOrder, boolInt(tariff.IsActive), tariff.ID)
-	return tariff, err
+	`, tariff.Code, tariff.Title, tariff.PriceKZT, tariff.ShortDescriptionKK, tariff.FullDescriptionKK, string(features), nullableString(tariff.ImageURL), nullableString(tariff.ImageFilePath), tariff.ImageSource, tariff.SortOrder, boolInt(tariff.IsActive), tariff.ID)
+	if err != nil {
+		return Tariff{}, err
+	}
+	return s.GetTariffByID(ctx, tariff.ID)
+}
+
+func (s *Store) ArchiveTariff(ctx context.Context, tariffID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tariffs SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, tariffID)
+	return err
 }
 
 func (s *Store) ListChannels(ctx context.Context, userID string, admin bool) ([]Channel, error) {

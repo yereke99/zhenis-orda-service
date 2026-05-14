@@ -13,13 +13,25 @@ func (s *Store) CreatePayment(ctx context.Context, userID string, tariffCode, pr
 	if err != nil {
 		return Payment{}, err
 	}
+	return s.createPaymentForTariff(ctx, userID, tariff, provider, ttl)
+}
+
+func (s *Store) CreatePaymentByTariffID(ctx context.Context, userID string, tariffID, provider string, ttl time.Duration) (Payment, error) {
+	tariff, err := s.GetTariffByID(ctx, tariffID)
+	if err != nil {
+		return Payment{}, err
+	}
+	return s.createPaymentForTariff(ctx, userID, tariff, provider, ttl)
+}
+
+func (s *Store) createPaymentForTariff(ctx context.Context, userID string, tariff Tariff, provider string, ttl time.Duration) (Payment, error) {
 	if !tariff.IsActive {
 		return Payment{}, ErrInvalidState
 	}
 	provider = normalizeProvider(provider)
 	paymentID := newID()
 	expiresAt := nowUTC().Add(ttl)
-	_, err = s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO payments(id, user_id, tariff_id, amount_kzt, provider, status, expires_at)
 		VALUES (?, ?, ?, ?, ?, 'pending', ?);
 	`, paymentID, userID, tariff.ID, tariff.PriceKZT, provider, expiresAt)

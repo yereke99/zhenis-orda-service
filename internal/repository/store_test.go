@@ -262,12 +262,19 @@ func TestLessonInactiveIsPreserved(t *testing.T) {
 
 func TestAdminTestCRUDWithQuestions(t *testing.T) {
 	store, ctx := newTestStore(t)
-	var levelID string
-	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM levels WHERE number = 2`).Scan(&levelID); err != nil {
+	var lessonID string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT l.id
+		FROM lessons l
+		JOIN levels lv ON lv.id = l.level_id
+		WHERE lv.number = 2
+		ORDER BY l.sort_order ASC
+		LIMIT 1
+	`).Scan(&lessonID); err != nil {
 		t.Fatal(err)
 	}
 	test, err := store.UpsertTest(ctx, repository.Test{
-		LevelID:     levelID,
+		LessonID:    lessonID,
 		Title:       "Қаржы тесті",
 		PassPercent: 80,
 		IsActive:    true,

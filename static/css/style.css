@@ -919,6 +919,15 @@ body.landing-mode {
   position: relative;
 }
 
+.progress-wrap {
+  position: relative;
+  padding-right: 18px;
+}
+
+.progress-wrap .progress-track {
+  overflow: visible;
+}
+
 .progress-fill {
   height: 100%;
   width: var(--progress, 0%);
@@ -927,6 +936,75 @@ body.landing-mode {
     linear-gradient(90deg, var(--bronze), var(--gold-bright));
   transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1);
   box-shadow: 0 0 12px rgba(214, 182, 106, 0.45);
+}
+
+.certificate-goal {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(200, 162, 74, 0.42);
+  border-radius: 50%;
+  background: linear-gradient(145deg, rgba(13, 17, 24, 0.98), rgba(30, 34, 42, 0.92));
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42);
+}
+
+.certificate-goal.active {
+  border-color: rgba(232, 206, 140, 0.88);
+  background: linear-gradient(135deg, #D6B66A, #A9843A);
+  box-shadow: 0 0 20px rgba(214, 182, 106, 0.45);
+}
+
+.certificate-icon {
+  width: 13px;
+  height: 16px;
+  position: relative;
+  display: block;
+  border: 1.5px solid var(--gold-bright);
+  border-radius: 2px;
+  background: rgba(200, 162, 74, 0.08);
+}
+
+.certificate-icon::before,
+.certificate-icon::after {
+  content: "";
+  position: absolute;
+}
+
+.certificate-icon::before {
+  left: 3px;
+  right: 3px;
+  top: 4px;
+  height: 1px;
+  background: var(--gold-bright);
+  box-shadow: 0 4px 0 var(--gold-bright);
+}
+
+.certificate-icon::after {
+  width: 6px;
+  height: 6px;
+  right: -4px;
+  bottom: -4px;
+  border-radius: 50%;
+  background: var(--gold-bright);
+}
+
+.certificate-goal.active .certificate-icon {
+  border-color: #0A0D13;
+  background: rgba(10, 13, 19, 0.08);
+}
+
+.certificate-goal.active .certificate-icon::before {
+  background: #0A0D13;
+  box-shadow: 0 4px 0 #0A0D13;
+}
+
+.certificate-goal.active .certificate-icon::after {
+  background: #0A0D13;
 }
 
 .progress-track.thin {
@@ -1062,6 +1140,20 @@ body.landing-mode {
   gap: 12px;
 }
 
+.tariff-image,
+.tariff-detail-image {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(200, 162, 74, 0.18);
+  background: rgba(10, 13, 19, 0.6);
+}
+
+.tariff-detail-image {
+  margin: 4px 0;
+}
+
 .tariff-card header {
   min-width: 0;
   display: flex;
@@ -1085,6 +1177,13 @@ body.landing-mode {
   color: var(--gold-bright);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
+}
+
+.card > .price {
+  color: var(--gold-bright);
+  font-size: 24px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
 }
 
 .tariff-card .price small {
@@ -1835,6 +1934,24 @@ tr:hover td {
   color: var(--muted);
 }
 
+.tariff-admin-thumb {
+  width: 72px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(200, 162, 74, 0.2);
+  background: rgba(10, 13, 19, 0.7);
+}
+
+.tariff-image-preview img {
+  width: min(260px, 100%);
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(200, 162, 74, 0.22);
+  display: block;
+}
+
 .receipt-validation {
   display: grid;
   gap: 4px;
@@ -2153,6 +2270,12 @@ tr:hover td {
 .section-head h1,
 .section-head h2 {
   margin: 0;
+}
+
+.mini-back-btn {
+  width: auto;
+  min-height: 40px;
+  padding: 9px 14px;
 }
 
 .referral-link {

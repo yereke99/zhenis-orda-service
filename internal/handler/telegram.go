@@ -232,7 +232,7 @@ func (b *TelegramBot) handleMainMenuAction(ctx context.Context, user repository.
 	switch action {
 	case "level":
 		progress, _ := b.store.CurrentProgress(ctx, user.ID)
-		text := fmt.Sprintf("Сіздің деңгейіңіз: LEVEL %d", user.CurrentLevel)
+		text := fmt.Sprintf("Сіздің деңгейіңіз: Деңгей %d", user.CurrentLevel)
 		if progress.NextRequirement != "" {
 			text += "\nКелесі талап: " + progress.NextRequirement
 		}

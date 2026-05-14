@@ -56,7 +56,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := guardLegacyIntegerIDs(ctx, db); err != nil {
 		return err
 	}
-	statements := []string{schemaV1, indexesV1}
+	statements := []string{schemaV1}
 	for i, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("migration statement %d: %w", i+1, err)
@@ -65,10 +65,109 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := addColumnIfMissing(ctx, db, "users", "photo_url", "TEXT"); err != nil {
 		return err
 	}
+	if err := addTariffColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrateLessonOwnedTests(ctx, db); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, indexesV1); err != nil {
+		return fmt.Errorf("migration indexes: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, name) VALUES (1, 'initial_zhenis_orda_schema');`); err != nil {
 		return err
 	}
 	return Seed(ctx, db)
+}
+
+func addTariffColumns(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"short_description_kk", "TEXT NOT NULL DEFAULT ''"},
+		{"full_description_kk", "TEXT NOT NULL DEFAULT ''"},
+		{"image_url", "TEXT"},
+		{"image_file_path", "TEXT"},
+		{"image_source", "TEXT NOT NULL DEFAULT 'none'"},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(ctx, db, "tariffs", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateLessonOwnedTests(ctx context.Context, db *sql.DB) error {
+	var createSQL string
+	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tests'`).Scan(&createSQL); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	hasLessonID, err := columnExists(ctx, db, "tests", "lesson_id")
+	if err != nil {
+		return err
+	}
+	hasLevelUnique := strings.Contains(strings.ToUpper(createSQL), "UNIQUE(LEVEL_ID)")
+	if hasLessonID && !hasLevelUnique {
+		return nil
+	}
+
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;`); err != nil {
+		return err
+	}
+	defer db.ExecContext(ctx, `PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;`)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE tests RENAME TO tests_legacy_migrate;`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE tests (
+			id TEXT PRIMARY KEY,
+			level_id TEXT REFERENCES levels(id) ON DELETE CASCADE,
+			lesson_id TEXT REFERENCES lessons(id) ON DELETE CASCADE,
+			title TEXT NOT NULL,
+			pass_percent INTEGER NOT NULL DEFAULT 70,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+	`); err != nil {
+		return err
+	}
+	lessonSelect := "NULL"
+	if hasLessonID {
+		lessonSelect = "lesson_id"
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+		INSERT INTO tests(id, level_id, lesson_id, title, pass_percent, is_active, created_at, updated_at)
+		SELECT id, level_id, %s, title, pass_percent, is_active, created_at, updated_at
+		FROM tests_legacy_migrate;
+	`, lessonSelect)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE tests_legacy_migrate;`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	var exists int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists > 0, nil
 }
 
 func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, definition string) error {
@@ -145,26 +244,58 @@ func seedTariffs(ctx context.Context, tx *sql.Tx) error {
 		Code     string
 		Title    string
 		Price    int
+		OldPrice int
+		Short    string
+		Full     string
 		Features []string
 		Order    int
 	}{
-		{"BASIC", "BASIC", 4990, []string{"ай сайынғы сабақтар", "тесттер", "прогресс жүйесі", "рефералдық сілтеме"}, 1},
-		{"STANDARD", "STANDARD", 9990, []string{"BASIC ішіндегі барлық мүмкіндік", "апталық жабық талдау эфирі", "эфир жазбалары"}, 2},
-		{"VIP", "VIP", 24900, []string{"STANDARD ішіндегі барлық мүмкіндік", "VIP чат", "басымдықтағы сұрақтар", "ай сайынғы жеке мини-талдау"}, 3},
+		{
+			Code:     "BASIC",
+			Title:    "BASIC",
+			Price:    9900,
+			OldPrice: 4990,
+			Short:    "ZHENIS ORDA UNIVERSE платформасына базалық қолжетімділік.",
+			Full:     "Платформаға қолжетімділік, ай сайын ашылатын сабақтар, тесттер, workbook, streak, бонус жүйесі және мотивациялық push хабарламалар.",
+			Features: []string{"платформаға қолжетімділік", "ай сайын ашылатын сабақтар", "тесттер", "workbook", "streak", "бонус жүйесі", "мотивациялық push хабарламалар"},
+			Order:    1,
+		},
+		{
+			Code:     "STANDARD",
+			Title:    "STANDARD",
+			Price:    24900,
+			OldPrice: 9990,
+			Short:    "BASIC мүмкіндіктеріне қосымша жабық эфирлер мен диагностика.",
+			Full:     "BASIC ішіндегі барлық мүмкіндікке апталық жабық эфир, диагностика, қосымша мастер-класс және арнайы контент қосылады.",
+			Features: []string{"BASIC ішіндегі барлық мүмкіндік", "апталық жабық эфир", "диагностика", "қосымша мастер-класс", "арнайы контент"},
+			Order:    2,
+		},
+		{
+			Code:     "VIP",
+			Title:    "VIP",
+			Price:    49900,
+			OldPrice: 24900,
+			Short:    "STANDARD мүмкіндіктеріне қосымша VIP қолдау және mentor touchpoint.",
+			Full:     "STANDARD ішіндегі барлық мүмкіндікке VIP жабық эфир, mentor touchpoint, mini-разбор мүмкіндігі және priority support қосылады.",
+			Features: []string{"STANDARD ішіндегі барлық мүмкіндік", "VIP жабық эфир", "mentor touchpoint", "mini-разбор мүмкіндігі", "priority support"},
+			Order:    3,
+		},
 	}
 	for _, tariff := range tariffs {
 		features, _ := json.Marshal(tariff.Features)
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO tariffs(id, code, title, price_kzt, features_json, sort_order, is_active)
-			VALUES (?, ?, ?, ?, ?, ?, 1)
-			ON CONFLICT(code) DO UPDATE SET
-				title=excluded.title,
-				price_kzt=excluded.price_kzt,
-				features_json=excluded.features_json,
-				sort_order=excluded.sort_order,
-				is_active=1,
-				updated_at=CURRENT_TIMESTAMP;
-		`, uuid.NewString(), tariff.Code, tariff.Title, tariff.Price, string(features), tariff.Order); err != nil {
+			INSERT INTO tariffs(id, code, title, price_kzt, short_description_kk, full_description_kk, features_json, sort_order, is_active, image_source)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'none')
+			ON CONFLICT(code) DO NOTHING;
+		`, uuid.NewString(), tariff.Code, tariff.Title, tariff.Price, tariff.Short, tariff.Full, string(features), tariff.Order); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE tariffs
+			SET title = ?, price_kzt = ?, short_description_kk = ?, full_description_kk = ?,
+				features_json = ?, sort_order = ?, updated_at = CURRENT_TIMESTAMP
+			WHERE code = ? AND title = ? AND price_kzt = ?;
+		`, tariff.Title, tariff.Price, tariff.Short, tariff.Full, string(features), tariff.Order, tariff.Code, tariff.Title, tariff.OldPrice); err != nil {
 			return err
 		}
 	}
@@ -173,7 +304,7 @@ func seedTariffs(ctx context.Context, tx *sql.Tx) error {
 
 func seedSettings(ctx context.Context, tx *sql.Tx) error {
 	settings := map[string]string{
-		"platform_name": "ZHENIS ORDA INSIDE",
+		"platform_name": "ZHENIS ORDA UNIVERSE",
 		"brand_line":    "Жүйелі өсу ордасы.",
 		"stream_name":   "ZHABYQ RAZBOR NIGHT",
 	}
@@ -210,7 +341,7 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 		{9, "КӨШБАСШЫЛЫҚ", "КӨШБАСШЫЛЫҚ", []string{"лидерлік", "тәртіп", "жауапкершілік"}, []string{"лидерлік", "тәртіп", "жауапкершілік"}, ""},
 		{10, "ІШКІ ЖҰМЫС", "ІШКІ ЖҰМЫС", []string{"ішкі блок", "қорқыныш", "кінә", "ұят", "шектеуші сенім"}, []string{"ішкі блок", "қорқыныш", "кінә", "ұят", "шектеуші сенім"}, ""},
 		{11, "ЖЕКЕ БРЕНД", "ЖЕКЕ БРЕНД", []string{"позиция", "контент", "эксперттік бейне", "аудитория жинау"}, []string{"позиция", "контент", "эксперттік бейне", "аудитория жинау"}, ""},
-		{12, "MASTER LEVEL", "MASTER LEVEL", []string{"финалдық тест", "сертификат", "MASTER мәртебесі", "жабық түлектер клубы"}, []string{"финалдық тест", "сертификат", "MASTER мәртебесі", "жабық түлектер клубы"}, ""},
+		{12, "MASTER ДЕҢГЕЙ", "MASTER ДЕҢГЕЙ", []string{"финалдық тест", "сертификат", "MASTER мәртебесі", "жабық түлектер клубы"}, []string{"финалдық тест", "сертификат", "MASTER мәртебесі", "жабық түлектер клубы"}, ""},
 	}
 
 	for _, level := range levels {
@@ -225,7 +356,7 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 				sort_order=excluded.sort_order,
 				is_active=1,
 				updated_at=CURRENT_TIMESTAMP;
-		`, uuid.NewString(), level.Number, level.TitleKK, level.TitleRU, fmt.Sprintf("LEVEL %d / Month %d", level.Number, level.Number), fmt.Sprintf("LEVEL %d / Month %d", level.Number, level.Number), level.Number); err != nil {
+			`, uuid.NewString(), level.Number, level.TitleKK, level.TitleRU, fmt.Sprintf("Деңгей %d / Ай %d", level.Number, level.Number), fmt.Sprintf("Деңгей %d / Ай %d", level.Number, level.Number), level.Number); err != nil {
 			return err
 		}
 		if !seedDemoContent {
@@ -249,20 +380,24 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 					description_kk=excluded.description_kk,
 					description_ru=excluded.description_ru,
 					updated_at=CURRENT_TIMESTAMP;
-			`, uuid.NewString(), levelID, lessonKK, lessonRU, "ZHENIS ORDA INSIDE", "ZHENIS ORDA INSIDE", fmt.Sprintf("https://t.me/zhenisorda_content/%d%d", level.Number, i+1), i+1); err != nil {
+			`, uuid.NewString(), levelID, lessonKK, lessonRU, "ZHENIS ORDA UNIVERSE", "ZHENIS ORDA UNIVERSE", fmt.Sprintf("https://t.me/zhenisorda_content/%d%d", level.Number, i+1), i+1); err != nil {
 				return err
 			}
 		}
 
+		var firstLessonID string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM lessons WHERE level_id = ? ORDER BY sort_order ASC LIMIT 1`, levelID).Scan(&firstLessonID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO tests(id, level_id, title, pass_percent, is_active)
-			VALUES (?, ?, ?, 70, 1)
-			ON CONFLICT(level_id) DO UPDATE SET title=excluded.title, pass_percent=70, is_active=1, updated_at=CURRENT_TIMESTAMP;
-		`, uuid.NewString(), levelID, fmt.Sprintf("LEVEL %d test", level.Number)); err != nil {
+				INSERT INTO tests(id, level_id, lesson_id, title, pass_percent, is_active)
+				VALUES (?, ?, ?, ?, 70, 1)
+				ON CONFLICT(lesson_id) DO UPDATE SET title=excluded.title, pass_percent=70, is_active=1, updated_at=CURRENT_TIMESTAMP;
+			`, uuid.NewString(), levelID, firstLessonID, fmt.Sprintf("Деңгей %d тесті", level.Number)); err != nil {
 			return err
 		}
 		var testID string
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM tests WHERE level_id = ?`, levelID).Scan(&testID); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM tests WHERE lesson_id = ?`, firstLessonID).Scan(&testID); err != nil {
 			return err
 		}
 		for q := 1; q <= 10; q++ {
@@ -274,7 +409,7 @@ func seedLevels(ctx context.Context, tx *sql.Tx) error {
 					question_text_ru=excluded.question_text_ru,
 					is_active=1,
 					updated_at=CURRENT_TIMESTAMP;
-			`, uuid.NewString(), testID, fmt.Sprintf("LEVEL %d сұрақ %d", level.Number, q), fmt.Sprintf("LEVEL %d вопрос %d", level.Number, q), q); err != nil {
+				`, uuid.NewString(), testID, fmt.Sprintf("Деңгей %d сұрақ %d", level.Number, q), fmt.Sprintf("Деңгей %d сұрақ %d", level.Number, q), q); err != nil {
 				return err
 			}
 			var questionID string

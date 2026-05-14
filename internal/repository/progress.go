@@ -154,13 +154,13 @@ func (s *Store) progressForLevel(ctx context.Context, q queryer, userID string, 
 	if progress.NextRequirement == "" {
 		switch {
 		case progress.TotalLessons > 0 && progress.WatchedLessons < progress.TotalLessons:
-			progress.NextRequirement = fmt.Sprintf("LEVEL %d ашылуы үшін барлық сабақтарды өтіңіз.", levelNumber+1)
+			progress.NextRequirement = fmt.Sprintf("Деңгей %d ашылуы үшін барлық сабақтарды өтіңіз.", levelNumber+1)
 		case !progress.TestPassed:
-			progress.NextRequirement = fmt.Sprintf("LEVEL %d ашылуы үшін тест тапсырыңыз.", levelNumber+1)
+			progress.NextRequirement = fmt.Sprintf("Деңгей %d ашылуы үшін тест тапсырыңыз.", levelNumber+1)
 		case levelNumber >= 12:
-			progress.NextRequirement = "MASTER LEVEL аяқталды. Сертификат статусы дайындалады."
+			progress.NextRequirement = "MASTER деңгейі аяқталды. Сертификат статусы дайындалады."
 		default:
-			progress.NextRequirement = fmt.Sprintf("LEVEL %d ашуға дайын.", levelNumber+1)
+			progress.NextRequirement = fmt.Sprintf("Деңгей %d ашуға дайын.", levelNumber+1)
 		}
 	}
 	return progress, nil
@@ -351,7 +351,7 @@ func (s *Store) GetTestByLevel(ctx context.Context, userID string, levelNumber i
 	if !access {
 		return Test{}, ErrForbidden
 	}
-	test, err := s.getTestByLevelQuery(ctx, s.db, levelNumber, false)
+	test, err := s.getTestByLevelQuery(ctx, s.db, userID, levelNumber, false)
 	if err != nil {
 		return Test{}, err
 	}
@@ -369,7 +369,7 @@ func (s *Store) SubmitTest(ctx context.Context, userID string, levelNumber int, 
 			}
 			return ErrForbidden
 		}
-		test, err := s.getTestByLevelQuery(ctx, tx, levelNumber, true)
+		test, err := s.getTestByLevelQuery(ctx, tx, userID, levelNumber, true)
 		if err != nil {
 			return err
 		}
@@ -452,15 +452,26 @@ func (s *Store) SubmitAssignment(ctx context.Context, userID string, levelNumber
 	return err
 }
 
-func (s *Store) getTestByLevelQuery(ctx context.Context, q queryer, levelNumber int, includeCorrect bool) (Test, error) {
+func (s *Store) getTestByLevelQuery(ctx context.Context, q queryer, userID string, levelNumber int, includeCorrect bool) (Test, error) {
 	var test Test
 	var active int
 	err := q.QueryRowContext(ctx, `
-		SELECT t.id, t.level_id, lv.number, t.title, t.pass_percent, t.is_active
+		SELECT t.id, COALESCE(t.level_id, l.level_id, ''), lv.number, COALESCE(t.lesson_id, ''), COALESCE(l.title_kk, ''), t.title, t.pass_percent, t.is_active
 		FROM tests t
-		JOIN levels lv ON lv.id = t.level_id
-		WHERE lv.number = ? AND t.is_active = 1;
-	`, levelNumber).Scan(&test.ID, &test.LevelID, &test.LevelNumber, &test.Title, &test.PassPercent, &active)
+		LEFT JOIN lessons l ON l.id = t.lesson_id
+		JOIN levels lv ON lv.id = COALESCE(l.level_id, t.level_id)
+		LEFT JOIN (
+			SELECT test_id, MAX(passed) AS passed
+			FROM test_attempts
+			WHERE user_id = ?
+			GROUP BY test_id
+		) tp ON tp.test_id = t.id
+		WHERE lv.number = ? AND t.is_active = 1
+		ORDER BY CASE WHEN COALESCE(tp.passed, 0) = 1 THEN 1 ELSE 0 END ASC,
+			COALESCE(l.sort_order, 9999) ASC,
+			t.created_at ASC
+		LIMIT 1;
+	`, userID, levelNumber).Scan(&test.ID, &test.LevelID, &test.LevelNumber, &test.LessonID, &test.LessonTitleKK, &test.Title, &test.PassPercent, &active)
 	if err != nil {
 		return Test{}, rowErr(err)
 	}
@@ -548,10 +559,18 @@ func (s *Store) recalculateUserProgressTx(ctx context.Context, tx *sql.Tx, userI
 func testPassed(ctx context.Context, q queryer, userID string, levelNumber int) (bool, error) {
 	var passed int
 	err := q.QueryRowContext(ctx, `
-		SELECT COALESCE(MAX(ta.passed), 0)
+		SELECT CASE
+			WHEN COUNT(t.id) > 0 AND COALESCE(SUM(CASE WHEN COALESCE(tp.passed, 0) = 1 THEN 1 ELSE 0 END), 0) = COUNT(t.id)
+			THEN 1 ELSE 0 END
 		FROM tests t
-		JOIN levels lv ON lv.id = t.level_id
-		LEFT JOIN test_attempts ta ON ta.test_id = t.id AND ta.user_id = ?
+		LEFT JOIN lessons l ON l.id = t.lesson_id
+		JOIN levels lv ON lv.id = COALESCE(l.level_id, t.level_id)
+		LEFT JOIN (
+			SELECT test_id, MAX(passed) AS passed
+			FROM test_attempts
+			WHERE user_id = ?
+			GROUP BY test_id
+		) tp ON tp.test_id = t.id
 		WHERE lv.number = ? AND t.is_active = 1;
 	`, userID, levelNumber).Scan(&passed)
 	if err != nil {

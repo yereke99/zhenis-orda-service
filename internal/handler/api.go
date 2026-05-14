@@ -39,9 +39,9 @@ func (s *Server) handlePlatform(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	tariffs, _ := s.store.ListTariffs(r.Context(), true)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name":      "ZHENIS ORDA INSIDE",
+		"name":      "ZHENIS ORDA UNIVERSE",
 		"brand":     "Genius Orda",
-		"line":      "Жүйелі өсу ордасы.",
+		"line":      "Жүйелі даму платформасы.",
 		"status":    "Статус. Мақтаныш. Мотивация.",
 		"texts":     service.BrandTexts(user.Language),
 		"tariffs":   tariffs,
@@ -75,6 +75,7 @@ func (s *Server) handleTariffs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	var req struct {
+		TariffID   string `json:"tariff_id"`
 		TariffCode string `json:"tariff_code"`
 		Provider   string `json:"provider"`
 	}
@@ -82,7 +83,13 @@ func (s *Server) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	payment, err := s.store.CreatePayment(r.Context(), user.ID, strings.ToUpper(req.TariffCode), req.Provider, s.cfg.PaymentPendingTTL)
+	var payment repository.Payment
+	var err error
+	if strings.TrimSpace(req.TariffID) != "" {
+		payment, err = s.store.CreatePaymentByTariffID(r.Context(), user.ID, req.TariffID, req.Provider, s.cfg.PaymentPendingTTL)
+	} else {
+		payment, err = s.store.CreatePayment(r.Context(), user.ID, strings.ToUpper(req.TariffCode), req.Provider, s.cfg.PaymentPendingTTL)
+	}
 	if mapRepoError(w, err) {
 		return
 	}
@@ -93,7 +100,7 @@ func (s *Server) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 			"kaspi_pay_url":      s.cfg.KaspiPayURL,
 			"halyk_payment_url":  s.cfg.HalykPaymentURL,
 			"bank_card_url":      s.cfg.BankCardPaymentURL,
-			"text":               "Kaspi QR немесе Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF/image ретінде жіберіңіз.",
+			"text":               "Kaspi QR / Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF немесе сурет ретінде жіберіңіз.",
 		},
 	})
 }
@@ -352,7 +359,7 @@ func (s *Server) handleSubmitAssignment(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleReferral(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
-	summary, err := s.store.ReferralSummary(r.Context(), user.ID, "zhenisorda_bot")
+	summary, err := s.store.ReferralSummary(r.Context(), user.ID, "zhenisOrdaFinanceBot")
 	if mapRepoError(w, err) {
 		return
 	}
@@ -361,7 +368,7 @@ func (s *Server) handleReferral(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBonuses(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
-	summary, err := s.store.ReferralSummary(r.Context(), user.ID, "zhenisorda_bot")
+	summary, err := s.store.ReferralSummary(r.Context(), user.ID, "zhenisOrdaFinanceBot")
 	if mapRepoError(w, err) {
 		return
 	}

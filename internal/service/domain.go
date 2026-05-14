@@ -50,9 +50,9 @@ func ReferralRewardLabel(threshold int) string {
 
 func BrandTexts(language string) map[string]string {
 	return map[string]string{
-		"welcome": "ZHENIS ORDA INSIDE жүйесіне қош келдіңіз.",
-		"idea":    "Бұл жай курс емес. Бұл 12 айлық жүйелі өсу жолы.",
-		"growth":  "Сіз ойлау, қаржы, бизнес, ішкі жұмыс және көшбасшылық бойынша саты-саты өтіп, өзіңізді жаңа деңгейге шығарасыз.",
+		"welcome": "ZHENIS ORDA UNIVERSE жүйесіне қош келдіңіз.",
+		"idea":    "Бұл жай курс емес. Бұл жүйелі дамуға арналған орта.",
+		"growth":  "Сіз ойлау, қаржы, бизнес, ішкі блоктар және лидерлік бойынша саты-саты дамисыз.",
 		"first":   "Бірінші саты — ОЙЛАУ.",
 		"club":    "Жүйелі өсу ордасы.",
 		"status":  "Мәртебе. Мақтаныш. Мотивация.",

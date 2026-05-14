@@ -1,4 +1,4 @@
-/* ZHENIS ORDA INSIDE — premium Mini App + browser admin frontend.
+	/* ZHENIS ORDA UNIVERSE — premium Mini App + browser admin frontend.
    Static SPA, no build system. Preserves all existing API contracts. */
 
 (function () {
@@ -20,10 +20,11 @@
     selectedTariff: null,
     adminScreen: "dashboard",
     admin: null,
-    fullscreenRequested: false,
-    telegramViewportSetup: false,
-    bootedAt: 0,
-  };
+	    fullscreenRequested: false,
+	    telegramViewportSetup: false,
+	    telegramBackHandlerBound: false,
+	    bootedAt: 0,
+	  };
 
   const TELEGRAM_INIT_WAIT_MS = 2200;
   const TELEGRAM_INIT_RETRY_MS = 1200;
@@ -497,10 +498,42 @@
     return str.length > 10 ? `${str.slice(0, 8)}…` : str || "—";
   }
 
-  function clean(value) {
-    if (value == null) return "";
-    return String(value);
-  }
+	  function clean(value) {
+	    if (value == null) return "";
+	    return String(value);
+	  }
+
+	  function compact(value) {
+	    return clean(value).trim();
+	  }
+
+	  function visibleTariffImage(tariff) {
+	    if (!tariff) return "";
+	    return compact(tariff.image_file_path) || compact(tariff.image_url);
+	  }
+
+	  function selectedTariff() {
+	    const tariffs = (state.platform && state.platform.tariffs) || [];
+	    const selected = compact(state.selectedTariff);
+	    return tariffs.find((item) => item.id === selected || item.code === selected) || tariffs[0] || null;
+	  }
+
+	  function copyText(value) {
+	    const text = clean(value);
+	    if (navigator.clipboard && navigator.clipboard.writeText) {
+	      return navigator.clipboard.writeText(text);
+	    }
+	    const input = document.createElement("textarea");
+	    input.value = text;
+	    input.setAttribute("readonly", "readonly");
+	    input.style.position = "fixed";
+	    input.style.opacity = "0";
+	    document.body.appendChild(input);
+	    input.select();
+	    const ok = document.execCommand("copy");
+	    input.remove();
+	    return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+	  }
 
   function html(markup) {
     if (els.appContent) els.appContent.innerHTML = markup;
@@ -547,8 +580,14 @@
     current_level: "Деңгей",
     coin_balance: "Coin",
     access_closed: "Қолжетімділік",
-    tariff_code: "Тариф",
-    amount_kzt: "Сома",
+	    tariff_code: "Тариф",
+	    code: "Код",
+	    price_kzt: "Баға",
+	    short_description_kk: "Қысқа сипаттама",
+	    full_description_kk: "Толық сипаттама",
+	    image_url: "Сурет URL",
+	    image_file_path: "Жүктелген сурет",
+	    amount_kzt: "Сома",
     provider: "Провайдер",
     status: "Статус",
     receipt_file_path: "Түбіртек",
@@ -556,7 +595,9 @@
     number: "Деңгей",
     title_kk: "Қазақша атауы",
     title_ru: "Орысша атауы",
-    level_number: "Деңгей",
+	    level_number: "Деңгей",
+	    lesson_id: "Сабақ",
+	    lesson_title_kk: "Сабақ",
     lesson_link: "Сабақ сілтемесі",
     video_url: "Сілтеме",
     sort_order: "Реті",
@@ -876,15 +917,17 @@
      MINI APP NAVIGATION
      =========================================================== */
 
-  function setScreen(screen) {
-    state.currentScreen = screen;
-    renderMini();
-    if (els.appContent) els.appContent.scrollTo({ top: 0, behavior: "smooth" });
-  }
+	  function setScreen(screen) {
+	    state.currentScreen = screen;
+	    syncTelegramBackButton();
+	    renderMini();
+	    if (els.appContent) els.appContent.scrollTo({ top: 0, behavior: "smooth" });
+	  }
 
-  function renderMini() {
-    renderFooter();
-    const map = {
+	  function renderMini() {
+	    renderFooter();
+	    syncTelegramBackButton();
+	    const map = {
       onboarding: renderOnboarding,
       dashboard: renderDashboard,
       diagnostics: renderDiagnostics,
@@ -904,18 +947,38 @@
     const renderer = map[state.currentScreen] || renderDashboard;
     Promise.resolve()
       .then(() => renderer())
-      .catch((error) => renderError(error.message || "Қате орын алды"));
-  }
+	      .catch((error) => renderError(error.message || "Қате орын алды"));
+	  }
+
+	  function handlePaymentBack() {
+	    if (state.currentScreen === "payment") setScreen("tariffs");
+	  }
+
+	  function syncTelegramBackButton() {
+	    const tg = getTelegram();
+	    if (!tg || !tg.BackButton) return;
+	    try {
+	      if (state.currentScreen === "payment") {
+	        if (!state.telegramBackHandlerBound && typeof tg.BackButton.onClick === "function") {
+	          tg.BackButton.onClick(handlePaymentBack);
+	          state.telegramBackHandlerBound = true;
+	        }
+	        if (typeof tg.BackButton.show === "function") tg.BackButton.show();
+	      } else if (typeof tg.BackButton.hide === "function") {
+	        tg.BackButton.hide();
+	      }
+	    } catch (_) {}
+	  }
 
   function renderFooter() {
     if (!els.bottomCta) return;
-    const tabs = [
-      ["dashboard", "◉", "Басты"],
-      ["lessons", "▤", "Сабақ"],
-      ["referral", "↗", "Реф"],
-      ["coins", "✦", "Coin"],
-      ["profile", "◐", "Жеке"],
-    ];
+	    const tabs = [
+	      ["dashboard", "◉", "Басты"],
+	      ["lessons", "▤", "Сабақтар"],
+	      ["referral", "↗", "Дос"],
+	      ["coins", "✦", "Coin"],
+	      ["profile", "◐", "Жеке"],
+	    ];
     els.bottomCta.classList.remove("hidden");
     els.bottomCta.innerHTML = `<div class="tabbar">${tabs
       .map(
@@ -967,9 +1030,9 @@
     html(`
       <section class="screen">
         <div class="hero">
-          <p class="eyebrow">ZHENIS ORDA INSIDE</p>
-          <h1>Бұл жай курс емес. Бұл 12 айлық жүйелі өсу жолы.</h1>
-          <p class="muted">Сіз ойлау, қаржы, бизнес, ішкі жұмыс және көшбасшылық бойынша саты-саты өтіп, өзіңізді жаңа деңгейге шығарасыз.</p>
+	          <p class="eyebrow">ZHENIS ORDA UNIVERSE</p>
+	          <h1>Қош келдіңіз! Сіз жай курсқа емес, жүйелі даму ортасына кірдіңіз.</h1>
+	          <p class="muted">Ойлау, қаржы, бизнес және лидерлік бойынша саты-саты дамуға арналған платформа.</p>
           <div class="pill-row">
             <span class="pill">Мәртебе</span>
             <span class="pill">Мақтаныш</span>
@@ -1003,19 +1066,22 @@
     html(`
       <section class="screen">
         <div class="hero">
-          <p class="eyebrow">Жүйелі өсу ордасы</p>
-          <h1>ZHENIS ORDA INSIDE</h1>
-          <p class="muted">${esc(progress.next_requirement || "12 айлық жүйелі өсу жолы. Әр сатыны ашып, жаңа деңгейге өтіңіз.")}</p>
-          <div class="progress-track"><div class="progress-fill" style="--progress:${percent}%"></div></div>
-          <div class="progress-row">
-            <span>Сіздің прогресс</span>
-            <strong>${percent}%</strong>
-          </div>
+	          <p class="eyebrow">Жүйелі даму платформасы</p>
+	          <h1>ZHENIS ORDA UNIVERSE</h1>
+	          <p class="muted">${esc(progress.next_requirement || "Ойлау, қаржы, бизнес және лидерлік бойынша жүйелі дамыңыз.")}</p>
+	          <div class="progress-wrap">
+	            <div class="progress-track"><div class="progress-fill" style="--progress:${percent}%"></div></div>
+	            <div class="certificate-goal ${percent >= 100 ? "active" : ""}" title="Сертификат"><span class="certificate-icon" aria-hidden="true"></span></div>
+	          </div>
+	          <div class="progress-row">
+	            <span>${percent >= 100 ? "Сертификат" : "Сіздің прогресіңіз"}</span>
+	            <strong>${percent}%</strong>
+	          </div>
         </div>
 
         <div class="grid three">
           ${metric("Тариф", sub.tariff_code || "Жоқ", statusText[subStatus] || subStatus, subOk ? "ok" : subStatus === "expired" ? "bad" : "warn")}
-          ${metric("Деңгей", `LEVEL ${currentLevel}`, currentLevel ? "Ашық" : "Жабық", currentLevel ? "ok" : "warn")}
+	          ${metric("Деңгей", `Деңгей ${currentLevel}`, currentLevel ? "Ашық" : "Жабық", currentLevel ? "ok" : "warn")}
           ${metric("ZHENIS Coin", money(user.coin_balance), "ішкі валюта")}
         </div>
 
@@ -1027,7 +1093,7 @@
             </div>
             <span class="status ${progress.can_unlock_next ? "ok" : "warn"}">${progress.can_unlock_next ? "Дайын" : "Жабық"}</span>
           </div>
-          <p class="muted">${esc(progress.next_requirement || "LEVEL 2 ашылуы үшін тест тапсырыңыз.")}</p>
+	          <p class="muted">${esc(progress.next_requirement || "2-деңгей ашылуы үшін тест тапсырыңыз.")}</p>
           <div class="grid two tight" style="margin-top:6px">
             <button class="gold-btn" data-next="lessons" type="button">Сабақтарға өту</button>
             <button class="ghost-btn" data-next="test" type="button">Тест тапсыру</button>
@@ -1036,7 +1102,7 @@
 
         <div class="card">
           <div class="section-head">
-            <h2>12 LEVEL JOURNEY</h2>
+	            <h2>12 деңгейлік жол</h2>
             <button class="ghost-btn" data-next="levels" type="button">Барлығы</button>
           </div>
           ${renderLevelStrip()}
@@ -1044,7 +1110,7 @@
 
         <div class="grid two">
           <button class="ghost-btn lg" data-next="tariffs" type="button">Тарифтер</button>
-          <button class="ghost-btn lg" data-next="referral" type="button">Реферал сілтемем</button>
+	          <button class="ghost-btn lg" data-next="referral" type="button">Дос шақыру</button>
           <button class="ghost-btn lg" data-next="streams" type="button">Жабық эфир</button>
           <button class="ghost-btn lg" data-next="channels" type="button">Жабық арналар</button>
           <button class="ghost-btn lg" data-next="assignment" type="button">Тапсырмаларым</button>
@@ -1079,11 +1145,11 @@
         ]
           .filter(Boolean)
           .join(" ");
-        return `<button class="${cls}" data-level="${level.number}" type="button">
-          LEVEL
-          <b>${esc(level.number)}</b>
-          <span style="font-size:10px;letter-spacing:0;text-transform:none;color:inherit;opacity:0.85">${esc(level.title_kk || "")}</span>
-        </button>`;
+	        return `<button class="${cls}" data-level="${level.number}" type="button">
+	          Деңгей
+	          <b>${esc(level.number)}</b>
+	          <span style="font-size:10px;letter-spacing:0;text-transform:none;color:inherit;opacity:0.85">${esc(level.title_kk || "")}</span>
+	        </button>`;
       })
       .join("")}</div>`;
   }
@@ -1094,10 +1160,10 @@
       <section class="screen">
         <div class="section-head">
           <div>
-            <p class="eyebrow">12-month journey</p>
-            <h1>Менің деңгейім</h1>
-          </div>
-          <span class="pill">LEVEL ${currentLevel}</span>
+	          <p class="eyebrow">12 деңгейлік жол</p>
+	            <h1>Менің деңгейім</h1>
+	          </div>
+	          <span class="pill">Деңгей ${currentLevel}</span>
         </div>
         <div class="card">${renderLevelStrip()}</div>
         <div class="grid">${state.levels.map(levelCard).join("")}</div>
@@ -1111,8 +1177,8 @@
     return `<article class="card">
       <div class="card-header">
         <div>
-          <p class="eyebrow">LEVEL ${esc(level.number)}</p>
-          <h2>${esc(level.title_kk || `Level ${level.number}`)}</h2>
+	          <p class="eyebrow">Деңгей ${esc(level.number)}</p>
+	          <h2>${esc(level.title_kk || `Деңгей ${level.number}`)}</h2>
         </div>
         <span class="status ${level.access ? "ok" : "bad"}">${level.access ? "Ашық" : "Жабық"}</span>
       </div>
@@ -1126,7 +1192,7 @@
     const level = (state.me && state.me.user && state.me.user.current_level) || 1;
     html(`<section class="screen">
       <div class="section-head">
-        <div><p class="eyebrow">LEVEL ${esc(level)}</p><h1>Сабақтарым</h1></div>
+	        <div><p class="eyebrow">Деңгей ${esc(level)}</p><h1>Сабақтар</h1></div>
         <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
       </div>
       <div class="grid">${skeletonRows(3)}</div>
@@ -1148,7 +1214,7 @@
     html(`
       <section class="screen">
         <div class="section-head">
-          <div><p class="eyebrow">LEVEL ${esc(level)}</p><h1>Сабақтарым</h1></div>
+	          <div><p class="eyebrow">Деңгей ${esc(level)}</p><h1>Сабақтар</h1></div>
           <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
         </div>
         <div class="grid">${cards}</div>
@@ -1171,7 +1237,7 @@
         </div>
         <span class="status ${watched ? "ok" : access ? "" : "bad"}">${watched ? "Көрілді" : access ? "Ашық" : "Жабық"}</span>
       </div>
-      <p class="muted">${esc(lesson.description_kk || "ZHENIS ORDA INSIDE")}</p>
+	      <p class="muted">${esc(lesson.description_kk || "ZHENIS ORDA UNIVERSE")}</p>
       <div class="lesson-actions">
         <button class="${watched ? "ghost-btn" : "gold-btn"}" data-watch="${lesson.id}" ${access ? "" : "disabled"} type="button">
           ${watched ? "Қайта белгілеу" : "Сабақты өттім"}
@@ -1210,7 +1276,7 @@
     html(`
       <section class="screen">
         <div class="card">
-          <p class="eyebrow">LEVEL ${esc(level)}</p>
+	          <p class="eyebrow">${test.lesson_title_kk ? `Сабақ: ${esc(test.lesson_title_kk)}` : `Деңгей ${esc(level)}`}</p>
           <h1>${esc(test.title)}</h1>
           <p class="muted">Өту шегі: ${esc(test.pass_percent)}%</p>
         </div>
@@ -1274,7 +1340,7 @@
     html(`
       <section class="screen">
         <div class="card">
-          <p class="eyebrow">LEVEL ${esc(level)}</p>
+	          <p class="eyebrow">Деңгей ${esc(level)}</p>
           <h1>${esc(assignment.title_kk)}</h1>
           <p class="muted">${esc(assignment.description_kk || "")}</p>
         </div>
@@ -1351,99 +1417,123 @@
     });
   }
 
-  async function renderTariffs() {
-    if (!state.platform) {
-      try {
-        state.platform = await api("/api/platform");
-      } catch (error) {
-        toast(error.message, "error");
-        state.platform = { tariffs: [] };
-      }
-    }
-    const tariffs = (state.platform && state.platform.tariffs) || [];
-    html(`
-      <section class="screen">
-        <div class="card">
-          <p class="eyebrow">Жазылым</p>
-          <h1>Тарифтер</h1>
-          <p class="muted">LEVEL 1 төлемнен кейін ашылады. Контент саты-саты ашылады.</p>
-        </div>
-        <div class="grid three">${tariffs.length ? tariffs.map(tariffCard).join("") : emptyState("Тарифтер табылмады")}</div>
-      </section>
-    `);
-    document.querySelectorAll("[data-tariff]").forEach((button) =>
-      button.addEventListener("click", () => {
-        state.selectedTariff = button.dataset.tariff;
+	  async function renderTariffs() {
+	    try {
+	      const data = await api("/api/tariffs");
+	      state.platform = Object.assign({}, state.platform || {}, { tariffs: data.tariffs || [] });
+	    } catch (error) {
+	      toast(error.message, "error");
+	      state.platform = Object.assign({}, state.platform || {}, { tariffs: [] });
+	    }
+	    const tariffs = (state.platform && state.platform.tariffs) || [];
+	    html(`
+	      <section class="screen">
+	        <div class="card">
+	          <p class="eyebrow">Жазылым</p>
+	          <h1>Тарифтер</h1>
+	          <p class="muted">1-деңгей төлемнен кейін ашылады. Контент саты-саты беріледі.</p>
+	        </div>
+	        <div class="grid three">${tariffs.length ? tariffs.map(tariffCard).join("") : emptyState("Қазір қолжетімді тариф жоқ.")}</div>
+	      </section>
+	    `);
+	    document.querySelectorAll("[data-tariff]").forEach((button) =>
+	      button.addEventListener("click", () => {
+	        state.selectedTariff = button.dataset.tariff;
         setScreen("payment");
       }),
     );
-  }
+	  }
 
-  function tariffCard(tariff) {
-    return `<article class="tariff-card ${tariff.code === "STANDARD" ? "featured" : ""}">
-      <header>
-        <div>
-          <p class="eyebrow">${esc(tariff.code)}</p>
-          <div class="price">${money(tariff.price_kzt)} <small>₸ / ай</small></div>
-        </div>
-        <span class="pill">${esc(tariff.code)}</span>
-      </header>
-      <ul>${(tariff.features || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul>
-      <button class="gold-btn block" data-tariff="${esc(tariff.code)}" type="button">Таңдау</button>
-    </article>`;
-  }
+	  function tariffCard(tariff) {
+	    const image = visibleTariffImage(tariff);
+	    return `<article class="tariff-card ${tariff.code === "STANDARD" ? "featured" : ""}">
+	      ${image ? `<img class="tariff-image" src="${esc(image)}" alt="${esc(tariff.title || tariff.code)}" loading="lazy" />` : ""}
+	      <header>
+	        <div>
+	          <p class="eyebrow">${esc(tariff.code || "")}</p>
+	          <h2>${esc(tariff.title || tariff.code)}</h2>
+	          <div class="price">${money(tariff.price_kzt)} <small>₸ / ай</small></div>
+	        </div>
+	        <span class="pill">${esc(tariff.code)}</span>
+	      </header>
+	      ${tariff.short_description_kk ? `<p class="muted">${esc(tariff.short_description_kk)}</p>` : ""}
+	      ${tariffBenefitsHtml(tariff.features, 5)}
+	      <button class="gold-btn block" data-tariff="${esc(tariff.id || tariff.code)}" type="button">Таңдау</button>
+	    </article>`;
+	  }
 
-  function renderPayment() {
-    const tariff = state.selectedTariff || "BASIC";
-    html(`
-      <section class="screen">
-        <div class="card">
-          <p class="eyebrow">Төлем</p>
-          <h1>${esc(tariff)}</h1>
-          <p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF/image ретінде жіберіңіз.</p>
-        </div>
-        <form id="paymentForm" class="form">
-          <label class="field">
-            <span>Төлем провайдері</span>
-            <select name="provider">
-              <option value="kaspi_qr">Kaspi QR</option>
-              <option value="kaspi_pay">Kaspi Pay</option>
-              <option value="halyk">Halyk</option>
-              <option value="bank_card">Банк картасы</option>
-            </select>
-          </label>
-          <button class="gold-btn lg" type="submit"><span class="btn-label">Төлем құру</span><span class="btn-spinner"></span></button>
-        </form>
-        <div id="paymentResult"></div>
-      </section>
-    `);
-    document.getElementById("paymentForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
-      submitBtn.classList.add("is-loading");
-      try {
-        const provider = new FormData(event.currentTarget).get("provider");
-        const res = await api("/api/payments", {
-          method: "POST",
-          body: JSON.stringify({ tariff_code: tariff, provider }),
-        });
-        document.getElementById("paymentResult").innerHTML = `
-          <div class="card">
-            <p class="eyebrow">Төлем құрылды</p>
-            <h2>Төлем #${esc(shortId(res.payment.id))}</h2>
+	  function tariffBenefitsHtml(features, limit) {
+	    const all = features || [];
+	    const items = all.slice(0, limit || all.length);
+	    return items.length ? `<ul>${items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : "";
+	  }
+
+	  function renderPayment() {
+	    const tariff = selectedTariff();
+	    if (!tariff) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backTariffs" type="button">Артқа</button>${emptyState("Қазір қолжетімді тариф жоқ.")}</section>`);
+	      on("backTariffs", () => setScreen("tariffs"));
+	      return;
+	    }
+	    const image = visibleTariffImage(tariff);
+	    const providers = (state.platform && state.platform.providers) || [
+	      { code: "kaspi_qr", title: "Kaspi QR" },
+	      { code: "kaspi_pay", title: "Kaspi Pay" },
+	      { code: "halyk", title: "Halyk" },
+	      { code: "bank_card", title: "Банк картасы" },
+	    ];
+	    html(`
+	      <section class="screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backTariffs" type="button">Артқа</button>
+	        </div>
+	        <div class="card">
+	          <p class="eyebrow">Төлем</p>
+	          <h1>${esc(tariff.title || tariff.code)}</h1>
+	          ${image ? `<img class="tariff-detail-image" src="${esc(image)}" alt="${esc(tariff.title || tariff.code)}" loading="lazy" />` : ""}
+	          <div class="price">${money(tariff.price_kzt)} <small>₸ / ай</small></div>
+	          ${tariff.full_description_kk ? `<p class="muted">${esc(tariff.full_description_kk)}</p>` : tariff.short_description_kk ? `<p class="muted">${esc(tariff.short_description_kk)}</p>` : ""}
+	          ${tariffBenefitsHtml(tariff.features)}
+	          <p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF немесе сурет ретінде жіберіңіз.</p>
+	        </div>
+	        <form id="paymentForm" class="form">
+	          <label class="field">
+	            <span>Төлем провайдері</span>
+	            <select name="provider">${providers.map((provider) => `<option value="${esc(provider.code)}">${esc(provider.title)}</option>`).join("")}</select>
+	          </label>
+	          <button class="gold-btn lg" type="submit"><span class="btn-label">Төлем жасау</span><span class="btn-spinner"></span></button>
+	        </form>
+	        <div id="paymentResult"></div>
+	      </section>
+	    `);
+	    on("backTariffs", () => setScreen("tariffs"));
+	    document.getElementById("paymentForm").addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+	      submitBtn.classList.add("is-loading");
+	      try {
+	        const provider = new FormData(event.currentTarget).get("provider");
+	        const res = await api("/api/payments", {
+	          method: "POST",
+	          body: JSON.stringify({ tariff_id: tariff.id, tariff_code: tariff.code, provider }),
+	        });
+	        document.getElementById("paymentResult").innerHTML = `
+	          <div class="card">
+	            <p class="eyebrow">Төлем құрылды</p>
+	            <h2>Төлем #${esc(shortId(res.payment.id))}</h2>
             <p class="muted">${esc(res.instructions.text)}</p>
             <p>Сома: <strong>${money(res.payment.amount_kzt)} ₸</strong></p>
           </div>
           ${receiptUploadHtml(res.payment)}
         `;
-        bindReceiptUpload(res.payment.id);
-        toast("Төлем құрылды", "success");
-      } catch (error) {
-        toast(error.message || "Төлем құру мүмкін болмады", "error");
-      } finally {
-        submitBtn.classList.remove("is-loading");
-      }
-    });
+	        bindReceiptUpload(res.payment.id);
+	        toast("Төлем құрылды", "success");
+	      } catch (error) {
+	        toast(error.message || "Төлем жасау мүмкін болмады", "error");
+	      } finally {
+	        submitBtn.classList.remove("is-loading");
+	      }
+	    });
   }
 
   function receiptUploadHtml(payment) {
@@ -1509,41 +1599,37 @@
       const data = await api("/api/referral");
       referral = data.referral;
       state.referral = referral;
-    } catch (error) {
-      html(`<section class="screen"><h1>Реферал</h1>${emptyState(error.message)}</section>`);
-      return;
-    }
-    html(`
-      <section class="screen">
-        <div class="hero">
-          <p class="eyebrow">Реферал</p>
-          <h1>Жаңа клиент шақырыңыз</h1>
-          <p class="muted">Тек төлемі мақұлданған клиенттер сыйақы береді.</p>
-        </div>
-        <div class="card">
-          <p class="eyebrow">Сілтеме</p>
-          <div class="referral-link">${esc(referral.referral_link || "")}</div>
-          <div class="grid two tight">
-            <button class="gold-btn" id="copyRef" type="button">Көшіру</button>
-            <button class="ghost-btn" id="shareRef" type="button">Telegram-да бөлісу</button>
-          </div>
+	    } catch (error) {
+	      html(`<section class="screen"><h1>Дос шақыру</h1>${emptyState(error.message)}</section>`);
+	      return;
+	    }
+	    html(`
+	      <section class="screen">
+	        <div class="hero">
+	          <p class="eyebrow">Дос шақыру</p>
+	          <h1>Дос шақыру</h1>
+	          <p class="muted">Досыңызды жеке сілтемеңіз арқылы шақырыңыз. Ол тіркеліп, төлем жасағаннан кейін бонус беріледі.</p>
+	        </div>
+	        <div class="card">
+	          <p class="eyebrow">Сілтеме</p>
+	          <div class="referral-link">${esc(referral.referral_link || "")}</div>
+	          <div class="grid two tight">
+	            <button class="gold-btn" id="copyRef" type="button">Сілтемені көшіру</button>
+	            <button class="ghost-btn" id="shareRef" type="button">Telegram-да бөлісу</button>
+	          </div>
         </div>
         <div class="grid two">
           ${metric("Шақырылған", referral.invited_count || 0, "тіркелді")}
           ${metric("Төлем жасаған", referral.paid_count || 0, "мақұлданды")}
         </div>
       </section>
-    `);
-    on("copyRef", () => {
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(referral.referral_link).then(() => toast("Сілтеме көшірілді", "success"));
-      } else {
-        toast("Көшіру қолжетімді емес", "error");
-      }
-    });
+	    `);
+	    on("copyRef", () => {
+	      copyText(referral.referral_link).then(() => toast("Сілтеме көшірілді", "success")).catch(() => toast("Көшіру қолжетімді емес", "error"));
+	    });
     on("shareRef", () => {
       const tg = getTelegram();
-      const text = encodeURIComponent("ZHENIS ORDA INSIDE — жүйелі өсу ордасы. " + referral.referral_link);
+	      const text = encodeURIComponent("ZHENIS ORDA UNIVERSE — жүйелі даму платформасы. " + referral.referral_link);
       const url = `https://t.me/share/url?url=${encodeURIComponent(referral.referral_link)}&text=${text}`;
       if (tg && typeof tg.openTelegramLink === "function") tg.openTelegramLink(url);
       else window.open(url, "_blank");
@@ -1569,7 +1655,7 @@
           <p class="muted">Сабақ көрілді +5, тест тапсырылды +20, эфирге қатысты +30, реферал +100.</p>
         </div>
         <div class="card">
-          <p class="eyebrow">Реферал бонустары</p>
+	          <p class="eyebrow">Дос шақыру бонустары</p>
           <h2>Жоспар</h2>
           <div class="grid">${(bonuses.plan || []).map((item) => `<div class="card" style="margin:0;padding:14px"><strong style="color:var(--gold-bright)">${esc(item.count)} шақыру</strong><p class="muted" style="margin-top:4px">${esc(item.reward)}</p></div>`).join("")}</div>
         </div>
@@ -1635,7 +1721,7 @@
                 .map(
                   (channel) => `<div class="card">
                     <div class="card-header">
-                      <div><h2>${esc(channel.title)}</h2><p class="muted">${esc(channel.tariff_requirement)} · LEVEL ${esc(channel.level_requirement)}</p></div>
+	                      <div><h2>${esc(channel.title)}</h2><p class="muted">${esc(channel.tariff_requirement)} · Деңгей ${esc(channel.level_requirement)}</p></div>
                       <span class="status ${channel.access ? "ok" : "bad"}">${channel.access ? "Ашық" : "Жабық"}</span>
                     </div>
                     <button class="gold-btn block" data-invite="${esc(channel.id)}" ${channel.access ? "" : "disabled"} type="button">Сілтеме алу</button>
@@ -1682,11 +1768,11 @@
         <div class="grid two">
           ${metric("Қазіргі тариф", sub.tariff_code || "Жоқ", statusText[sub.status] || sub.status || "Белсенді емес", subOk ? "ok" : "warn")}
           ${metric("Мерзімі", sub.expires_at ? formatDate(sub.expires_at) : "—", "жазылым")}
-          ${metric("Қазіргі деңгей", `LEVEL ${user.current_level || 0}`, "12 айлық жол")}
+	          ${metric("Қазіргі деңгей", `Деңгей ${user.current_level || 0}`, "12 деңгейлік жол")}
           ${metric("Coin балансы", money(user.coin_balance), "ZHENIS COIN")}
         </div>
         <div class="grid two">
-          <button class="ghost-btn" data-next="referral" type="button">Реферал</button>
+	          <button class="ghost-btn" data-next="referral" type="button">Дос шақыру</button>
           <button class="ghost-btn" data-next="support" type="button">Қолдау қызметі</button>
         </div>
       </section>
@@ -1845,14 +1931,15 @@
 
   const adminScreens = [
     ["dashboard", "Басты бет"],
-    ["users", "Қолданушылар"],
-    ["payments", "Төлемдер"],
-    ["subscriptions", "Жазылымдар"],
-    ["levels", "Деңгейлер"],
+	    ["users", "Қолданушылар"],
+	    ["payments", "Төлемдер"],
+	    ["subscriptions", "Жазылымдар"],
+	    ["tariffs", "Тарифтер"],
+	    ["levels", "Деңгейлер"],
     ["lessons", "Сабақтар"],
     ["tests", "Тесттер"],
     ["assignments", "Тапсырмалар"],
-    ["referrals", "Рефералдар"],
+	    ["referrals", "Дос шақыру"],
     ["coins", "ZHENIS Coin"],
     ["channels", "Каналдар"],
     ["streams", "Эфирлер"],
@@ -1896,18 +1983,19 @@
       if (screen === "dashboard" || screen === "analytics") return await renderAdminDashboard();
       if (screen === "users") return await renderAdminUsers();
       if (screen === "payments") return await renderAdminPayments();
-      if (screen === "subscriptions")
-        return await renderAdminTable(
-          "/api/admin/subscriptions",
-          "subscriptions",
-          ["id", "user_id", "tariff_code", "status", "expires_at"],
-          "Жазылымдар",
-        );
+	      if (screen === "subscriptions")
+	        return await renderAdminTable(
+	          "/api/admin/subscriptions",
+	          "subscriptions",
+	          ["id", "user_id", "tariff_code", "status", "expires_at"],
+	          "Жазылымдар",
+	        );
+	      if (screen === "tariffs") return await renderAdminTariffs();
       if (screen === "levels") return await renderAdminLevels();
       if (screen === "lessons") return await renderAdminLessons();
       if (screen === "tests") return await renderAdminTests();
       if (screen === "assignments") return await renderAdminItems("/api/admin/assignments/submissions", "Тапсырма жауаптары");
-      if (screen === "referrals") return await renderAdminItems("/api/admin/referrals", "Рефералдар");
+	      if (screen === "referrals") return await renderAdminItems("/api/admin/referrals", "Дос шақыру");
       if (screen === "coins") return await renderAdminItems("/api/admin/coins", "ZHENIS Coin");
       if (screen === "channels") return await renderAdminChannels();
       if (screen === "streams")
@@ -1998,20 +2086,174 @@
     }, 280), "input");
   }
 
-  async function renderAdminTable(url, key, columns, title) {
-    const data = await api(url);
-    const rows = data[key] || data.items || [];
-    els.adminContent.innerHTML = `
+	  async function renderAdminTable(url, key, columns, title) {
+	    const data = await api(url);
+	    const rows = data[key] || data.items || [];
+	    els.adminContent.innerHTML = `
       <div class="card">
         <div class="admin-section-head">
           <div><p class="eyebrow">${esc(title || key)}</p><h2>${esc(title || key)}</h2></div>
         </div>
         ${tableHtml(columns, rows)}
       </div>
-    `;
-  }
+	    `;
+	  }
 
-  async function renderAdminItems(url, title) {
+	  async function renderAdminTariffs() {
+	    const data = await api("/api/admin/tariffs");
+	    const tariffs = data.tariffs || [];
+	    const rows = tariffs.length
+	      ? `<div class="table-wrap"><table>
+	          <thead><tr><th>Сурет</th><th>Тариф</th><th>Баға</th><th>Реті</th><th>Статус</th><th>Әрекет</th></tr></thead>
+	          <tbody>${tariffs
+	            .map((tariff) => {
+	              const image = visibleTariffImage(tariff);
+	              return `<tr>
+	                <td>${image ? `<img class="tariff-admin-thumb" src="${esc(image)}" alt="${esc(tariff.title || tariff.code)}" loading="lazy" />` : "—"}</td>
+	                <td><strong>${esc(tariff.title || tariff.code)}</strong><div class="muted small">${esc(tariff.code)} · ${esc(shortId(tariff.id))}</div><div class="muted small">${esc(tariff.short_description_kk || "")}</div></td>
+	                <td>${money(tariff.price_kzt)} ₸</td>
+	                <td>${esc(tariff.sort_order || 0)}</td>
+	                <td>${statusBadge(tariff.is_active ? "active" : "inactive")}</td>
+	                <td><div class="action-row">
+	                  <button class="ghost-btn" data-edit-tariff="${esc(tariff.id)}" type="button">Өзгерту</button>
+	                  <button class="danger-btn" data-archive-tariff="${esc(tariff.id)}" type="button">Белсенді емес</button>
+	                </div></td>
+	              </tr>`;
+	            })
+	            .join("")}</tbody></table></div>`
+	      : emptyState("Тарифтер табылмады");
+	    els.adminContent.innerHTML = `
+	      <div class="card">
+	        <div class="admin-section-head">
+	          <div><p class="eyebrow">Тарифтер</p><h2>Тарифтер</h2></div>
+	          <div class="admin-toolbar"><button class="gold-btn" id="addTariff" type="button">+ Тариф қосу</button></div>
+	        </div>
+	        ${rows}
+	      </div>
+	    `;
+	    on("addTariff", () => openTariffModal(null, tariffs));
+	    delegate(els.adminContent, "[data-edit-tariff]", "click", (event, target) => {
+	      const tariff = tariffs.find((item) => item.id === target.dataset.editTariff);
+	      if (tariff) openTariffModal(tariff, tariffs);
+	    });
+	    delegate(els.adminContent, "[data-archive-tariff]", "click", async (event, target) => {
+	      const tariff = tariffs.find((item) => item.id === target.dataset.archiveTariff);
+	      const ok = await modal({
+	        title: "Тарифті белсенді емес ету",
+	        body: `<p class="muted">${esc(tariff ? tariff.title || tariff.code : "Бұл тариф")} Mini App-та көрінбейді. Жалғастырасыз ба?</p>`,
+	        actions: [
+	          { label: "Болдырмау", value: false },
+	          { label: "Белсенді емес", value: true, danger: true },
+	        ],
+	      });
+	      if (!ok) return;
+	      try {
+	        await api(`/api/admin/tariffs/${target.dataset.archiveTariff}`, { method: "DELETE" });
+	        toast("Тариф белсенді емес күйге ауысты", "success");
+	        renderAdminTariffs();
+	      } catch (error) {
+	        toast(error.message || "Тарифті өзгерту мүмкін болмады", "error");
+	      }
+	    });
+	  }
+
+	  function openTariffModal(tariff, tariffs) {
+	    const isEdit = Boolean(tariff && tariff.id);
+	    const image = visibleTariffImage(tariff);
+	    const benefits = (tariff && tariff.features ? tariff.features : []).join("\n");
+	    const nextOrder = Math.max(0, ...tariffs.map((item) => Number(item.sort_order) || 0)) + 1;
+	    const shell = openModalShell(isEdit ? "Тарифті өзгерту" : "Тариф қосу", `
+	      <form id="tariffModalForm" class="form">
+	        <div class="grid three">
+	          <label class="field"><span>Код / slug</span><input name="code" required placeholder="BASIC" value="${esc((tariff && tariff.code) || "")}" /></label>
+	          <label class="field"><span>Атауы</span><input name="title" required placeholder="BASIC" value="${esc((tariff && tariff.title) || "")}" /></label>
+	          <label class="field"><span>Баға, KZT</span><input name="price_kzt" type="number" min="1" required value="${esc((tariff && tariff.price_kzt) || "")}" /></label>
+	        </div>
+	        <label class="field"><span>Қысқа сипаттама</span><input name="short_description_kk" value="${esc((tariff && tariff.short_description_kk) || "")}" /></label>
+	        <label class="field"><span>Толық сипаттама</span><textarea name="full_description_kk">${esc((tariff && tariff.full_description_kk) || "")}</textarea></label>
+	        <label class="field"><span>Артықшылықтар</span><textarea name="features" placeholder="Әр жолға бір артықшылық">${esc(benefits)}</textarea></label>
+	        <div class="grid two">
+	          <label class="field"><span>Сурет URL</span><input name="image_url" placeholder="https://" value="${esc((tariff && tariff.image_url) || "")}" /></label>
+	          <label class="field"><span>Реті</span><input name="sort_order" type="number" min="1" value="${esc((tariff && tariff.sort_order) || nextOrder)}" /></label>
+	        </div>
+	        <label class="upload-drop tariff-upload">
+	          <input name="image_upload" type="file" accept=".jpg,.jpeg,.png,.webp,image/*" />
+	          <span class="upload-title">Сурет жүктеу</span>
+	          <small>JPG, PNG немесе WEBP</small>
+	          <strong id="tariffUploadName">Файл таңдалмады</strong>
+	        </label>
+	        <input type="hidden" name="image_file_path" value="${esc((tariff && tariff.image_file_path) || "")}" />
+	        <input type="hidden" name="image_source" value="${esc((tariff && tariff.image_source) || "none")}" />
+	        <div id="tariffImagePreview" class="tariff-image-preview">${image ? `<img src="${esc(image)}" alt="${esc((tariff && tariff.title) || "Тариф")}" />` : ""}</div>
+	        <label class="switch-field"><input name="is_active" type="checkbox" ${!tariff || tariff.is_active ? "checked" : ""} /><span>Белсенді</span></label>
+	        <div class="action-row end">
+	          <button class="ghost-btn" data-close-modal type="button">Болдырмау</button>
+	          <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
+	        </div>
+	      </form>
+	    `);
+	    const form = shell.body.querySelector("form");
+	    const upload = form.querySelector("input[name=image_upload]");
+	    const uploadName = shell.body.querySelector("#tariffUploadName");
+	    const preview = shell.body.querySelector("#tariffImagePreview");
+	    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
+	    upload.addEventListener("change", async () => {
+	      const file = upload.files && upload.files[0];
+	      uploadName.textContent = file ? file.name : "Файл таңдалмады";
+	      if (!file) return;
+	      const fd = new FormData();
+	      fd.append("image", file);
+	      try {
+	        const res = await api("/api/admin/tariffs/image", { method: "POST", body: fd });
+	        form.elements.image_file_path.value = res.image_file_path || "";
+	        form.elements.image_source.value = "uploaded";
+	        preview.innerHTML = res.image_file_path ? `<img src="${esc(res.image_file_path)}" alt="Тариф суреті" />` : "";
+	        toast("Сурет жүктелді", "success");
+	      } catch (error) {
+	        toast(error.message || "Сурет жүктеу мүмкін болмады", "error");
+	      }
+	    });
+	    form.addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const btn = form.querySelector("button[type=submit]");
+	      const fd = new FormData(form);
+	      const imageFilePath = compact(fd.get("image_file_path"));
+	      const imageURL = compact(fd.get("image_url"));
+	      const payload = {
+	        code: compact(fd.get("code")),
+	        title: compact(fd.get("title")),
+	        price_kzt: Number(fd.get("price_kzt") || 0),
+	        short_description_kk: compact(fd.get("short_description_kk")),
+	        full_description_kk: compact(fd.get("full_description_kk")),
+	        features: compact(fd.get("features")).split("\n").map((item) => item.trim()).filter(Boolean),
+	        image_url: imageURL,
+	        image_file_path: imageFilePath,
+	        image_source: imageFilePath ? "uploaded" : imageURL ? "url" : "none",
+	        sort_order: Number(fd.get("sort_order") || 0),
+	        is_active: fd.get("is_active") === "on",
+	      };
+	      if (!payload.code || !payload.title || payload.price_kzt <= 0) {
+	        toast("Код, атау және баға міндетті", "error");
+	        return;
+	      }
+	      btn.classList.add("is-loading");
+	      try {
+	        await api(isEdit ? `/api/admin/tariffs/${tariff.id}` : "/api/admin/tariffs", {
+	          method: isEdit ? "PATCH" : "POST",
+	          body: JSON.stringify(payload),
+	        });
+	        shell.close();
+	        toast("Тариф сақталды", "success");
+	        renderAdminTariffs();
+	      } catch (error) {
+	        toast(error.message || "Тарифті сақтау мүмкін болмады", "error");
+	      } finally {
+	        btn.classList.remove("is-loading");
+	      }
+	    });
+	  }
+
+	  async function renderAdminItems(url, title) {
     const data = await api(url);
     const rows = data.items || [];
     const columns = rows[0] ? Object.keys(rows[0]).slice(0, 7) : ["id", "status"];
@@ -2025,10 +2267,15 @@
     `;
   }
 
-  async function adminLevels() {
-    const data = await api("/api/admin/levels");
-    return sortAdminLevels(data.levels || []);
-  }
+	  async function adminLevels() {
+	    const data = await api("/api/admin/levels");
+	    return sortAdminLevels(data.levels || []);
+	  }
+
+	  async function adminLessons(params) {
+	    const data = await api(`/api/admin/lessons?${params || ""}`);
+	    return data.lessons || [];
+	  }
 
   function levelSortValue(level) {
     return Number(level && (level.sort_order || level.number)) || 0;
@@ -2042,11 +2289,11 @@
     });
   }
 
-  function levelDisplayName(level) {
-    if (!level) return "Деңгей";
-    const title = clean(level.title_kk || level.title || "");
-    return `LEVEL ${level.number || level.sort_order || "—"}${title ? ` — ${title}` : ""}`;
-  }
+	  function levelDisplayName(level) {
+	    if (!level) return "Деңгей";
+	    const title = clean(level.title_kk || level.title || "");
+	    return `Деңгей ${level.number || level.sort_order || "—"}${title ? ` — ${title}` : ""}`;
+	  }
 
   function isSeededLevel(level) {
     const number = Number(level && level.number);
@@ -2062,21 +2309,36 @@
       .join("");
   }
 
-  function levelNumberOptions(levels, selected) {
+	  function levelNumberOptions(levels, selected) {
     return sortAdminLevels(levels)
       .map(
         (level) =>
           `<option value="${esc(level.number)}" ${String(level.number) === String(selected) ? "selected" : ""}>${esc(levelDisplayName(level))}${level.is_active ? "" : " · Белсенді емес"}</option>`,
       )
-      .join("");
-  }
+	      .join("");
+	  }
 
-  function currentAdminFilters() {
-    const q = document.getElementById("adminSearch")?.value || "";
-    const level = document.getElementById("adminLevelFilter")?.value || "";
-    const status = document.getElementById("adminStatusFilter")?.value || "";
-    return { q, level, status };
-  }
+	  function lessonDisplayName(lesson) {
+	    if (!lesson) return "Сабақ";
+	    const level = lesson.level_number ? `Деңгей ${lesson.level_number}` : "Деңгей";
+	    const title = clean(lesson.title_kk || lesson.lesson_title_kk || lesson.title || "");
+	    return `${level}${title ? ` — ${title}` : ""}`;
+	  }
+
+	  function lessonOptions(lessons, selected) {
+	    return [...(lessons || [])]
+	      .sort((a, b) => (Number(a.level_number) || 0) - (Number(b.level_number) || 0) || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
+	      .map((lesson) => `<option value="${esc(lesson.id)}" ${String(lesson.id) === String(selected) ? "selected" : ""}>${esc(lessonDisplayName(lesson))}${lesson.is_active ? "" : " · Белсенді емес"}</option>`)
+	      .join("");
+	  }
+
+	  function currentAdminFilters() {
+	    const q = document.getElementById("adminSearch")?.value || "";
+	    const level = document.getElementById("adminLevelFilter")?.value || "";
+	    const lesson = document.getElementById("adminLessonFilter")?.value || "";
+	    const status = document.getElementById("adminStatusFilter")?.value || "";
+	    return { q, level, lesson, status };
+	  }
 
   async function renderAdminLevels() {
     const levels = await adminLevels();
@@ -2130,7 +2392,7 @@
           (level) => {
             const seeded = isSeededLevel(level);
             return `<tr>
-            <td><strong>LEVEL ${esc(level.number || "—")}</strong><div class="muted small">ID ${esc(shortId(level.id))}</div></td>
+	            <td><strong>Деңгей ${esc(level.number || "—")}</strong><div class="muted small">ID ${esc(shortId(level.id))}</div></td>
             <td><strong>${esc(level.title_kk || "—")}</strong></td>
             <td>${esc(level.description_kk || "—")}</td>
             <td>${statusBadge(level.is_active ? "active" : "inactive")}</td>
@@ -2260,7 +2522,7 @@
           <tbody>${lessons
             .map(
               (lesson) => `<tr>
-                <td>LEVEL ${esc(lesson.level_number)}</td>
+	                <td>Деңгей ${esc(lesson.level_number)}</td>
                 <td><strong>${esc(lesson.title_kk)}</strong><div class="muted small">${esc(shortId(lesson.id))}</div></td>
                 <td>${lesson.video_url ? `<a class="link" href="${esc(lesson.video_url)}" target="_blank" rel="noopener">Ашу</a>` : "—"}</td>
                 <td>${esc(lesson.sort_order || 0)}</td>
@@ -2268,7 +2530,7 @@
                 <td>
                   <div class="action-row">
                     <button class="ghost-btn" data-edit-lesson="${esc(lesson.id)}" type="button">Өзгерту</button>
-                    <button class="ghost-btn" data-test-level="${esc(lesson.level_id)}" type="button">Осы сабаққа тест қосу</button>
+	                    <button class="ghost-btn" data-test-lesson="${esc(lesson.id)}" type="button">Осы сабаққа тест қосу</button>
                     <button class="danger-btn" data-delete-lesson="${esc(lesson.id)}" type="button">Өшіру</button>
                   </div>
                 </td>
@@ -2323,15 +2585,16 @@
         toast(error.message || "Өшіру мүмкін болмады", "error");
       }
     });
-    delegate(els.adminContent, "[data-test-level]", "click", (event, target) => {
-      event.stopPropagation();
-      state.adminScreen = "tests";
-      renderAdminNav();
-      renderAdmin().then(() => {
-        const level = levels.find((item) => item.id === target.dataset.testLevel);
-        if (level) openTestModal({ level_id: level.id, level_number: level.number }, levels);
-      });
-    });
+	    delegate(els.adminContent, "[data-test-lesson]", "click", (event, target) => {
+	      event.stopPropagation();
+	      state.adminScreen = "tests";
+	      renderAdminNav();
+	      renderAdmin().then(async () => {
+	        const [nextLevels, nextLessons] = await Promise.all([adminLevels(), adminLessons()]);
+	        const lesson = nextLessons.find((item) => item.id === target.dataset.testLesson);
+	        if (lesson) openTestModal({ lesson_id: lesson.id, level_number: lesson.level_number, lesson_title_kk: lesson.title_kk }, nextLevels, nextLessons);
+	      });
+	    });
   }
 
   function openLessonModal(lesson, levels) {
@@ -2386,23 +2649,25 @@
     });
   }
 
-  async function renderAdminTests() {
-    const filters = currentAdminFilters();
-    const params = new URLSearchParams();
-    if (filters.q) params.set("q", filters.q);
-    if (filters.level) params.set("level", filters.level);
-    if (filters.status) params.set("status", filters.status);
-    const [levels, data] = await Promise.all([adminLevels(), api(`/api/admin/tests?${params.toString()}`)]);
-    const tests = data.tests || [];
-    const rows = tests.length
-      ? `<div class="table-wrap"><table>
-        <thead><tr><th>Деңгей</th><th>Тест атауы</th><th>Сұрақ саны</th><th>Өту пайызы</th><th>Статус</th><th>Әрекет</th></tr></thead>
-        <tbody>${tests
-          .map(
-            (test) => `<tr>
-              <td>LEVEL ${esc(test.level_number)}</td>
-              <td><strong>${esc(test.title)}</strong><div class="muted small">${esc(shortId(test.id))}</div></td>
-              <td>${esc((test.questions || []).length)}</td>
+	  async function renderAdminTests() {
+	    const filters = currentAdminFilters();
+	    const params = new URLSearchParams();
+	    if (filters.q) params.set("q", filters.q);
+	    if (filters.level) params.set("level", filters.level);
+	    if (filters.lesson) params.set("lesson", filters.lesson);
+	    if (filters.status) params.set("status", filters.status);
+	    const [levels, lessons, data] = await Promise.all([adminLevels(), adminLessons(), api(`/api/admin/tests?${params.toString()}`)]);
+	    const tests = data.tests || [];
+	    const lessonFilterOptions = lessons.filter((lesson) => !filters.level || String(lesson.level_number) === String(filters.level));
+	    const rows = tests.length
+	      ? `<div class="table-wrap"><table>
+	        <thead><tr><th>Сабақ</th><th>Тест атауы</th><th>Сұрақ саны</th><th>Өту пайызы</th><th>Статус</th><th>Әрекет</th></tr></thead>
+	        <tbody>${tests
+	          .map(
+	            (test) => `<tr>
+	              <td>${test.lesson_id ? esc(lessonDisplayName(test)) : `Деңгей ${esc(test.level_number)} · ескі жазба`}</td>
+	              <td><strong>${esc(test.title)}</strong><div class="muted small">${esc(shortId(test.id))}</div></td>
+	              <td>${esc((test.questions || []).length)}</td>
               <td>${esc(test.pass_percent)}%</td>
               <td>${statusBadge(test.is_active ? "active" : "inactive")}</td>
               <td><div class="action-row">
@@ -2419,22 +2684,24 @@
           <div><p class="eyebrow">Білім тексеру</p><h2>Тесттер</h2></div>
           <div class="admin-toolbar"><button class="gold-btn" id="addTest" type="button">+ Тест қосу</button></div>
         </div>
-        <div class="admin-toolbar stacked">
-          <input id="adminSearch" placeholder="Тест іздеу" value="${esc(filters.q)}" />
-          <select id="adminLevelFilter"><option value="">Барлық деңгей</option>${levelNumberOptions(levels, filters.level)}</select>
-          <select id="adminStatusFilter"><option value="">Барлық статус</option><option value="active" ${filters.status === "active" ? "selected" : ""}>Белсенді</option><option value="inactive" ${filters.status === "inactive" ? "selected" : ""}>Жабық</option></select>
-        </div>
+	        <div class="admin-toolbar stacked">
+	          <input id="adminSearch" placeholder="Тест іздеу" value="${esc(filters.q)}" />
+	          <select id="adminLevelFilter"><option value="">Барлық деңгей</option>${levelNumberOptions(levels, filters.level)}</select>
+	          <select id="adminLessonFilter"><option value="">Барлық сабақ</option>${lessonOptions(lessonFilterOptions, filters.lesson)}</select>
+	          <select id="adminStatusFilter"><option value="">Барлық статус</option><option value="active" ${filters.status === "active" ? "selected" : ""}>Белсенді</option><option value="inactive" ${filters.status === "inactive" ? "selected" : ""}>Жабық</option></select>
+	        </div>
         ${rows}
       </div>
     `;
-    on("addTest", () => openTestModal(null, levels));
-    on("adminSearch", debounce(renderAdminTests, 280), "input");
-    on("adminLevelFilter", renderAdminTests, "change");
-    on("adminStatusFilter", renderAdminTests, "change");
-    delegate(els.adminContent, "[data-edit-test]", "click", (event, target) => {
-      const test = tests.find((item) => item.id === target.dataset.editTest);
-      if (test) openTestModal(test, levels);
-    });
+	    on("addTest", () => openTestModal(null, levels, lessons));
+	    on("adminSearch", debounce(renderAdminTests, 280), "input");
+	    on("adminLevelFilter", renderAdminTests, "change");
+	    on("adminLessonFilter", renderAdminTests, "change");
+	    on("adminStatusFilter", renderAdminTests, "change");
+	    delegate(els.adminContent, "[data-edit-test]", "click", (event, target) => {
+	      const test = tests.find((item) => item.id === target.dataset.editTest);
+	      if (test) openTestModal(test, levels, lessons);
+	    });
     delegate(els.adminContent, "[data-delete-test]", "click", async (event, target) => {
       const ok = await modal({
         title: "Тестті өшіру",
@@ -2455,12 +2722,12 @@
     });
   }
 
-  function defaultTest(levels) {
-    return {
-      level_id: levels[0] ? levels[0].id : "",
-      title: "Деңгей соңындағы тест",
-      pass_percent: 70,
-      is_active: true,
+	  function defaultTest(lessons) {
+	    return {
+	      lesson_id: lessons[0] ? lessons[0].id : "",
+	      title: "Сабақ тесті",
+	      pass_percent: 70,
+	      is_active: true,
       questions: [
         {
           question_text_kk: "",
@@ -2471,28 +2738,31 @@
           ],
         },
       ],
-    };
-  }
+	    };
+	  }
 
-  function openTestModal(test, levels) {
-    const model = test ? JSON.parse(JSON.stringify(test)) : defaultTest(levels);
-    if (!model.questions || !model.questions.length) {
-      model.questions = defaultTest(levels).questions;
-      if (!model.title) model.title = "Деңгей соңындағы тест";
-      if (!model.pass_percent) model.pass_percent = 70;
-      if (model.is_active === undefined) model.is_active = true;
-    }
-    if (model.level_id && !levels.some((level) => level.id === model.level_id)) {
-      const byNumber = levels.find((level) => level.number === model.level_number);
-      if (byNumber) model.level_id = byNumber.id;
-    }
-    const isEdit = Boolean(model.id);
-    const shell = openModalShell(isEdit ? "Тестті өзгерту" : "Тест қосу", `
-      <form id="testBuilderForm" class="form">
-        <div class="grid three">
-          <label class="field"><span>Деңгей</span><select name="level_id" required>${levelOptions(levels, model.level_id)}</select></label>
-          <label class="field"><span>Тест атауы</span><input name="title" required value="${esc(model.title || "")}" /></label>
-          <label class="field"><span>Өту пайызы</span><input name="pass_percent" type="number" min="1" max="100" required value="${esc(model.pass_percent || 70)}" /></label>
+	  function openTestModal(test, levels, lessons) {
+	    const model = test ? JSON.parse(JSON.stringify(test)) : defaultTest(lessons);
+	    if (!model.questions || !model.questions.length) {
+	      model.questions = defaultTest(lessons).questions;
+	      if (!model.title) model.title = "Сабақ тесті";
+	      if (!model.pass_percent) model.pass_percent = 70;
+	      if (model.is_active === undefined) model.is_active = true;
+	    }
+	    if (!model.lesson_id && model.level_number) {
+	      const byLevel = lessons.find((lesson) => Number(lesson.level_number) === Number(model.level_number));
+	      if (byLevel) model.lesson_id = byLevel.id;
+	    }
+	    if (model.lesson_id && !lessons.some((lesson) => lesson.id === model.lesson_id)) {
+	      model.lesson_id = lessons[0] ? lessons[0].id : "";
+	    }
+	    const isEdit = Boolean(model.id);
+	    const shell = openModalShell(isEdit ? "Тестті өзгерту" : "Тест қосу", `
+	      <form id="testBuilderForm" class="form">
+	        <div class="grid three">
+	          <label class="field"><span>Сабақ</span><select name="lesson_id" required>${lessonOptions(lessons, model.lesson_id)}</select></label>
+	          <label class="field"><span>Тест атауы</span><input name="title" required value="${esc(model.title || "")}" /></label>
+	          <label class="field"><span>Өту пайызы</span><input name="pass_percent" type="number" min="1" max="100" required value="${esc(model.pass_percent || 70)}" /></label>
         </div>
         <label class="switch-field"><input name="is_active" type="checkbox" ${model.is_active ? "checked" : ""} /><span>Белсенді</span></label>
         <div class="builder-head">
@@ -2600,11 +2870,11 @@
   }
 
   function collectTestBuilder(form) {
-    const fd = new FormData(form);
-    return {
-      level_id: fd.get("level_id"),
-      title: String(fd.get("title") || "").trim(),
-      pass_percent: Number(fd.get("pass_percent") || 70),
+	    const fd = new FormData(form);
+	    return {
+	      lesson_id: fd.get("lesson_id"),
+	      title: String(fd.get("title") || "").trim(),
+	      pass_percent: Number(fd.get("pass_percent") || 70),
       is_active: fd.get("is_active") === "on",
       questions: [...form.querySelectorAll(".builder-question")].map((question, qi) => ({
         question_text_kk: question.querySelector("[data-question-kk]").value.trim(),
@@ -2620,8 +2890,8 @@
     };
   }
 
-  function validateTestBuilder(test) {
-    if (!test.level_id || !test.title) return "Деңгей және тест атауы міндетті";
+	  function validateTestBuilder(test) {
+	    if (!test.lesson_id || !test.title) return "Сабақ және тест атауы міндетті";
     if (test.pass_percent < 1 || test.pass_percent > 100) return "Өту пайызы 1–100 аралығында болуы керек";
     if (!test.questions.length) return "Кемінде 1 сұрақ қосыңыз";
     for (const question of test.questions) {

@@ -1,8 +1,15 @@
 package handler
 
 import (
+	"fmt"
+	"io"
+	"mime"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"zhenis-orda-service/internal/i18n"
@@ -231,6 +238,126 @@ func (s *Server) handleAdminPatchSubscription(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) handleAdminTariffs(w http.ResponseWriter, r *http.Request) {
+	tariffs, err := s.store.ListTariffs(r.Context(), false)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tariffs": tariffs})
+}
+
+func (s *Server) handleAdminPostTariff(w http.ResponseWriter, r *http.Request) {
+	actor := adminFromContext(r.Context())
+	var tariff repository.Tariff
+	if err := decodeJSON(r, &tariff); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if raw := r.PathValue("id"); raw != "" {
+		if !repository.IsUUID(raw) {
+			writeError(w, http.StatusBadRequest, "bad id")
+			return
+		}
+		tariff.ID = raw
+	}
+	if strings.TrimSpace(tariff.ImageURL) != "" {
+		if _, err := url.ParseRequestURI(tariff.ImageURL); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid image url")
+			return
+		}
+	}
+	out, err := s.store.UpsertTariff(r.Context(), tariff)
+	if mapRepoError(w, err) {
+		return
+	}
+	action := "tariff_create"
+	if r.Method == http.MethodPatch {
+		action = "tariff_update"
+	}
+	_ = s.store.Audit(r.Context(), actor, action, "tariff", out.ID, out)
+	writeJSON(w, http.StatusOK, map[string]any{"tariff": out})
+}
+
+func (s *Server) handleAdminArchiveTariff(w http.ResponseWriter, r *http.Request) {
+	actor := adminFromContext(r.Context())
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if err := s.store.ArchiveTariff(r.Context(), id); mapRepoError(w, err) {
+		return
+	}
+	_ = s.store.Audit(r.Context(), actor, "tariff_archive", "tariff", id, nil)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleAdminTariffImageUpload(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 5*1024*1024+1024)
+	if err := r.ParseMultipartForm(5*1024*1024 + 1024); err != nil {
+		writeError(w, http.StatusBadRequest, "image file is too large or invalid")
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "image file is required")
+		return
+	}
+	defer file.Close()
+
+	fileName := filepath.Base(header.Filename)
+	ext := strings.ToLower(filepath.Ext(fileName))
+	mimeType := header.Header.Get("Content-Type")
+	if !allowedTariffImageExt(ext) {
+		if guessed, _ := mime.ExtensionsByType(mimeType); len(guessed) > 0 {
+			ext = guessed[0]
+		}
+	}
+	if !allowedTariffImageExt(ext) {
+		writeError(w, http.StatusBadRequest, "unsupported image file type")
+		return
+	}
+	now := time.Now()
+	dir := filepath.Join(s.cfg.UploadDir, "tariffs", now.Format("2006"), now.Format("01"))
+	if err := ensureUploadDir(dir); err != nil {
+		writeError(w, http.StatusInternalServerError, "image directory error")
+		return
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%d%s", now.UnixNano(), ext))
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "image save error")
+		return
+	}
+	limited := io.LimitReader(file, 5*1024*1024+1)
+	written, copyErr := io.Copy(out, limited)
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		writeError(w, http.StatusInternalServerError, "image save error")
+		return
+	}
+	if written > 5*1024*1024 {
+		_ = os.Remove(path)
+		writeError(w, http.StatusBadRequest, "image file is too large")
+		return
+	}
+	publicPath := safePublicUploadPath(s.cfg.UploadDir, path)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"image_file_path": publicPath,
+		"image_source":    "uploaded",
+	})
+}
+
+func allowedTariffImageExt(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg", ".png", ".webp":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) handleAdminLevels(w http.ResponseWriter, r *http.Request) {
 	levels, err := s.store.ListAdminLevels(r.Context())
 	if mapRepoError(w, err) {
@@ -320,6 +447,7 @@ func (s *Server) handleAdminTests(w http.ResponseWriter, r *http.Request) {
 	tests, err := s.store.ListAdminTests(r.Context(), repository.AdminTestFilter{
 		Query:  r.URL.Query().Get("q"),
 		Level:  level,
+		Lesson: r.URL.Query().Get("lesson"),
 		Status: r.URL.Query().Get("status"),
 	})
 	if mapRepoError(w, err) {
