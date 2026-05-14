@@ -222,7 +222,7 @@ func (s *Store) ReferralSummary(ctx context.Context, userID string, botUsername 
 	if err != nil {
 		return ReferralSummary{}, err
 	}
-	link := fmt.Sprintf("https://t.me/zhenisorda_bot?start=%s", user.ReferralCode)
+	link := fmt.Sprintf("https://t.me/zhenisOrdaFinanceBot?start=%s", user.ReferralCode)
 	if botUsername != "" {
 		link = fmt.Sprintf("https://t.me/%s?start=%s", strings.TrimPrefix(botUsername, "@"), user.ReferralCode)
 	}

@@ -1223,6 +1223,99 @@ body.landing-mode {
 }
 
 /* =============================================================
+   FINANCIAL IQ
+   ============================================================= */
+
+.financial-iq-card {
+  display: grid;
+  gap: 14px;
+  border-color: rgba(214, 182, 106, 0.46);
+  background:
+    linear-gradient(145deg, rgba(200, 162, 74, 0.14), rgba(13, 16, 23, 0.96)),
+    radial-gradient(circle at 92% 0%, rgba(232, 206, 140, 0.16), transparent 56%),
+    #0E1219;
+}
+
+@media (min-width: 600px) {
+  .financial-iq-card {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+}
+
+.iq-form {
+  gap: 12px;
+}
+
+.iq-question {
+  display: grid;
+  gap: 12px;
+}
+
+.iq-question.compact {
+  padding: 12px;
+}
+
+.iq-question.compact .test-option {
+  border-color: transparent;
+  background: transparent;
+  padding: 6px;
+}
+
+.iq-question-head {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.iq-question-number {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--gold-bright);
+  background: rgba(200, 162, 74, 0.08);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.iq-options {
+  display: grid;
+  gap: 8px;
+}
+
+.iq-result-card {
+  display: grid;
+  gap: 12px;
+}
+
+.iq-result-icon {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  border: 1px solid rgba(232, 206, 140, 0.7);
+  color: #0A0D13;
+  background: linear-gradient(135deg, #D6B66A, #A9843A);
+  box-shadow: 0 16px 35px rgba(135, 105, 50, 0.28);
+  font-weight: 900;
+}
+
+.iq-result-text {
+  display: grid;
+  gap: 8px;
+}
+
+.iq-result-text p {
+  margin-bottom: 0;
+}
+
+/* =============================================================
    FORMS
    ============================================================= */
 

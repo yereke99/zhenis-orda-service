@@ -307,6 +307,7 @@ func seedSettings(ctx context.Context, tx *sql.Tx) error {
 		"platform_name": "ZHENIS ORDA UNIVERSE",
 		"brand_line":    "Жүйелі өсу ордасы.",
 		"stream_name":   "ZHABYQ RAZBOR NIGHT",
+		"channel_link":  "https://t.me/zhenisOrdaFinanceBot",
 	}
 	for key, value := range settings {
 		if _, err := tx.ExecContext(ctx, `

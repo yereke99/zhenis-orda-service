@@ -62,7 +62,7 @@ func TestReferralRegistration(t *testing.T) {
 	if invited.InvitedByUserID == nil || *invited.InvitedByUserID != inviter.ID {
 		t.Fatalf("expected inviter %s, got %#v", inviter.ID, invited.InvitedByUserID)
 	}
-	summary, err := store.ReferralSummary(ctx, inviter.ID, "zhenisorda_bot")
+	summary, err := store.ReferralSummary(ctx, inviter.ID, "zhenisOrdaFinanceBot")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -246,7 +246,7 @@ func (b *TelegramBot) handleMainMenuAction(ctx context.Context, user repository.
 	case "stream":
 		return b.sendMessage(ctx, chatID, "Жабық эфирлер Mini App ішінде көрсетіледі.", b.inlineMiniAppMarkup(user.Language))
 	case "referral":
-		summary, _ := b.store.ReferralSummary(ctx, user.ID, "zhenisorda_bot")
+		summary, _ := b.store.ReferralSummary(ctx, user.ID, "zhenisOrdaFinanceBot")
 		return b.sendMessage(ctx, chatID, summary.ReferralLink, b.inlineMiniAppMarkup(user.Language))
 	case "bonuses":
 		balance, _ := b.store.CoinBalance(ctx, user.ID)

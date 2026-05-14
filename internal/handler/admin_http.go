@@ -358,6 +358,19 @@ func allowedTariffImageExt(ext string) bool {
 	}
 }
 
+func isTelegramLink(value string) bool {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return true
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Path == "" || parsed.Path == "/" {
+		return false
+	}
+	host := strings.ToLower(parsed.Host)
+	return host == "t.me" || host == "telegram.me"
+}
+
 func (s *Server) handleAdminLevels(w http.ResponseWriter, r *http.Request) {
 	levels, err := s.store.ListAdminLevels(r.Context())
 	if mapRepoError(w, err) {
@@ -610,7 +623,11 @@ func (s *Server) handleAdminPostChannel(w http.ResponseWriter, r *http.Request) 
 		}
 		channel.ID = raw
 	}
-	if !channel.IsActive {
+	if strings.TrimSpace(channel.ManualInviteLink) != "" && !isTelegramLink(channel.ManualInviteLink) {
+		writeError(w, http.StatusBadRequest, "invalid telegram link")
+		return
+	}
+	if r.Method == http.MethodPost && !channel.IsActive {
 		channel.IsActive = true
 	}
 	out, err := s.store.UpsertChannel(r.Context(), channel)
@@ -760,6 +777,10 @@ func (s *Server) handleAdminPatchSettings(w http.ResponseWriter, r *http.Request
 	var req map[string]string
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if link, ok := req["channel_link"]; ok && !isTelegramLink(link) {
+		writeError(w, http.StatusBadRequest, "invalid telegram link")
 		return
 	}
 	if err := s.store.PatchSettings(r.Context(), req); mapRepoError(w, err) {

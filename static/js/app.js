@@ -18,6 +18,9 @@
     coins: null,
     currentScreen: "dashboard",
     selectedTariff: null,
+    financialIqAnswers: {},
+    financialIqResult: null,
+    financialIqReturnScreen: "dashboard",
     adminScreen: "dashboard",
     admin: null,
 	    fullscreenRequested: false,
@@ -32,6 +35,7 @@
     "Telegram авторизациясы қажет. Mini App-ты Telegram ішінен ашыңыз.";
   const TELEGRAM_AUTH_FAILED_MESSAGE =
     "Telegram авторизациясы сәтсіз аяқталды. Mini App-ты бот ішіндегі батырма арқылы қайта ашыңыз.";
+  const DEFAULT_CHANNEL_LINK = "https://t.me/zhenisOrdaFinanceBot";
 
   /* ===========================================================
      DOM ELEMENT REGISTRY
@@ -503,8 +507,38 @@
 	    return String(value);
 	  }
 
-	  function compact(value) {
-	    return clean(value).trim();
+  function compact(value) {
+    return clean(value).trim();
+  }
+
+	  function setButtonLoading(button, loading) {
+	    if (!button) return;
+	    button.classList.toggle("is-loading", Boolean(loading));
+	    button.disabled = Boolean(loading);
+	  }
+
+	  function setModalBusy(shell, loading) {
+	    if (!shell || !shell.backdrop) return;
+	    shell.backdrop.dataset.busy = loading ? "1" : "";
+	    shell.body.querySelectorAll("[data-close-modal]").forEach((button) => {
+	      button.disabled = Boolean(loading);
+	    });
+	  }
+
+	  function buttonIsLoading(button) {
+	    return Boolean(button && button.classList.contains("is-loading"));
+	  }
+
+	  function isValidTelegramLink(value) {
+	    const raw = compact(value);
+	    if (!raw) return true;
+	    try {
+	      const url = new URL(raw);
+	      const host = url.hostname.toLowerCase();
+	      return url.protocol === "https:" && (host === "t.me" || host === "telegram.me") && url.pathname.length > 1;
+	    } catch (_) {
+	      return false;
+	    }
 	  }
 
 	  function visibleTariffImage(tariff) {
@@ -712,6 +746,54 @@
     });
   }
 
+	  function confirmAction({ title, body, confirmLabel, cancelLabel, action, successMessage, errorMessage, formatError }) {
+	    return new Promise((resolve) => {
+	      const backdrop = document.createElement("div");
+	      backdrop.className = "modal-backdrop";
+
+	      const container = document.createElement("div");
+	      container.className = "modal";
+	      container.innerHTML = `
+	        <div class="modal-head">
+	          <h2>${esc(title || "")}</h2>
+	        </div>
+	        <div class="modal-body">${body || ""}</div>
+	        <div class="modal-foot">
+	          <button class="ghost-btn" data-cancel type="button">${esc(cancelLabel || "Болдырмау")}</button>
+	          <button class="danger-btn" data-confirm type="button"><span class="btn-label">${esc(confirmLabel || "Өшіру")}</span><span class="btn-spinner"></span></button>
+	        </div>
+	      `;
+
+	      const close = (value) => {
+	        backdrop.remove();
+	        resolve(value);
+	      };
+	      const cancelBtn = container.querySelector("[data-cancel]");
+	      const confirmBtn = container.querySelector("[data-confirm]");
+	      cancelBtn.addEventListener("click", () => close(false));
+	      confirmBtn.addEventListener("click", async () => {
+	        if (buttonIsLoading(confirmBtn)) return;
+	        setButtonLoading(confirmBtn, true);
+	        cancelBtn.disabled = true;
+	        try {
+	          if (typeof action === "function") await action();
+	          if (successMessage) toast(successMessage, "success");
+	          close(true);
+	        } catch (error) {
+	          const message = typeof formatError === "function" ? formatError(error) : (error && error.message) || errorMessage || "Әрекет орындалмады";
+	          toast(message, "error");
+	          cancelBtn.disabled = false;
+	          setButtonLoading(confirmBtn, false);
+	        }
+	      });
+	      backdrop.appendChild(container);
+	      backdrop.addEventListener("click", (event) => {
+	        if (event.target === backdrop && !buttonIsLoading(confirmBtn)) close(false);
+	      });
+	      els.modalRoot.appendChild(backdrop);
+	    });
+	  }
+
   function openModalShell(title, body) {
     const backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
@@ -725,7 +807,7 @@
     `;
     backdrop.appendChild(container);
     backdrop.addEventListener("click", (event) => {
-      if (event.target === backdrop) backdrop.remove();
+      if (event.target === backdrop && backdrop.dataset.busy !== "1") backdrop.remove();
     });
     els.modalRoot.appendChild(backdrop);
     return {
@@ -842,7 +924,7 @@
     els.landing.classList.remove("hidden");
     els.landing.setAttribute("aria-hidden", "false");
     if (els.landingTelegramLink) {
-      els.landingTelegramLink.href = "https://t.me/zhenisorda_bot";
+      els.landingTelegramLink.href = DEFAULT_CHANNEL_LINK;
     }
   }
 
@@ -933,6 +1015,8 @@
       diagnostics: renderDiagnostics,
       tariffs: renderTariffs,
       payment: renderPayment,
+      financialIq: renderFinancialIq,
+      financialIqResult: renderFinancialIqResult,
       levels: renderLevels,
       lessons: renderLessons,
       test: renderTest,
@@ -950,17 +1034,24 @@
 	      .catch((error) => renderError(error.message || "Қате орын алды"));
 	  }
 
-	  function handlePaymentBack() {
-	    if (state.currentScreen === "payment") setScreen("tariffs");
+	  function handleMiniAppBack() {
+	    if (state.currentScreen === "payment") {
+	      setScreen("tariffs");
+	      return;
+	    }
+	    if (state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult") {
+	      returnFromFinancialIq();
+	    }
 	  }
 
 	  function syncTelegramBackButton() {
 	    const tg = getTelegram();
 	    if (!tg || !tg.BackButton) return;
 	    try {
-	      if (state.currentScreen === "payment") {
+	      const hasBack = state.currentScreen === "payment" || state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult";
+	      if (hasBack) {
 	        if (!state.telegramBackHandlerBound && typeof tg.BackButton.onClick === "function") {
-	          tg.BackButton.onClick(handlePaymentBack);
+	          tg.BackButton.onClick(handleMiniAppBack);
 	          state.telegramBackHandlerBound = true;
 	        }
 	        if (typeof tg.BackButton.show === "function") tg.BackButton.show();
@@ -993,6 +1084,216 @@
       button.addEventListener("click", () => setScreen(button.dataset.screen));
     });
   }
+
+  const financialIqQuestions = [
+    {
+      id: "q1",
+      type: "single",
+      title: "Менің ай сайынғы кірісім",
+      options: [
+        ["0-ден 50 000 тг дейін", 0],
+        ["50 000-нан 100 000 тг дейін", 1],
+        ["100 000-нан 250 000 тг дейін", 2],
+        ["250 000-нан 500 000 тг дейін", 4],
+        ["500 000-нан 1 000 000 тг дейін", 8],
+        ["1 000 000-нан 2 000 000 тг дейін", 12],
+        ["2 000 000-нан 4 000 000 тг дейін", 17],
+        ["4 000 000 тг-ден бастап", 24],
+      ],
+    },
+    { id: "q2", type: "checkbox", title: "Жалдамалы жұмысшымын", score: 3 },
+    { id: "q3", type: "checkbox", title: "Басшылық лауазымдамын", score: 4 },
+    { id: "q4", type: "checkbox", title: "Өзіме өзім жұмыс жасаймын (қосымша табыс табу, фриланс)", score: 4 },
+    {
+      id: "q5",
+      type: "single",
+      title: "Өзімнің бизнесім бар",
+      options: [
+        ["1-10 адам", 6],
+        ["11-50 адам", 8],
+        ["51-100 адам", 12],
+        ["100-ден аса адам", 16],
+        ["Бизнесім жоқ", 0],
+      ],
+    },
+    { id: "q6", type: "checkbox", title: "Менде салған инвестициямнан түсіп тұратын кірісім бар", score: 2 },
+    { id: "q7", type: "checkbox", title: "Әлеуметтік төлемдер алып отырамын (субсидия, льгота)", score: 2 },
+    { id: "q8", type: "checkbox", title: "Менің шығындарым кірісімнен асып кетеді", score: -5 },
+    { id: "q9", type: "checkbox", title: "Менің шығындарым кірісіммен шамамен тең болып қалады", score: 0 },
+    { id: "q10", type: "checkbox", title: "Маған ірі сатып алуларға және демалуға әрқашанда ақша жеткілікті", score: 4 },
+    {
+      id: "q11",
+      type: "single",
+      title: "Мен кірісімнің қанша пайызын жинап отырамын?",
+      options: [
+        ["Шамамен 5%", 1],
+        ["10%", 3],
+        ["20%", 7],
+        ["30%", 10],
+        ["30%-дан көп", 16],
+        ["Жинамаймын", 0],
+      ],
+    },
+    { id: "q12", type: "checkbox", title: "Мен ақшаны тиын салғышқа жинаймын", score: 0 },
+    {
+      id: "q13",
+      type: "single",
+      title: "Менің жинаған ақшам",
+      options: [
+        ["Бір айлық кіріс сомасынан аз", 1],
+        ["Шамамен 1-2 айлық кіріс мөлшері", 3],
+        ["Шамамен 3-5 айлық кіріс мөлшері", 6],
+        ["6 айлық кіріс мөлшерінен көп", 12],
+        ["Жинаған ақшам жоқ", 0],
+      ],
+    },
+    {
+      id: "q14",
+      type: "single",
+      title: "Мен ақшамды банкке жинаймын",
+      options: [
+        ["Жай ғана банкте сақтаймын", 2],
+        ["12% жылдық", 4],
+        ["20-30% жылдық", 8],
+        ["50% жылдық", 16],
+        ["100% жылдық", 25],
+        ["Банкке жинамаймын", 0],
+      ],
+    },
+    { id: "q15", type: "checkbox", title: "Менің пассивті кірістерімнің сомасы жалпы шығындарымның сомасынан асып түседі", score: 25 },
+    { id: "q16", type: "checkbox", title: "Менің жалға беріп отырған жылжымайтын мүлкім бар", score: 6 },
+    { id: "q17", type: "checkbox", title: "Басымда кредит бар", score: -4 },
+    { id: "q18", type: "checkbox", title: "Активті кредит картам бар", score: -4 },
+    { id: "q19", type: "checkbox", title: "Жеке адамдардан пайызға алған заемдарым бар", score: -8 },
+    { id: "q20", type: "checkbox", title: "Пайызсыз қарызым бар", score: -1 },
+    { id: "q21", type: "checkbox", title: "Ипотекалық кредитім бар", score: -4 },
+    { id: "q22", type: "checkbox", title: "Қайырымдылықпен айналысамын", score: 2 },
+    { id: "q23", type: "checkbox", title: "Қатаң түрде кірісім мен шығынымның қаржылық есебін жүргізіп отырамын", score: 4 },
+    { id: "q24", type: "checkbox", title: "Алдын-ала 1 айға бюджетім қарастырылған", score: 2 },
+    { id: "q25", type: "checkbox", title: "Алдын-ала 1 жылға бюджетім қарастырылған", score: 5 },
+    { id: "q26", type: "checkbox", title: "Алдын-ала 3-10 жылға қаржылық жоспарым бар", score: 8 },
+    { id: "q27", type: "checkbox", title: "Менің бағасы мен мерзімдері жазылған қаржылық мақсаттарымның тізімі бар", score: 2 },
+    { id: "q28", type: "checkbox", title: "Менің жоспарларым мен бюджеттерімде инвестициялар ескерілген", score: 5 },
+    { id: "q29", type: "checkbox", title: "Өмірімде ақша өте маңызды тақырып деп санаймын", score: 5 },
+    { id: "q30", type: "checkbox", title: "Жеке қаржы бойынша кітаптар оқимын", score: 2 },
+    { id: "q31", type: "checkbox", title: "Мен жеке қаржыға байланысты тегін семинарларға барамын", score: 4 },
+    { id: "q32", type: "checkbox", title: "Мен жеке қаржыға байланысты ақылы тренингтерге барамын", score: 15 },
+    { id: "q33", type: "checkbox", title: "«Денежный поток» немесе «Монополия» ойындарын ойнап көрдім", score: 3 },
+  ];
+
+  const financialIqRanges = [
+    {
+      min: -Infinity,
+      max: 40,
+      title: "0-40 балл аралығы",
+      level: "Қаржылық IQ деңгейі — өте төмен",
+      text: "Сіз ақшаны емес, сізді ақша басқарады. Ақшаңызды басқару қиынға соғып жүр немесе ақшаны басқаруды маңызды деп санамайсыз.\n\nӘр түрлі кезең сайын келіп тұратын және қайталана беретін қаржылық проблемаларыңыз бар. Егер ақшаны басқаруға көңіл бөлмесеңіз, арты жақсы болмайтын жағдайлар болуы мүмкін.",
+    },
+    {
+      min: 41,
+      max: 80,
+      title: "41-80 балл аралығы",
+      level: "Қаржылық IQ деңгейі — орташа",
+      text: "Сіз қаржылық тапсырмалармен айналысуды бастап келе жатырсыз. Ақшаңызды басқаруға мүмкіндігіңіз бар, сіз кірісіңіз бен шығысыңызға әсер ете аласыз.\n\nСізде жаңа қаржылық жетістіктерге қызығушылық бар және оларды пайдалануға дайынсыз.\n\nЕгер қосымша білім алып, әрекет ететін болсаңыз, қаржылық деңгейдің келесі сатысына тез көтерілуге мүмкіндік бар.",
+    },
+    {
+      min: 81,
+      max: 140,
+      title: "81-140 балл аралығы",
+      level: "Қаржылық IQ деңгейі — жоғары",
+      text: "Сіз сенімді түрде ақшаңызды басқарып жүрсіз. Ақша заңдылығын жақсы түсінесіз және өз пайдаңызға қарай қолдана аласыз.\n\nСізде анықталған қаржылық стратегия бар, жақын арада қаржылық өсу күтіледі. Сізге осы бағытыңызды жүйелендіру керек, сонда қаржылық еркіндік пен тәуелсіздікке жақындайсыз.",
+    },
+    {
+      min: 141,
+      max: Infinity,
+      title: "141-200 балл аралығы",
+      level: "Қаржылық IQ деңгейі — өте жоғары",
+      text: "Сізді бай адам деп айтуға болады. Құттықтаймыз!\n\nАқша сізге жұмыс жасап жатыр және сізге қуаныш сыйлайды. Әдетте сіздің кірісіңіз шығыныңыздан әлдеқайда жоғары. Енді инвестициялық портфеліңізді сауатты түрде реттеп, тұрақты өсуді жүйелеу маңызды.",
+    },
+  ];
+
+	  function financialIqCtaCard() {
+	    return `<article class="card financial-iq-card">
+	      <div>
+	        <p class="eyebrow">Тест</p>
+	        <h2>Қаржылық IQ тесті</h2>
+	        <p class="muted">33 сұраққа жауап беріп, қаржылық деңгейіңізді анықтаңыз.</p>
+	      </div>
+	      <button class="gold-btn" data-financial-iq type="button">Тесттен өту</button>
+	    </article>`;
+	  }
+
+	  function bindFinancialIqCta() {
+	    document.querySelectorAll("[data-financial-iq]").forEach((button) => {
+	      button.addEventListener("click", openFinancialIq);
+	    });
+	  }
+
+	  function openFinancialIq() {
+	    if (state.currentScreen !== "financialIq" && state.currentScreen !== "financialIqResult") {
+	      state.financialIqReturnScreen = state.currentScreen || "dashboard";
+	    }
+	    state.financialIqAnswers = {};
+	    state.financialIqResult = null;
+	    setScreen("financialIq");
+	  }
+
+	  function returnFromFinancialIq() {
+	    const target = state.financialIqReturnScreen || "dashboard";
+	    setScreen(target === "financialIq" || target === "financialIqResult" ? "dashboard" : target);
+	  }
+
+	  function financialIqResultForScore(score) {
+	    const range = financialIqRanges.find((item) => score >= item.min && score <= item.max) || financialIqRanges[financialIqRanges.length - 1];
+	    return Object.assign({ score }, range);
+	  }
+
+	  function financialIqQuestionHtml(question, index) {
+	    if (question.type === "single") {
+	      return `<fieldset class="card iq-question">
+	        <div class="iq-question-head">
+	          <span class="iq-question-number">${index + 1}</span>
+	          <h3>${esc(question.title)}</h3>
+	        </div>
+	        <div class="iq-options">
+	          ${(question.options || [])
+	            .map(
+	              ([label], optionIndex) => `<label class="test-option">
+	                <input name="${esc(question.id)}" value="${esc(optionIndex)}" type="radio" />
+	                <span>${esc(label)}</span>
+	              </label>`,
+	            )
+	            .join("")}
+	        </div>
+	      </fieldset>`;
+	    }
+	    return `<fieldset class="card iq-question compact">
+	      <label class="test-option">
+	        <input name="${esc(question.id)}" type="checkbox" />
+	        <span><strong>${index + 1}.</strong> ${esc(question.title)}</span>
+	      </label>
+	    </fieldset>`;
+	  }
+
+	  function calculateFinancialIq(form) {
+	    const fd = new FormData(form);
+	    const answers = {};
+	    let score = 0;
+	    financialIqQuestions.forEach((question) => {
+	      if (question.type === "single") {
+	        const raw = fd.get(question.id);
+	        answers[question.id] = raw == null ? "" : String(raw);
+	        const option = question.options && question.options[Number(raw)];
+	        if (option) score += Number(option[1]) || 0;
+	      } else {
+	        const checked = fd.get(question.id) === "on";
+	        answers[question.id] = checked;
+	        if (checked) score += Number(question.score) || 0;
+	      }
+	    });
+	    state.financialIqAnswers = answers;
+	    state.financialIqResult = financialIqResultForScore(score);
+	  }
 
   /* ===========================================================
      MINI APP SCREENS
@@ -1039,6 +1340,7 @@
             <span class="pill">Мотивация</span>
           </div>
         </div>
+        ${financialIqCtaCard()}
         <div class="grid two">
           <button class="gold-btn lg" id="goDiagnostics" type="button">Тегін диагностика</button>
           <button class="ghost-btn lg" id="goTariffs" type="button">Тариф таңдау</button>
@@ -1052,6 +1354,7 @@
     `);
     on("goDiagnostics", () => setScreen("diagnostics"));
     on("goTariffs", () => setScreen("tariffs"));
+    bindFinancialIqCta();
   }
 
   function renderDashboard() {
@@ -1078,6 +1381,8 @@
 	            <strong>${percent}%</strong>
 	          </div>
         </div>
+
+        ${financialIqCtaCard()}
 
         <div class="grid three">
           ${metric("Тариф", sub.tariff_code || "Жоқ", statusText[subStatus] || subStatus, subOk ? "ok" : subStatus === "expired" ? "bad" : "warn")}
@@ -1119,6 +1424,7 @@
       </section>
     `);
     bindNext();
+    bindFinancialIqCta();
   }
 
   function metric(label, value, hint, statusKind) {
@@ -1289,7 +1595,8 @@
     document.getElementById("testForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const submitBtn = event.currentTarget.querySelector("button[type=submit]");
-      submitBtn.classList.add("is-loading");
+      if (buttonIsLoading(submitBtn)) return;
+      setButtonLoading(submitBtn, true);
       const answers = {};
       new FormData(event.currentTarget).forEach((value, key) => (answers[key] = String(value)));
       try {
@@ -1305,7 +1612,7 @@
       } catch (error) {
         toast(error.message || "Тест жіберу мүмкін болмады", "error");
       } finally {
-        submitBtn.classList.remove("is-loading");
+        setButtonLoading(submitBtn, false);
       }
     });
   }
@@ -1354,7 +1661,8 @@
     document.getElementById("assignmentForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const submitBtn = event.currentTarget.querySelector("button[type=submit]");
-      submitBtn.classList.add("is-loading");
+      if (buttonIsLoading(submitBtn)) return;
+      setButtonLoading(submitBtn, true);
       try {
         const body = Object.fromEntries(new FormData(event.currentTarget).entries());
         await api(`/api/assignments/${level}/submit`, {
@@ -1368,7 +1676,7 @@
       } catch (error) {
         toast(error.message || "Жіберу мүмкін болмады", "error");
       } finally {
-        submitBtn.classList.remove("is-loading");
+        setButtonLoading(submitBtn, false);
       }
     });
   }
@@ -1400,7 +1708,8 @@
     document.getElementById("diagnosticsForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const submitBtn = event.currentTarget.querySelector("button[type=submit]");
-      submitBtn.classList.add("is-loading");
+      if (buttonIsLoading(submitBtn)) return;
+      setButtonLoading(submitBtn, true);
       try {
         const answers = Object.fromEntries(new FormData(event.currentTarget).entries());
         const res = await api("/api/diagnostics", {
@@ -1412,10 +1721,70 @@
       } catch (error) {
         toast(error.message || "Жіберу мүмкін болмады", "error");
       } finally {
-        submitBtn.classList.remove("is-loading");
+        setButtonLoading(submitBtn, false);
       }
     });
   }
+
+	  function renderFinancialIq() {
+	    html(`
+	      <section class="screen financial-iq-screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backFinancialIq" type="button">Артқа</button>
+	        </div>
+	        <div class="card">
+	          <p class="eyebrow">Қаржылық IQ тесті</p>
+	          <h1>Қаржылық IQ тесті</h1>
+	          <p class="muted">Тесті толтырып, қаржылық деңгейіңізді анықтаңыз.</p>
+	        </div>
+	        <form id="financialIqForm" class="form iq-form">
+	          ${financialIqQuestions.map(financialIqQuestionHtml).join("")}
+	          <button class="gold-btn lg" type="submit"><span class="btn-label">Нәтижені көру</span><span class="btn-spinner"></span></button>
+	        </form>
+	      </section>
+	    `);
+	    on("backFinancialIq", returnFromFinancialIq);
+	    document.getElementById("financialIqForm").addEventListener("submit", (event) => {
+	      event.preventDefault();
+	      calculateFinancialIq(event.currentTarget);
+	      setScreen("financialIqResult");
+	    });
+	  }
+
+	  function renderFinancialIqResult() {
+	    const result = state.financialIqResult;
+	    if (!result) {
+	      renderFinancialIq();
+	      return;
+	    }
+	    html(`
+	      <section class="screen financial-iq-screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backFinancialIqResult" type="button">Артқа</button>
+	        </div>
+	        <div class="card iq-result-card">
+	          <div class="iq-result-icon" aria-hidden="true">IQ</div>
+	          <p class="eyebrow">Нәтиже</p>
+	          <h1>Сіздің нәтижеңіз: ${esc(result.score)} балл</h1>
+	          <span class="pill">${esc(result.title)}</span>
+	          <h2>${esc(result.level)}</h2>
+	          <div class="iq-result-text">
+	            ${String(result.text)
+	              .split("\n\n")
+	              .map((paragraph) => `<p class="muted">${esc(paragraph)}</p>`)
+	              .join("")}
+	          </div>
+	        </div>
+	        <div class="grid two tight">
+	          <button class="gold-btn lg" id="finishFinancialIq" type="button">Басты бетке оралу</button>
+	          <button class="ghost-btn lg" id="retryFinancialIq" type="button">Қайта тапсыру</button>
+	        </div>
+	      </section>
+	    `);
+	    on("backFinancialIqResult", returnFromFinancialIq);
+	    on("finishFinancialIq", returnFromFinancialIq);
+	    on("retryFinancialIq", openFinancialIq);
+	  }
 
 	  async function renderTariffs() {
 	    try {
@@ -1510,7 +1879,8 @@
 	    document.getElementById("paymentForm").addEventListener("submit", async (event) => {
 	      event.preventDefault();
 	      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
-	      submitBtn.classList.add("is-loading");
+	      if (buttonIsLoading(submitBtn)) return;
+	      setButtonLoading(submitBtn, true);
 	      try {
 	        const provider = new FormData(event.currentTarget).get("provider");
 	        const res = await api("/api/payments", {
@@ -1531,7 +1901,7 @@
 	      } catch (error) {
 	        toast(error.message || "Төлем жасау мүмкін болмады", "error");
 	      } finally {
-	        submitBtn.classList.remove("is-loading");
+	        setButtonLoading(submitBtn, false);
 	      }
 	    });
   }
@@ -1574,7 +1944,8 @@
       event.preventDefault();
       const submitBtn = form.querySelector("button[type=submit]");
       const stateNode = document.getElementById("receiptUploadState");
-      submitBtn.classList.add("is-loading");
+      if (buttonIsLoading(submitBtn)) return;
+      setButtonLoading(submitBtn, true);
       try {
         const fd = new FormData(form);
         const res = await api(`/api/payments/${paymentID}/receipt`, {
@@ -1587,7 +1958,7 @@
         stateNode.textContent = error.message || "Түбіртек жүктеу мүмкін болмады";
         toast(error.message || "Түбіртек жүктеу мүмкін болмады", "error");
       } finally {
-        submitBtn.classList.remove("is-loading");
+        setButtonLoading(submitBtn, false);
       }
     });
   }
@@ -1797,7 +2168,8 @@
     document.getElementById("supportForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const submitBtn = event.currentTarget.querySelector("button[type=submit]");
-      submitBtn.classList.add("is-loading");
+      if (buttonIsLoading(submitBtn)) return;
+      setButtonLoading(submitBtn, true);
       try {
         const body = new FormData(event.currentTarget).get("body");
         const res = await api("/api/support", {
@@ -1809,7 +2181,7 @@
       } catch (error) {
         toast(error.message || "Хабарламаны жіберу мүмкін болмады. Кейінірек қайталап көріңіз.", "error");
       } finally {
-        submitBtn.classList.remove("is-loading");
+        setButtonLoading(submitBtn, false);
       }
     });
   }
@@ -1884,7 +2256,8 @@
         event.preventDefault();
         if (els.adminLoginError) els.adminLoginError.classList.add("hidden");
         const btn = els.adminLoginSubmit;
-        btn.classList.add("is-loading");
+        if (buttonIsLoading(btn)) return;
+        setButtonLoading(btn, true);
         try {
           const password = new FormData(event.currentTarget).get("password");
           const res = await api("/api/browser-auth/login", {
@@ -1901,7 +2274,7 @@
             els.adminLoginError.classList.remove("hidden");
           }
         } finally {
-          btn.classList.remove("is-loading");
+          setButtonLoading(btn, false);
         }
       };
     }
@@ -2138,22 +2511,16 @@
 	    });
 	    delegate(els.adminContent, "[data-archive-tariff]", "click", async (event, target) => {
 	      const tariff = tariffs.find((item) => item.id === target.dataset.archiveTariff);
-	      const ok = await modal({
+	      const ok = await confirmAction({
 	        title: "Тарифті белсенді емес ету",
 	        body: `<p class="muted">${esc(tariff ? tariff.title || tariff.code : "Бұл тариф")} Mini App-та көрінбейді. Жалғастырасыз ба?</p>`,
-	        actions: [
-	          { label: "Болдырмау", value: false },
-	          { label: "Белсенді емес", value: true, danger: true },
-	        ],
+	        confirmLabel: "Белсенді емес",
+	        action: () => api(`/api/admin/tariffs/${target.dataset.archiveTariff}`, { method: "DELETE" }),
+	        successMessage: "Тариф белсенді емес күйге ауысты",
+	        errorMessage: "Тарифті өзгерту мүмкін болмады",
 	      });
 	      if (!ok) return;
-	      try {
-	        await api(`/api/admin/tariffs/${target.dataset.archiveTariff}`, { method: "DELETE" });
-	        toast("Тариф белсенді емес күйге ауысты", "success");
-	        renderAdminTariffs();
-	      } catch (error) {
-	        toast(error.message || "Тарифті өзгерту мүмкін болмады", "error");
-	      }
+	      renderAdminTariffs();
 	    });
 	  }
 
@@ -2236,7 +2603,9 @@
 	        toast("Код, атау және баға міндетті", "error");
 	        return;
 	      }
-	      btn.classList.add("is-loading");
+	      if (buttonIsLoading(btn)) return;
+	      setButtonLoading(btn, true);
+	      setModalBusy(shell, true);
 	      try {
 	        await api(isEdit ? `/api/admin/tariffs/${tariff.id}` : "/api/admin/tariffs", {
 	          method: isEdit ? "PATCH" : "POST",
@@ -2248,7 +2617,8 @@
 	      } catch (error) {
 	        toast(error.message || "Тарифті сақтау мүмкін болмады", "error");
 	      } finally {
-	        btn.classList.remove("is-loading");
+	        setModalBusy(shell, false);
+	        setButtonLoading(btn, false);
 	      }
 	    });
 	  }
@@ -2362,22 +2732,17 @@
     delegate(els.adminContent, "[data-delete-level]", "click", async (event, target) => {
       event.stopPropagation();
       const level = levels.find((item) => item.id === target.dataset.deleteLevel);
-      const ok = await modal({
+      const ok = await confirmAction({
         title: "Деңгейді жою",
         body: `<p class="muted">${esc(level ? levelDisplayName(level) : "Бұл деңгей")} өшіруге сенімдісіз бе?</p>`,
-        actions: [
-          { label: "Бас тарту", value: false },
-          { label: "Жою", value: true, danger: true },
-        ],
+        cancelLabel: "Бас тарту",
+        confirmLabel: "Жою",
+        action: () => api(`/api/admin/levels/${target.dataset.deleteLevel}`, { method: "DELETE" }),
+        successMessage: "Деңгей өшірілді",
+        formatError: levelDeleteErrorMessage,
       });
       if (!ok) return;
-      try {
-        await api(`/api/admin/levels/${target.dataset.deleteLevel}`, { method: "DELETE" });
-        toast("Деңгей өшірілді", "success");
-        renderAdminLevels();
-      } catch (error) {
-        toast(levelDeleteErrorMessage(error), "error");
-      }
+      renderAdminLevels();
     });
   }
 
@@ -2448,7 +2813,9 @@
         toast(validation, "error");
         return;
       }
-      btn.classList.add("is-loading");
+      if (buttonIsLoading(btn)) return;
+      setButtonLoading(btn, true);
+      setModalBusy(shell, true);
       try {
         await api(isEdit ? `/api/admin/levels/${level.id}` : "/api/admin/levels", {
           method: isEdit ? "PATCH" : "POST",
@@ -2460,7 +2827,8 @@
       } catch (error) {
         toast(levelSaveErrorMessage(error), "error");
       } finally {
-        btn.classList.remove("is-loading");
+        setModalBusy(shell, false);
+        setButtonLoading(btn, false);
       }
     });
   }
@@ -2568,22 +2936,16 @@
     });
     delegate(els.adminContent, "[data-delete-lesson]", "click", async (event, target) => {
       event.stopPropagation();
-      const ok = await modal({
+      const ok = await confirmAction({
         title: "Сабақты өшіру",
         body: `<p class="muted">Бұл сабақты өшіруге сенімдісіз бе?</p>`,
-        actions: [
-          { label: "Болдырмау", value: false },
-          { label: "Өшіру", value: true, danger: true },
-        ],
+        confirmLabel: "Өшіру",
+        action: () => api(`/api/admin/lessons/${target.dataset.deleteLesson}`, { method: "DELETE" }),
+        successMessage: "Сабақ өшірілді",
+        errorMessage: "Өшіру мүмкін болмады",
       });
       if (!ok) return;
-      try {
-        await api(`/api/admin/lessons/${target.dataset.deleteLesson}`, { method: "DELETE" });
-        toast("Сабақ өшірілді", "success");
-        renderAdminLessons();
-      } catch (error) {
-        toast(error.message || "Өшіру мүмкін болмады", "error");
-      }
+      renderAdminLessons();
     });
 	    delegate(els.adminContent, "[data-test-lesson]", "click", (event, target) => {
 	      event.stopPropagation();
@@ -2634,7 +2996,9 @@
         toast("Деңгей, сабақ атауы және сабақ сілтемесі міндетті", "error");
         return;
       }
-      btn.classList.add("is-loading");
+      if (buttonIsLoading(btn)) return;
+      setButtonLoading(btn, true);
+      setModalBusy(shell, true);
       try {
         const url = isEdit ? `/api/admin/lessons/${lesson.id}` : "/api/admin/lessons";
         await api(url, { method: isEdit ? "PATCH" : "POST", body: JSON.stringify(body) });
@@ -2644,7 +3008,8 @@
       } catch (error) {
         toast(error.message || "Сақтау мүмкін болмады", "error");
       } finally {
-        btn.classList.remove("is-loading");
+        setModalBusy(shell, false);
+        setButtonLoading(btn, false);
       }
     });
   }
@@ -2703,22 +3068,16 @@
 	      if (test) openTestModal(test, levels, lessons);
 	    });
     delegate(els.adminContent, "[data-delete-test]", "click", async (event, target) => {
-      const ok = await modal({
+      const ok = await confirmAction({
         title: "Тестті өшіру",
         body: `<p class="muted">Бұл тестті өшіруге сенімдісіз бе?</p>`,
-        actions: [
-          { label: "Болдырмау", value: false },
-          { label: "Өшіру", value: true, danger: true },
-        ],
+        confirmLabel: "Өшіру",
+        action: () => api(`/api/admin/tests/${target.dataset.deleteTest}`, { method: "DELETE" }),
+        successMessage: "Тест өшірілді",
+        errorMessage: "Өшіру мүмкін болмады",
       });
       if (!ok) return;
-      try {
-        await api(`/api/admin/tests/${target.dataset.deleteTest}`, { method: "DELETE" });
-        toast("Тест өшірілді", "success");
-        renderAdminTests();
-      } catch (error) {
-        toast(error.message || "Өшіру мүмкін болмады", "error");
-      }
+      renderAdminTests();
     });
   }
 
@@ -2807,7 +3166,9 @@
         toast(validation, "error");
         return;
       }
-      btn.classList.add("is-loading");
+      if (buttonIsLoading(btn)) return;
+      setButtonLoading(btn, true);
+      setModalBusy(shell, true);
       try {
         await api(isEdit ? `/api/admin/tests/${model.id}` : "/api/admin/tests", {
           method: isEdit ? "PATCH" : "POST",
@@ -2819,7 +3180,8 @@
       } catch (error) {
         toast(error.message || "Сақтау мүмкін болмады", "error");
       } finally {
-        btn.classList.remove("is-loading");
+        setModalBusy(shell, false);
+        setButtonLoading(btn, false);
       }
     });
     renumberBuilder(list);
@@ -2992,40 +3354,135 @@
       <div class="card">
         <div class="admin-section-head">
           <div><p class="eyebrow">Каналдар</p><h2>Жабық каналдар</h2></div>
+          <div class="admin-toolbar">
+            <button class="gold-btn" id="addChannel" type="button">+ Канал қосу</button>
+          </div>
         </div>
-        ${tableHtml(["id", "title", "telegram_chat_id", "tariff_requirement", "level_requirement", "is_active"], rows)}
-      </div>
-      <div class="card">
-        <div class="section-head"><h2>Канал қосу</h2></div>
-        <form id="channelForm" class="form">
-          <div class="grid two">
-            <label class="field"><span>Атауы</span><input name="title" required /></label>
-            <label class="field"><span>Telegram chat ID</span><input name="telegram_chat_id" required /></label>
-          </div>
-          <label class="field"><span>Қолмен invite link</span><input name="manual_invite_link" placeholder="міндетті емес" /></label>
-          <div class="grid two">
-            <label class="field"><span>Тариф талабы</span><select name="tariff_requirement"><option>BASIC</option><option>STANDARD</option><option>VIP</option></select></label>
-            <label class="field"><span>Деңгей талабы</span><select name="level_requirement">${levelNumberOptions(levels, 1)}</select></label>
-          </div>
-          <button class="gold-btn" type="submit">Сақтау</button>
-        </form>
+        ${channelTableHtml(rows)}
       </div>
     `;
-    document.getElementById("channelForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      try {
-        const body = Object.fromEntries(new FormData(event.currentTarget).entries());
-        body.level_requirement = Number(body.level_requirement || 1);
-        body.invite_link_type = body.manual_invite_link ? "manual" : "bot";
-        body.is_active = true;
-        await api("/api/admin/channels", { method: "POST", body: JSON.stringify(body) });
-        toast("Канал сақталды", "success");
-        renderAdminChannels();
-      } catch (error) {
-        toast(error.message || "Сақтау сәтсіз", "error");
-      }
+    on("addChannel", () => openChannelModal(null, levels));
+    delegate(els.adminContent, "[data-edit-channel]", "click", (event, target) => {
+      event.stopPropagation();
+      const channel = rows.find((item) => item.id === target.dataset.editChannel);
+      if (channel) openChannelModal(channel, levels);
+    });
+    delegate(els.adminContent, "[data-delete-channel]", "click", async (event, target) => {
+      event.stopPropagation();
+      const channel = rows.find((item) => item.id === target.dataset.deleteChannel);
+      const ok = await confirmAction({
+        title: "Каналды өшіру",
+        body: `<p class="muted">${esc(channel ? channel.title : "Бұл канал")} белсенді емес күйге ауысады. Жалғастырасыз ба?</p>`,
+        confirmLabel: "Өшіру",
+        action: () => api(`/api/admin/channels/${target.dataset.deleteChannel}`, { method: "DELETE" }),
+        successMessage: "Канал белсенді емес күйге ауысты",
+        errorMessage: "Каналды өшіру мүмкін болмады",
+      });
+      if (ok) renderAdminChannels();
     });
   }
+
+	  function channelTableHtml(channels) {
+	    if (!channels.length) return emptyState("Каналдар табылмады");
+	    return `<div class="table-wrap"><table>
+	      <thead><tr>
+	        <th>ID</th><th>Атауы</th><th>Telegram chat ID</th><th>Шақыру сілтемесі</th><th>Тариф</th><th>Деңгей</th><th>Статус</th><th>Әрекет</th>
+	      </tr></thead>
+	      <tbody>${channels
+	        .map((channel) => {
+	          const link = compact(channel.manual_invite_link);
+	          return `<tr>
+	            <td>${esc(shortId(channel.id))}</td>
+	            <td><strong>${esc(channel.title)}</strong></td>
+	            <td>${esc(channel.telegram_chat_id)}</td>
+	            <td>${link ? `<a class="link" href="${esc(link)}" target="_blank" rel="noopener">${esc(link)}</a>` : esc(channel.invite_link_type || "bot")}</td>
+	            <td>${esc(channel.tariff_requirement)}</td>
+	            <td>Деңгей ${esc(channel.level_requirement)}</td>
+	            <td>${statusBadge(channel.is_active ? "active" : "inactive")}</td>
+	            <td><div class="action-row">
+	              <button class="ghost-btn" data-edit-channel="${esc(channel.id)}" type="button">Өзгерту</button>
+	              <button class="danger-btn" data-delete-channel="${esc(channel.id)}" type="button">Өшіру</button>
+	            </div></td>
+	          </tr>`;
+	        })
+	        .join("")}</tbody>
+	    </table></div>`;
+	  }
+
+	  function openChannelModal(channel, levels) {
+	    const isEdit = Boolean(channel && channel.id);
+	    const active = !isEdit || channel.is_active;
+	    const inviteType = (channel && channel.invite_link_type) || (channel && channel.manual_invite_link ? "manual" : "bot");
+	    const tariff = (channel && channel.tariff_requirement) || "BASIC";
+	    const level = (channel && channel.level_requirement) || 1;
+	    const shell = openModalShell(isEdit ? "Каналды өзгерту" : "Канал қосу", `
+	      <form id="channelModalForm" class="form">
+	        <div class="grid two">
+	          <label class="field"><span>Атауы</span><input name="title" required value="${esc((channel && channel.title) || "")}" /></label>
+	          <label class="field"><span>Telegram chat ID</span><input name="telegram_chat_id" required value="${esc((channel && channel.telegram_chat_id) || "")}" /></label>
+	        </div>
+	        <div class="grid two">
+	          <label class="field"><span>Шақыру түрі</span><select name="invite_link_type">
+	            <option value="bot" ${inviteType === "bot" ? "selected" : ""}>Бот арқылы</option>
+	            <option value="manual" ${inviteType === "manual" ? "selected" : ""}>Қолмен сілтеме</option>
+	          </select></label>
+	          <label class="field"><span>Қолмен сілтеме</span><input name="manual_invite_link" placeholder="${esc(DEFAULT_CHANNEL_LINK)}" value="${esc((channel && channel.manual_invite_link) || "")}" /></label>
+	        </div>
+	        <div class="grid two">
+	          <label class="field"><span>Тариф талабы</span><select name="tariff_requirement">
+	            ${["BASIC", "STANDARD", "VIP"].map((item) => `<option value="${item}" ${tariff === item ? "selected" : ""}>${item}</option>`).join("")}
+	          </select></label>
+	          <label class="field"><span>Деңгей талабы</span><select name="level_requirement">${levelNumberOptions(levels, level)}</select></label>
+	        </div>
+	        <label class="switch-field"><input name="is_active" type="checkbox" ${active ? "checked" : ""} /><span>Белсенді</span></label>
+	        <div class="action-row end">
+	          <button class="ghost-btn" data-close-modal type="button">Болдырмау</button>
+	          <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
+	        </div>
+	      </form>
+	    `);
+	    const form = shell.body.querySelector("form");
+	    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
+	    form.addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const btn = form.querySelector("button[type=submit]");
+	      if (buttonIsLoading(btn)) return;
+	      const body = Object.fromEntries(new FormData(form).entries());
+	      body.title = compact(body.title);
+	      body.telegram_chat_id = compact(body.telegram_chat_id);
+	      body.manual_invite_link = compact(body.manual_invite_link);
+	      body.level_requirement = Number(body.level_requirement || 1);
+	      body.is_active = new FormData(form).get("is_active") === "on";
+	      if (!body.title || !body.telegram_chat_id) {
+	        toast("Атауы және Telegram chat ID міндетті", "error");
+	        return;
+	      }
+	      if (body.invite_link_type === "manual" && !body.manual_invite_link) {
+	        toast("Қолмен сілтеме жазыңыз немесе бот арқылы түрін таңдаңыз", "error");
+	        return;
+	      }
+	      if (body.manual_invite_link && !isValidTelegramLink(body.manual_invite_link)) {
+	        toast("Telegram link https://t.me/... форматында болуы керек", "error");
+	        return;
+	      }
+	      try {
+	        setButtonLoading(btn, true);
+	        setModalBusy(shell, true);
+	        await api(isEdit ? `/api/admin/channels/${channel.id}` : "/api/admin/channels", {
+	          method: isEdit ? "PATCH" : "POST",
+	          body: JSON.stringify(body),
+	        });
+	        shell.close();
+	        toast("Канал сақталды", "success");
+	        renderAdminChannels();
+	      } catch (error) {
+	        toast(error.message || "Сақтау сәтсіз", "error");
+	      } finally {
+	        setModalBusy(shell, false);
+	        setButtonLoading(btn, false);
+	      }
+	    });
+	  }
 
   async function renderAdminBroadcast() {
     const data = await api("/api/admin/broadcasts").catch(() => ({ broadcasts: [] }));
@@ -3074,12 +3531,44 @@
 
   async function renderAdminSettings() {
     const data = await api("/api/admin/settings");
+    const settings = data.settings || {};
+    const channelLink = compact(settings.channel_link) || DEFAULT_CHANNEL_LINK;
     els.adminContent.innerHTML = `
       <div class="card">
         <div class="section-head"><h2>Баптаулар</h2></div>
-        <pre style="overflow:auto;background:rgba(8,6,4,0.6);padding:14px;border-radius:12px;border:1px solid var(--border-soft);font-size:12px;color:var(--text-soft)">${esc(JSON.stringify(data.settings, null, 2))}</pre>
+        <form id="settingsForm" class="form">
+          <label class="field"><span>Канал / бот сілтемесі</span><input name="channel_link" required placeholder="${esc(DEFAULT_CHANNEL_LINK)}" value="${esc(channelLink)}" /></label>
+          <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
+        </form>
+      </div>
+      <div class="card">
+        <div class="section-head"><h2>Ағымдағы мәндер</h2></div>
+        <pre style="overflow:auto;background:rgba(8,6,4,0.6);padding:14px;border-radius:12px;border:1px solid var(--border-soft);font-size:12px;color:var(--text-soft)">${esc(JSON.stringify(settings, null, 2))}</pre>
       </div>
     `;
+    document.getElementById("settingsForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const btn = event.currentTarget.querySelector("button[type=submit]");
+      if (buttonIsLoading(btn)) return;
+      const channelLink = compact(new FormData(event.currentTarget).get("channel_link"));
+      if (!isValidTelegramLink(channelLink)) {
+        toast("Telegram link https://t.me/... форматында болуы керек", "error");
+        return;
+      }
+      setButtonLoading(btn, true);
+      try {
+        await api("/api/admin/settings", {
+          method: "PATCH",
+          body: JSON.stringify({ channel_link: channelLink }),
+        });
+        toast("Баптаулар сақталды", "success");
+        renderAdminSettings();
+      } catch (error) {
+        toast(error.message || "Баптауларды сақтау мүмкін болмады", "error");
+      } finally {
+        setButtonLoading(btn, false);
+      }
+    });
   }
 
   /* ===========================================================
