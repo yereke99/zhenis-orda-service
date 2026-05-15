@@ -56,6 +56,7 @@ func main() {
 	var bot *handler.TelegramBot
 	if !cfg.DisableTelegramBot {
 		bot = handler.NewTelegramBot(cfg.Token, store, kv, cfg.PaymentDir, cfg.MiniAppURL, cfg.AdminIDs, cfg.MaxReceiptBytes, log)
+		bot.SetTemporaryTestCommandsEnabled(cfg.TelegramTestCommandsEnabled)
 		srv.SetBot(bot)
 		bot.StartLongPolling(ctx)
 	}

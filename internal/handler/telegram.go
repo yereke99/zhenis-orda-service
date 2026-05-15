@@ -21,17 +21,18 @@ import (
 )
 
 type TelegramBot struct {
-	token      string
-	apiBase    string
-	fileBase   string
-	store      *repository.Store
-	kv         KV
-	cfgUpload  string
-	miniAppURL string
-	adminIDs   []int64
-	logger     *zap.Logger
-	client     *http.Client
-	maxReceipt int64
+	token               string
+	apiBase             string
+	fileBase            string
+	store               *repository.Store
+	kv                  KV
+	cfgUpload           string
+	miniAppURL          string
+	adminIDs            []int64
+	logger              *zap.Logger
+	client              *http.Client
+	maxReceipt          int64
+	testCommandsEnabled bool
 }
 
 func NewTelegramBot(token string, store *repository.Store, kv KV, uploadDir, miniAppURL string, adminIDs []int64, maxReceipt int64, logger *zap.Logger) *TelegramBot {
@@ -48,6 +49,10 @@ func NewTelegramBot(token string, store *repository.Store, kv KV, uploadDir, min
 		client:     &http.Client{Timeout: 60 * time.Second},
 		maxReceipt: maxReceipt,
 	}
+}
+
+func (b *TelegramBot) SetTemporaryTestCommandsEnabled(enabled bool) {
+	b.testCommandsEnabled = enabled
 }
 
 func (b *TelegramBot) StartLongPolling(ctx context.Context) {
@@ -170,6 +175,10 @@ func (b *TelegramBot) handleUpdate(ctx context.Context, update telegramUpdate) e
 		return b.sendMainMenu(ctx, msg.Chat.ID, "kk")
 	}
 
+	if telegramCommand(text) == "test" {
+		return b.handleTemporaryTestInviteCommand(ctx, user, msg.Chat.ID)
+	}
+
 	if action := matchMainMenuAction(text, user.Language); action != "" {
 		return b.handleMainMenuAction(ctx, user, msg.Chat.ID, action)
 	}
@@ -199,6 +208,68 @@ func (b *TelegramBot) handleUpdate(ctx context.Context, update telegramUpdate) e
 	default:
 		return b.sendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "start"), b.inlineMiniAppMarkup(user.Language))
 	}
+}
+
+const temporaryTestInviteChatID = "2351826422"
+
+func (b *TelegramBot) handleTemporaryTestInviteCommand(ctx context.Context, user repository.User, replyChatID int64) error {
+	// TODO: remove or disable this temporary invite test command before production rollout.
+	if !b.testCommandsEnabled || !b.isAdminTelegramUser(user.TelegramID) {
+		return b.sendMessage(ctx, replyChatID, "Бұл тест команда тек админдерге арналған.", nil)
+	}
+
+	inviteChatID := normalizeTelegramSupergroupChatID(temporaryTestInviteChatID)
+	name := fmt.Sprintf("test:%d", user.TelegramID)
+	link, err := b.CreateInviteLink(ctx, inviteChatID, name, time.Now().Add(time.Hour))
+	if err != nil {
+		if b.logger != nil {
+			b.logger.Warn(
+				"temporary test invite create failed",
+				zap.Int64("telegram_id", user.TelegramID),
+				zap.String("chat_id", inviteChatID),
+				zap.String("error", redactTelegramToken(err.Error(), b.token)),
+			)
+		}
+		return b.sendMessage(ctx, replyChatID, "Сілтеме жасау мүмкін болмады. Бот канал/топта админ екенін тексеріңіз.", nil)
+	}
+
+	return b.sendMessage(ctx, replyChatID, "Тестілік бір реттік сілтеме дайын: "+link, nil)
+}
+
+func (b *TelegramBot) isAdminTelegramUser(telegramID int64) bool {
+	for _, adminID := range b.adminIDs {
+		if telegramID == adminID {
+			return true
+		}
+	}
+	return false
+}
+
+func telegramCommand(text string) string {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
+		return ""
+	}
+	command := strings.TrimPrefix(fields[0], "/")
+	if at := strings.Index(command, "@"); at >= 0 {
+		command = command[:at]
+	}
+	return strings.ToLower(command)
+}
+
+func normalizeTelegramSupergroupChatID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.HasPrefix(raw, "-") {
+		return raw
+	}
+	return "-100" + raw
+}
+
+func redactTelegramToken(value, token string) string {
+	if token == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, token, "[redacted]")
 }
 
 func (b *TelegramBot) sendLanguageSelection(ctx context.Context, chatID int64) error {

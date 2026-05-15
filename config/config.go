@@ -11,34 +11,35 @@ import (
 )
 
 type Config struct {
-	Token                     string
-	Port                      string
-	Env                       string
-	BaseURL                   string
-	MiniAppURL                string
-	DBPath                    string
-	RedisAddr                 string
-	RedisPassword             string
-	RedisDB                   int
-	AdminIDs                  []int64
-	AdminPasswordHash         string
-	UploadDir                 string
-	PaymentDir                string
-	AllowedOrigins            []string
-	KaspiPayURL               string
-	KaspiQRImageURL           string
-	HalykPaymentURL           string
-	BankCardPaymentURL        string
-	PaymentPendingTTL         time.Duration
-	SubscriptionDefaultDays   int
-	TelegramLogChatID         int64
-	TelegramLogThreadID       int
-	DisableTelegramBot        bool
-	MaxReceiptBytes           int64
-	BrowserSessionTTL         time.Duration
-	TelegramInitDataMaxAge    time.Duration
-	InactiveReminderCooldown  time.Duration
-	SubscriptionReminderHours int
+	Token                       string
+	Port                        string
+	Env                         string
+	BaseURL                     string
+	MiniAppURL                  string
+	DBPath                      string
+	RedisAddr                   string
+	RedisPassword               string
+	RedisDB                     int
+	AdminIDs                    []int64
+	AdminPasswordHash           string
+	UploadDir                   string
+	PaymentDir                  string
+	AllowedOrigins              []string
+	KaspiPayURL                 string
+	KaspiQRImageURL             string
+	HalykPaymentURL             string
+	BankCardPaymentURL          string
+	PaymentPendingTTL           time.Duration
+	SubscriptionDefaultDays     int
+	TelegramLogChatID           int64
+	TelegramLogThreadID         int
+	DisableTelegramBot          bool
+	TelegramTestCommandsEnabled bool
+	MaxReceiptBytes             int64
+	BrowserSessionTTL           time.Duration
+	TelegramInitDataMaxAge      time.Duration
+	InactiveReminderCooldown    time.Duration
+	SubscriptionReminderHours   int
 }
 
 var defaultAdminIDs = []int64{800703982}
@@ -72,6 +73,7 @@ func Load() (Config, error) {
 	}
 
 	cfg.RedisDB = getEnvInt("REDIS_DB", 0)
+	cfg.TelegramTestCommandsEnabled = getEnvBool("ENABLE_TELEGRAM_TEST_COMMANDS", cfg.Env != "production")
 	if rawAdminIDs := strings.TrimSpace(os.Getenv("ADMIN_IDS")); rawAdminIDs != "" {
 		cfg.AdminIDs = parseInt64List(rawAdminIDs)
 	}
