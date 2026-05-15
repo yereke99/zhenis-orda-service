@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS levels (
 	title_ru TEXT NOT NULL,
 	description_kk TEXT,
 	description_ru TEXT,
+	telegram_chat_id TEXT,
 	sort_order INTEGER NOT NULL DEFAULT 0,
 	is_active INTEGER NOT NULL DEFAULT 1,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -301,6 +302,33 @@ CREATE TABLE IF NOT EXISTS channel_invite_links (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS user_level_telegram_invites (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	telegram_user_id INTEGER,
+	level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
+	telegram_chat_id TEXT NOT NULL,
+	invite_link TEXT NOT NULL,
+	invite_link_id TEXT,
+	raw_payload TEXT NOT NULL DEFAULT '{}',
+	expires_at DATETIME,
+	status TEXT NOT NULL DEFAULT 'issued' CHECK(status IN ('issued','used','expired','revoked')),
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS financial_iq_results (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	score INTEGER NOT NULL,
+	result_title TEXT NOT NULL,
+	result_level TEXT NOT NULL,
+	result_text TEXT NOT NULL DEFAULT '',
+	answers_json TEXT NOT NULL DEFAULT '{}',
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS live_streams (
 	id TEXT PRIMARY KEY,
 	title TEXT NOT NULL,
@@ -413,6 +441,9 @@ CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals(inviter_user_id);
 CREATE INDEX IF NOT EXISTS idx_coin_transactions_user ON coin_transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_channels_access ON channels(tariff_requirement, level_requirement, is_active);
 CREATE INDEX IF NOT EXISTS idx_channel_invites_user ON channel_invite_links(user_id);
+CREATE INDEX IF NOT EXISTS idx_level_invites_user_level ON user_level_telegram_invites(user_id, level_id, status);
+CREATE INDEX IF NOT EXISTS idx_level_invites_status_expires ON user_level_telegram_invites(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_financial_iq_user_created ON financial_iq_results(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_streams_start ON live_streams(starts_at, status);
 CREATE INDEX IF NOT EXISTS idx_broadcasts_status ON broadcasts(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_broadcast_messages_broadcast ON broadcast_messages(broadcast_id, status);

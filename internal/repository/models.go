@@ -148,18 +148,20 @@ type Receipt struct {
 }
 
 type Level struct {
-	ID            string   `json:"id"`
-	Number        int      `json:"number"`
-	TitleKK       string   `json:"title_kk"`
-	TitleRU       string   `json:"title_ru"`
-	DescriptionKK string   `json:"description_kk"`
-	DescriptionRU string   `json:"description_ru"`
-	SortOrder     int      `json:"sort_order"`
-	IsActive      bool     `json:"is_active"`
-	Access        bool     `json:"access"`
-	Completed     bool     `json:"completed"`
-	Progress      Progress `json:"progress"`
-	Lessons       []Lesson `json:"lessons,omitempty"`
+	ID                 string   `json:"id"`
+	Number             int      `json:"number"`
+	TitleKK            string   `json:"title_kk"`
+	TitleRU            string   `json:"title_ru"`
+	DescriptionKK      string   `json:"description_kk"`
+	DescriptionRU      string   `json:"description_ru"`
+	TelegramChatID     string   `json:"telegram_chat_id,omitempty"`
+	TelegramConfigured bool     `json:"telegram_configured"`
+	SortOrder          int      `json:"sort_order"`
+	IsActive           bool     `json:"is_active"`
+	Access             bool     `json:"access"`
+	Completed          bool     `json:"completed"`
+	Progress           Progress `json:"progress"`
+	Lessons            []Lesson `json:"lessons,omitempty"`
 }
 
 type Lesson struct {
@@ -270,6 +272,33 @@ type Channel struct {
 	LevelRequirement  int    `json:"level_requirement"`
 	IsActive          bool   `json:"is_active"`
 	Access            bool   `json:"access"`
+}
+
+type UserLevelTelegramInvite struct {
+	ID             string     `json:"id"`
+	UserID         string     `json:"user_id"`
+	TelegramUserID *int64     `json:"telegram_user_id,omitempty"`
+	LevelID        string     `json:"level_id"`
+	TelegramChatID string     `json:"telegram_chat_id"`
+	InviteLink     string     `json:"invite_link"`
+	InviteLinkID   string     `json:"invite_link_id,omitempty"`
+	RawPayload     string     `json:"-"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	Status         string     `json:"status"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+type FinancialIQResult struct {
+	ID          string    `json:"id"`
+	UserID      string    `json:"user_id"`
+	Score       int       `json:"score"`
+	ResultTitle string    `json:"result_title"`
+	ResultLevel string    `json:"result_level"`
+	ResultText  string    `json:"result_text"`
+	AnswersJSON string    `json:"-"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type LiveStream struct {

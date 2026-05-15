@@ -260,6 +260,83 @@ func TestLessonInactiveIsPreserved(t *testing.T) {
 	}
 }
 
+func TestLevelTelegramChatIDNormalization(t *testing.T) {
+	store, ctx := newTestStore(t)
+	level, err := store.UpsertLevel(ctx, repository.Level{
+		Number:         20,
+		TitleKK:        "Telegram деңгей",
+		TitleRU:        "Telegram деңгей",
+		TelegramChatID: "-1002351826422",
+		IsActive:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if level.TelegramChatID != "-1002351826422" {
+		t.Fatalf("normalized id = %q", level.TelegramChatID)
+	}
+	level.TelegramChatID = "2351826422"
+	updated, err := store.UpsertLevel(ctx, level)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TelegramChatID != "-1002351826422" {
+		t.Fatalf("positive id normalized to %q", updated.TelegramChatID)
+	}
+	updated.TelegramChatID = ""
+	cleared, err := store.UpsertLevel(ctx, updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.TelegramChatID != "" || cleared.TelegramConfigured {
+		t.Fatalf("empty telegram id should be allowed, got %#v", cleared)
+	}
+	updated.TelegramChatID = "-12345"
+	if _, err := store.UpsertLevel(ctx, updated); err != repository.ErrInvalidState {
+		t.Fatalf("expected invalid state for bad chat id, got %v", err)
+	}
+}
+
+func TestLessonCanBeCreatedWithoutVideoURL(t *testing.T) {
+	store, ctx := newTestStore(t)
+	var levelID string
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM levels WHERE number = 1`).Scan(&levelID); err != nil {
+		t.Fatal(err)
+	}
+	lesson, err := store.UpsertLesson(ctx, repository.Lesson{
+		LevelID:   levelID,
+		TitleKK:   "URL жоқ сабақ",
+		TitleRU:   "URL жоқ сабақ",
+		SortOrder: 100,
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lesson.VideoURL != "" {
+		t.Fatalf("expected empty video url, got %q", lesson.VideoURL)
+	}
+}
+
+func TestFinancialIQResultPersists(t *testing.T) {
+	store, ctx := newTestStore(t)
+	user := registerUser(t, ctx, store, 7101, "")
+	result, err := store.SaveFinancialIQResult(ctx, user.ID, 88, "81-140 балл аралығы", "Қаржылық IQ деңгейі — жоғары", "Жақсы нәтиже", map[string]any{"q1": "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Score != 88 {
+		t.Fatalf("score = %d", result.Score)
+	}
+	latest, err := store.GetLatestFinancialIQResult(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.ResultLevel != "Қаржылық IQ деңгейі — жоғары" {
+		t.Fatalf("unexpected latest IQ result: %#v", latest)
+	}
+}
+
 func TestAdminTestCRUDWithQuestions(t *testing.T) {
 	store, ctx := newTestStore(t)
 	var lessonID string

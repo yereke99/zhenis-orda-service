@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -69,14 +70,34 @@ type sentBotMessage struct {
 
 type testInviteBot struct {
 	messages []sentBotMessage
+	links    []string
+	calls    int
+	chatID   string
+	name     string
 }
 
 func (b *testInviteBot) CreateInviteLink(ctx context.Context, chatID, name string, expiresAt time.Time) (string, error) {
+	b.calls++
+	b.chatID = chatID
+	b.name = name
+	if len(b.links) > 0 {
+		return b.links[0], nil
+	}
 	return "https://t.me/+test", nil
 }
 
 func (b *testInviteBot) SendMessage(ctx context.Context, chatID int64, text string) error {
 	b.messages = append(b.messages, sentBotMessage{chatID: chatID, text: text})
+	return nil
+}
+
+type failingInviteBot struct{}
+
+func (b failingInviteBot) CreateInviteLink(ctx context.Context, chatID, name string, expiresAt time.Time) (string, error) {
+	return "", errors.New("telegram says bot is not admin")
+}
+
+func (b failingInviteBot) SendMessage(ctx context.Context, chatID int64, text string) error {
 	return nil
 }
 
@@ -217,6 +238,73 @@ func TestBrowserAdminAuthAndStats(t *testing.T) {
 	}
 }
 
+func loginAdminCookie(t *testing.T, srv *handler.Server) *http.Cookie {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/browser-auth/login", bytes.NewBufferString(`{"password":"admin"}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected admin session cookie")
+	}
+	return cookies[0]
+}
+
+func setLevelTelegramChat(t *testing.T, srv *handler.Server, cookie *http.Cookie, levelNumber int, chatID string) repository.Level {
+	t.Helper()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/levels", nil)
+	listReq.AddCookie(cookie)
+	listRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("levels expected 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var listBody struct {
+		Levels []repository.Level `json:"levels"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listBody); err != nil {
+		t.Fatal(err)
+	}
+	var level repository.Level
+	for _, item := range listBody.Levels {
+		if item.Number == levelNumber {
+			level = item
+			break
+		}
+	}
+	if level.ID == "" {
+		t.Fatalf("level %d not found", levelNumber)
+	}
+	payload := map[string]any{
+		"number":           level.Number,
+		"title_kk":         level.TitleKK,
+		"title_ru":         level.TitleRU,
+		"description_kk":   level.DescriptionKK,
+		"description_ru":   level.DescriptionRU,
+		"telegram_chat_id": chatID,
+		"sort_order":       level.SortOrder,
+		"is_active":        level.IsActive,
+	}
+	raw, _ := json.Marshal(payload)
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/admin/levels/"+level.ID, bytes.NewReader(raw))
+	patchReq.AddCookie(cookie)
+	patchRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch level expected 200, got %d: %s", patchRec.Code, patchRec.Body.String())
+	}
+	var patchBody struct {
+		Level repository.Level `json:"level"`
+	}
+	if err := json.NewDecoder(patchRec.Body).Decode(&patchBody); err != nil {
+		t.Fatal(err)
+	}
+	return patchBody.Level
+}
+
 func TestAdminStatsRequiresAuth(t *testing.T) {
 	srv := newTestHTTPServer(t, "development")
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/stats", nil)
@@ -317,6 +405,145 @@ func TestMiniAppSupportNotifiesAdmins(t *testing.T) {
 		if !strings.Contains(adminText, fragment) {
 			t.Fatalf("admin notification missing %q in %s", fragment, adminText)
 		}
+	}
+}
+
+func TestLevelTelegramInviteRequiresUnlockedLevel(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	cookie := loginAdminCookie(t, srv)
+	setLevelTelegramChat(t, srv, cookie, 1, "2351826422")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/levels/1/telegram-invite?miniapp_dev=1&telegram_id=9001", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for locked level, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLevelTelegramInviteCreatesAndReusesLink(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	cookie := loginAdminCookie(t, srv)
+	level := setLevelTelegramChat(t, srv, cookie, 1, "2351826422")
+	if level.TelegramChatID != "-1002351826422" {
+		t.Fatalf("expected normalized chat id, got %q", level.TelegramChatID)
+	}
+	bot := &testInviteBot{links: []string{"https://t.me/+level-one"}}
+	srv.SetBot(bot)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9002", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	createRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create payment expected 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Payment repository.Payment `json:"payment"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/admin/payments/"+created.Payment.ID+"/approve", bytes.NewBufferString(`{"days":30}`))
+	approveReq.AddCookie(cookie)
+	approveRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve expected 200, got %d: %s", approveRec.Code, approveRec.Body.String())
+	}
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/levels/1/telegram-invite?miniapp_dev=1&telegram_id=9002", bytes.NewBufferString(`{}`))
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("invite %d expected 200, got %d: %s", i+1, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			InviteLink string `json:"invite_link"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.InviteLink != "https://t.me/+level-one" {
+			t.Fatalf("invite link = %q", body.InviteLink)
+		}
+	}
+	if bot.calls != 1 {
+		t.Fatalf("expected one Telegram API call, got %d", bot.calls)
+	}
+	if bot.chatID != "-1002351826422" {
+		t.Fatalf("bot chat id = %q", bot.chatID)
+	}
+	if !strings.Contains(bot.name, "user:9002") || !strings.Contains(bot.name, "level:1") {
+		t.Fatalf("unexpected invite name %q", bot.name)
+	}
+}
+
+func TestLevelTelegramInviteFailureIsSafe(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	cookie := loginAdminCookie(t, srv)
+	setLevelTelegramChat(t, srv, cookie, 1, "-1002351826422")
+	srv.SetBot(failingInviteBot{})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9003", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	createRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create payment expected 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Payment repository.Payment `json:"payment"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/admin/payments/"+created.Payment.ID+"/approve", bytes.NewBufferString(`{"days":30}`))
+	approveReq.AddCookie(cookie)
+	approveRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("approve expected 200, got %d: %s", approveRec.Code, approveRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/levels/1/telegram-invite?miniapp_dev=1&telegram_id=9003", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "bot is not admin") {
+		t.Fatalf("unsafe Telegram error leaked to client: %s", rec.Body.String())
+	}
+}
+
+func TestFinancialIQResultSavedToMe(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	req := httptest.NewRequest(http.MethodPost, "/api/financial-iq?miniapp_dev=1&telegram_id=9010", bytes.NewBufferString(`{
+		"score": 88,
+		"result_title": "81-140 балл аралығы",
+		"result_level": "Қаржылық IQ деңгейі — жоғары",
+		"result_text": "Жақсы нәтиже",
+		"answers": {"q1":"2"}
+	}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("financial iq save expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	meReq := httptest.NewRequest(http.MethodGet, "/api/me?miniapp_dev=1&telegram_id=9010", nil)
+	meRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("me expected 200, got %d: %s", meRec.Code, meRec.Body.String())
+	}
+	var body struct {
+		FinancialIQ *repository.FinancialIQResult `json:"financial_iq"`
+	}
+	if err := json.NewDecoder(meRec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.FinancialIQ == nil || body.FinancialIQ.Score != 88 {
+		t.Fatalf("unexpected financial iq result: %#v", body.FinancialIQ)
 	}
 }
 

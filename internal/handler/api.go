@@ -26,12 +26,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	balance, _ := s.store.CoinBalance(r.Context(), user.ID)
 	user.Subscription = sub
 	user.CoinBalance = balance
+	financialIQ, _ := s.store.GetLatestFinancialIQResult(r.Context(), user.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":       user,
-		"progress":   progress,
-		"texts":      service.BrandTexts(user.Language),
-		"menu":       miniMenu(user.Language),
-		"serverTime": time.Now().UTC(),
+		"user":         user,
+		"progress":     progress,
+		"financial_iq": financialIQ,
+		"texts":        service.BrandTexts(user.Language),
+		"menu":         miniMenu(user.Language),
+		"serverTime":   time.Now().UTC(),
 	})
 }
 
@@ -240,6 +242,63 @@ func (s *Server) handleLevel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"level": level})
 }
 
+func (s *Server) handleLevelTelegramInvite(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	levelNumber, err := parsePathInt(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad level")
+		return
+	}
+	level, err := s.store.GetLevelByNumber(r.Context(), levelNumber)
+	if mapRepoError(w, err) {
+		return
+	}
+	sub, err := s.store.ActiveSubscriptionForLevelInvite(r.Context(), user.ID, level.Number)
+	if mapRepoError(w, err) {
+		return
+	}
+	if strings.TrimSpace(level.TelegramChatID) == "" {
+		writeError(w, http.StatusConflict, "telegram chat is not configured")
+		return
+	}
+	if existing, err := s.store.ReusableLevelTelegramInvite(r.Context(), user.ID, level.ID, level.TelegramChatID); err != nil {
+		if mapRepoError(w, err) {
+			return
+		}
+	} else if existing != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"invite_link": existing.InviteLink, "expires_at": existing.ExpiresAt})
+		return
+	}
+	if s.bot == nil {
+		writeError(w, http.StatusConflict, "telegram bot is not configured")
+		return
+	}
+	expiresAt := sub.ExpiresAt
+	name := fmt.Sprintf("user:%d level:%d", user.TelegramID, level.Number)
+	link, err := s.bot.CreateInviteLink(r.Context(), level.TelegramChatID, name, expiresAt)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("level telegram invite create failed", zap.String("user_id", user.ID), zap.Int("level", level.Number), zap.Error(err))
+		}
+		writeError(w, http.StatusBadGateway, "telegram invite link could not be created")
+		return
+	}
+	telegramID := user.TelegramID
+	invite, err := s.store.CreateLevelTelegramInvite(r.Context(), repository.UserLevelTelegramInvite{
+		UserID:         user.ID,
+		TelegramUserID: &telegramID,
+		LevelID:        level.ID,
+		TelegramChatID: level.TelegramChatID,
+		InviteLink:     link,
+		ExpiresAt:      &expiresAt,
+		Status:         "issued",
+	})
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invite_link": invite.InviteLink, "expires_at": invite.ExpiresAt})
+}
+
 func (s *Server) handleLessons(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	level := 0
@@ -314,6 +373,29 @@ func (s *Server) handleSubmitTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"attempt": attempt, "progress": progress})
+}
+
+func (s *Server) handleFinancialIQResult(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	var req struct {
+		Score       int            `json:"score"`
+		ResultTitle string         `json:"result_title"`
+		ResultLevel string         `json:"result_level"`
+		ResultText  string         `json:"result_text"`
+		Answers     map[string]any `json:"answers"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	result, err := s.store.SaveFinancialIQResult(r.Context(), user.ID, req.Score, req.ResultTitle, req.ResultLevel, req.ResultText, req.Answers)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"financial_iq": result,
+		"message":      fmt.Sprintf("Сіз қаржылық IQ тестін аяқтадыңыз. Нәтижеңіз: %d балл", result.Score),
+	})
 }
 
 func (s *Server) handleAssignment(w http.ResponseWriter, r *http.Request) {
@@ -410,6 +492,10 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	channels, err := s.store.ListChannels(r.Context(), user.ID, false)
 	if mapRepoError(w, err) {
 		return
+	}
+	for i := range channels {
+		channels[i].TelegramChatID = ""
+		channels[i].ManualInviteLink = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"channels": channels})
 }

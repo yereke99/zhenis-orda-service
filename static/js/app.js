@@ -1213,6 +1213,17 @@
   ];
 
 	  function financialIqCtaCard() {
+	    const saved = savedFinancialIqResult();
+	    if (saved) {
+	      return `<article class="card financial-iq-card compact-result">
+	        <div>
+	          <p class="eyebrow">Қаржылық IQ</p>
+	          <h2>${esc(saved.result_level || "Нәтиже сақталды")}</h2>
+	          <p class="muted">Сіз қаржылық IQ тестін аяқтадыңыз. Нәтижеңіз: ${esc(saved.score)} балл</p>
+	        </div>
+	        <button class="ghost-btn" data-financial-iq type="button">Қайта тапсыру</button>
+	      </article>`;
+	    }
 	    return `<article class="card financial-iq-card">
 	      <div>
 	        <p class="eyebrow">Тест</p>
@@ -1220,6 +1231,55 @@
 	        <p class="muted">33 сұраққа жауап беріп, қаржылық деңгейіңізді анықтаңыз.</p>
 	      </div>
 	      <button class="gold-btn" data-financial-iq type="button">Тесттен өту</button>
+	    </article>`;
+	  }
+
+	  function savedFinancialIqResult() {
+	    return (state.me && state.me.financial_iq) || null;
+	  }
+
+	  function financialIqResultForView(result) {
+	    if (!result) return null;
+	    if (result.result_title || result.result_level) {
+	      return {
+	        score: result.score,
+	        title: result.result_title || "",
+	        level: result.result_level || "",
+	        text: result.result_text || "",
+	      };
+	    }
+	    return result;
+	  }
+
+	  function personalDashboardCard(user, progress, sub, percent) {
+	    const iq = savedFinancialIqResult();
+	    const subTitle = sub && sub.tariff_code ? sub.tariff_code : "Жоқ";
+	    return `<article class="card dashboard-card">
+	      <div class="card-header">
+	        <div>
+	          <p class="eyebrow">Жеке прогресс</p>
+	          <h2>Менің көрсеткіштерім</h2>
+	        </div>
+	        <span class="pill">Деңгей ${esc(user.current_level || 0)}</span>
+	      </div>
+	      <div class="dashboard-mini-grid">
+	        <div>
+	          <span class="muted small">Қаржылық IQ</span>
+	          <strong>${iq ? `${esc(iq.score)} балл` : "—"}</strong>
+	          <p class="muted">${esc(iq ? iq.result_level : "Тесттен өтіп, нәтижеңізді сақтаңыз.")}</p>
+	        </div>
+	        <div>
+	          <span class="muted small">Прогресс</span>
+	          <strong>${esc(percent)}%</strong>
+	          <p class="muted">${esc(progress.next_requirement || "Келесі қадам дайындалады.")}</p>
+	        </div>
+	        <div>
+	          <span class="muted small">Тариф</span>
+	          <strong>${esc(subTitle)}</strong>
+	          <p class="muted">${esc(sub && sub.expires_at ? formatDate(sub.expires_at) : "Белсенді жазылым жоқ")}</p>
+	        </div>
+	      </div>
+	      <button class="${iq ? "ghost-btn" : "gold-btn"}" data-financial-iq type="button">${iq ? "Қайта тапсыру" : "Қаржылық IQ тестін тапсыру"}</button>
 	    </article>`;
 	  }
 
@@ -1330,7 +1390,6 @@
   function renderOnboarding() {
     html(`
       <section class="screen">
-        ${financialIqCtaCard()}
         <div class="hero">
 	          <p class="eyebrow">ZHENIS ORDA UNIVERSE</p>
 	          <h1>Қош келдіңіз! Сіз жай курсқа емес, жүйелі даму ортасына кірдіңіз.</h1>
@@ -1345,6 +1404,7 @@
           <button class="gold-btn lg" id="goDiagnostics" type="button">Тегін диагностика</button>
           <button class="ghost-btn lg" id="goTariffs" type="button">Тариф таңдау</button>
         </div>
+        ${savedFinancialIqResult() ? "" : financialIqCtaCard()}
         <div class="card">
           <p class="eyebrow">Premium жабық клуб</p>
           <h2>Жабық мүшелік</h2>
@@ -1368,7 +1428,6 @@
 
     html(`
       <section class="screen">
-        ${financialIqCtaCard()}
         <div class="hero">
 	          <p class="eyebrow">Жүйелі даму платформасы</p>
 	          <h1>ZHENIS ORDA UNIVERSE</h1>
@@ -1388,6 +1447,10 @@
 	          ${metric("Деңгей", `Деңгей ${currentLevel}`, currentLevel ? "Ашық" : "Жабық", currentLevel ? "ok" : "warn")}
           ${metric("ZHENIS Coin", money(user.coin_balance), "ішкі валюта")}
         </div>
+
+        ${personalDashboardCard(user, progress, sub, percent)}
+
+        ${savedFinancialIqResult() ? "" : financialIqCtaCard()}
 
         <div class="card">
           <div class="card-header">
@@ -1474,6 +1537,7 @@
         <div class="grid">${state.levels.map(levelCard).join("")}</div>
       </section>
     `);
+    bindLevelInviteButtons();
   }
 
   function levelCard(level) {
@@ -1490,6 +1554,7 @@
       <div class="progress-track thin"><div class="progress-fill" style="--progress:${percent}%"></div></div>
       <div class="progress-row"><span>${progress.watched_lessons || 0}/${progress.total_lessons || 0} сабақ</span><strong>${percent}%</strong></div>
       <p class="muted">${esc(progress.next_requirement || "")}</p>
+      ${level.access && level.telegram_configured ? `<button class="gold-btn block" data-level-invite="${esc(level.number)}" type="button">Жабық каналға кіру</button>` : ""}
     </article>`;
   }
 
@@ -1512,6 +1577,18 @@
     }
     state.lessons = data.lessons || [];
 
+    const currentLevelMeta = state.levels.find((item) => Number(item.number) === Number(level));
+    const telegramCard =
+      currentLevelMeta && currentLevelMeta.access && currentLevelMeta.telegram_configured
+        ? `<div class="card">
+            <div class="card-header">
+              <div><p class="eyebrow">Telegram материалдар</p><h2>Жабық канал</h2></div>
+              <span class="status ok">Ашық</span>
+            </div>
+            <p class="muted">Осы деңгейдің қорғалған видео материалдары Telegram жабық каналында орналасады.</p>
+            <button class="gold-btn block" data-level-invite="${esc(level)}" type="button">Telegram материалдарға өту</button>
+          </div>`
+        : "";
     const cards = state.lessons.length
       ? state.lessons.map(lessonCard).join("")
       : emptyState("Бұл деңгейге сабақтар әлі қосылған жоқ.");
@@ -1522,10 +1599,12 @@
 	          <div><p class="eyebrow">Деңгей ${esc(level)}</p><h1>Сабақтар</h1></div>
           <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
         </div>
+        ${telegramCard}
         <div class="grid">${cards}</div>
       </section>
     `);
     on("refreshLessons", renderLessons);
+    bindLevelInviteButtons();
     document
       .querySelectorAll("[data-watch]")
       .forEach((btn) => btn.addEventListener("click", () => markWatched(btn.dataset.watch)));
@@ -1562,6 +1641,48 @@
     } catch (error) {
       toast(error.message || "Жаңарту мүмкін болмады", "error");
     }
+  }
+
+  function bindLevelInviteButtons() {
+    document.querySelectorAll("[data-level-invite]").forEach((button) => {
+      button.addEventListener("click", () => openLevelTelegramInvite(button));
+    });
+  }
+
+  async function openLevelTelegramInvite(button) {
+    if (!button || button.dataset.busy === "1") return;
+    const level = button.dataset.levelInvite;
+    button.dataset.busy = "1";
+    const oldText = button.textContent;
+    button.textContent = "Сілтеме дайындалуда...";
+    button.disabled = true;
+    try {
+      const res = await api(`/api/levels/${level}/telegram-invite`, {
+        method: "POST",
+        body: "{}",
+      });
+      openTelegramLink(res.invite_link);
+      toast("Telegram шақыру сілтемесі дайын", "success");
+    } catch (error) {
+      toast(error.message || "Telegram сілтемесін алу мүмкін болмады", "error");
+    } finally {
+      button.dataset.busy = "";
+      button.textContent = oldText;
+      button.disabled = false;
+    }
+  }
+
+  function openTelegramLink(link) {
+    const tg = getTelegram();
+    if (tg && typeof tg.openTelegramLink === "function") {
+      tg.openTelegramLink(link);
+      return;
+    }
+    if (tg && typeof tg.openLink === "function") {
+      tg.openLink(link);
+      return;
+    }
+    window.open(link, "_blank", "noopener");
   }
 
   async function renderTest() {
@@ -1743,15 +1864,37 @@
 	      </section>
 	    `);
 	    on("backFinancialIq", returnFromFinancialIq);
-	    document.getElementById("financialIqForm").addEventListener("submit", (event) => {
+	    document.getElementById("financialIqForm").addEventListener("submit", async (event) => {
 	      event.preventDefault();
+	      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+	      if (buttonIsLoading(submitBtn)) return;
+	      setButtonLoading(submitBtn, true);
 	      calculateFinancialIq(event.currentTarget);
-	      setScreen("financialIqResult");
+	      const result = state.financialIqResult;
+	      try {
+	        const saved = await api("/api/financial-iq", {
+	          method: "POST",
+	          body: JSON.stringify({
+	            score: result.score,
+	            result_title: result.title,
+	            result_level: result.level,
+	            result_text: result.text,
+	            answers: state.financialIqAnswers,
+	          }),
+	        });
+	        state.me = Object.assign({}, state.me || {}, { financial_iq: saved.financial_iq });
+	        toast(saved.message || `Сіз қаржылық IQ тестін аяқтадыңыз. Нәтижеңіз: ${result.score}`, "success");
+	        setScreen("financialIqResult");
+	      } catch (error) {
+	        toast(error.message || "Нәтижені сақтау мүмкін болмады", "error");
+	      } finally {
+	        setButtonLoading(submitBtn, false);
+	      }
 	    });
 	  }
 
 	  function renderFinancialIqResult() {
-	    const result = state.financialIqResult;
+	    const result = financialIqResultForView(state.financialIqResult || savedFinancialIqResult());
 	    if (!result) {
 	      renderFinancialIq();
 	      return;
@@ -2125,6 +2268,7 @@
     const user = (state.me && state.me.user) || {};
     const sub = user.subscription || {};
     const subOk = sub.status === "active";
+    const iq = savedFinancialIqResult();
     const display = buildDisplayName(readTelegramUser(), user);
     const login = buildLogin(readTelegramUser(), user);
 
@@ -2140,6 +2284,7 @@
           ${metric("Мерзімі", sub.expires_at ? formatDate(sub.expires_at) : "—", "жазылым")}
 	          ${metric("Қазіргі деңгей", `Деңгей ${user.current_level || 0}`, "12 деңгейлік жол")}
           ${metric("Coin балансы", money(user.coin_balance), "ZHENIS COIN")}
+          ${metric("Қаржылық IQ", iq ? `${iq.score} балл` : "—", iq ? iq.result_level : "тест нәтижесі", iq ? "ok" : "warn")}
         </div>
         <div class="grid two">
 	          <button class="ghost-btn" data-next="referral" type="button">Дос шақыру</button>
@@ -2749,7 +2894,7 @@
     if (!levels.length) return emptyState("Деңгейлер табылмады");
     return `<div class="table-wrap"><table>
       <thead><tr>
-        <th>Реті</th><th>Қазақша атауы</th><th>Сипаттама</th><th>Статус</th><th>Әрекет</th>
+        <th>Реті</th><th>Қазақша атауы</th><th>Telegram</th><th>Сипаттама</th><th>Статус</th><th>Әрекет</th>
       </tr></thead>
       <tbody>${levels
         .map(
@@ -2758,6 +2903,7 @@
             return `<tr>
 	            <td><strong>Деңгей ${esc(level.number || "—")}</strong><div class="muted small">ID ${esc(shortId(level.id))}</div></td>
             <td><strong>${esc(level.title_kk || "—")}</strong></td>
+            <td><span class="muted small">${esc(shortId(level.telegram_chat_id || ""))}</span></td>
             <td>${esc(level.description_kk || "—")}</td>
             <td>${statusBadge(level.is_active ? "active" : "inactive")}</td>
             <td>
@@ -2786,23 +2932,31 @@
     const seeded = isSeededLevel(level);
     const number = isEdit ? level.number : nextLevelNumber(levels);
     const active = !isEdit || level.is_active;
-    const shell = openModalShell(isEdit ? "Деңгейді жаңарту" : "Деңгей қосу", `
-      <form id="levelModalForm" class="form">
-        <div class="grid two">
-          <label class="field"><span>Деңгей нөмірі / реті</span><input name="number" type="number" min="1" step="1" required ${seeded ? "readonly" : ""} value="${esc(number)}" /></label>
-          <label class="switch-field"><input name="is_active" type="checkbox" ${active ? "checked" : ""} ${seeded ? "disabled" : ""} /><span>Белсенді</span></label>
+    els.adminContent.innerHTML = `
+      <section class="admin-form-page">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">Деңгей</p><h2>${isEdit ? "Деңгейді жаңарту" : "Деңгей қосу"}</h2></div>
+          <button class="ghost-btn" id="backToLevels" type="button">Болдырмау</button>
         </div>
-        ${seeded ? `<p class="muted small">Негізгі 12 деңгей жүйеде әрқашан белсенді сақталады.</p>` : ""}
-        <label class="field"><span>Қазақша атауы</span><input name="title_kk" required value="${esc((level && level.title_kk) || "")}" /></label>
-        <label class="field"><span>Сипаттама</span><textarea name="description_kk">${esc((level && level.description_kk) || "")}</textarea></label>
-        <div class="action-row end">
-          <button class="ghost-btn" data-close-modal type="button">Бас тарту</button>
-          <button class="gold-btn" type="submit"><span class="btn-label">${isEdit ? "Жаңарту" : "Сақтау"}</span><span class="btn-spinner"></span></button>
-        </div>
-      </form>
-    `);
-    const form = shell.body.querySelector("form");
-    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
+        <form id="levelModalForm" class="form admin-form-card">
+          <div class="grid two">
+            <label class="field"><span>Деңгей нөмірі / реті</span><input name="number" type="number" min="1" step="1" required ${seeded ? "readonly" : ""} value="${esc(number)}" /></label>
+            <label class="switch-field"><input name="is_active" type="checkbox" ${active ? "checked" : ""} ${seeded ? "disabled" : ""} /><span>Белсенді</span></label>
+          </div>
+          ${seeded ? `<p class="muted small">Негізгі 12 деңгей жүйеде әрқашан белсенді сақталады.</p>` : ""}
+          <label class="field"><span>Қазақша атауы</span><input name="title_kk" required value="${esc((level && level.title_kk) || "")}" /></label>
+          <label class="field"><span>Сипаттама</span><textarea name="description_kk">${esc((level && level.description_kk) || "")}</textarea></label>
+          <label class="field"><span>Telegram канал ID</span><input name="telegram_chat_id" inputmode="text" placeholder="2351826422 немесе -1002351826422" value="${esc((level && level.telegram_chat_id) || "")}" /><small>Мысалы: 2351826422 немесе -1002351826422. Бот осы каналда админ болуы керек.</small></label>
+          <div class="action-row end">
+            <button class="ghost-btn" id="cancelLevelForm" type="button">Болдырмау</button>
+            <button class="gold-btn" type="submit"><span class="btn-label">${isEdit ? "Жаңарту" : "Сақтау"}</span><span class="btn-spinner"></span></button>
+          </div>
+        </form>
+      </section>
+    `;
+    const form = document.getElementById("levelModalForm");
+    on("backToLevels", renderAdminLevels);
+    on("cancelLevelForm", renderAdminLevels);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const btn = form.querySelector("button[type=submit]");
@@ -2814,19 +2968,16 @@
       }
       if (buttonIsLoading(btn)) return;
       setButtonLoading(btn, true);
-      setModalBusy(shell, true);
       try {
         await api(isEdit ? `/api/admin/levels/${level.id}` : "/api/admin/levels", {
           method: isEdit ? "PATCH" : "POST",
           body: JSON.stringify(payload),
         });
-        shell.close();
         toast(isEdit ? "Деңгей жаңартылды" : "Деңгей қосылды", "success");
         renderAdminLevels();
       } catch (error) {
         toast(levelSaveErrorMessage(error), "error");
       } finally {
-        setModalBusy(shell, false);
         setButtonLoading(btn, false);
       }
     });
@@ -2845,6 +2996,7 @@
       title_ru: clean(existing && existing.title_ru) || titleKK,
       description_kk: descriptionKK,
       description_ru: clean(existing && existing.description_ru) || descriptionKK,
+      telegram_chat_id: String(fd.get("telegram_chat_id") || "").trim(),
       is_active: seeded ? true : fd.get("is_active") === "on",
     };
   }
@@ -2852,6 +3004,7 @@
   function validateLevelForm(level, levels, existing) {
     if (!Number.isInteger(level.number) || level.number < 1) return "Деңгей нөмірі 1 немесе одан жоғары болуы керек";
     if (!level.title_kk) return "Қазақша атауы міндетті";
+    if (level.telegram_chat_id && !/^(?:[1-9]\d*|-100[1-9]\d*)$/.test(level.telegram_chat_id)) return "Telegram канал ID: 2351826422 немесе -1002351826422 форматында жазыңыз";
     const duplicate = levels.find((item) => item.id !== (existing && existing.id) && Number(item.number) === level.number);
     if (duplicate) return "Бұл деңгей нөмірі бұрыннан бар";
     return "";
@@ -2961,53 +3114,58 @@
   function openLessonModal(lesson, levels) {
     const isEdit = Boolean(lesson && lesson.id);
     const selectedLevel = (lesson && lesson.level_id) || (levels[0] && levels[0].id) || "";
-    const shell = openModalShell(isEdit ? "Сабақты өзгерту" : "Сабақ қосу", `
-      <form id="lessonModalForm" class="form">
-        <label class="field"><span>Деңгей</span><select name="level_id" required>${levelOptions(levels, selectedLevel)}</select></label>
-        <div class="grid two">
-          <label class="field"><span>Қазақша атауы</span><input name="title_kk" required value="${esc((lesson && lesson.title_kk) || "")}" /></label>
-          <label class="field"><span>Орысша атауы</span><input name="title_ru" value="${esc((lesson && lesson.title_ru) || "")}" /></label>
+    els.adminContent.innerHTML = `
+      <section class="admin-form-page">
+        <div class="admin-section-head">
+          <div><p class="eyebrow">Сабақ</p><h2>${isEdit ? "Сабақты өзгерту" : "Сабақ қосу"}</h2></div>
+          <button class="ghost-btn" id="backToLessons" type="button">Болдырмау</button>
         </div>
-        <label class="field"><span>Сабақ сілтемесі</span><input name="video_url" required placeholder="Telegram post немесе video URL" value="${esc((lesson && lesson.video_url) || "")}" /></label>
-        <div class="grid two">
-          <label class="field"><span>Сипаттама KK</span><textarea name="description_kk">${esc((lesson && lesson.description_kk) || "")}</textarea></label>
-          <label class="field"><span>Сипаттама RU</span><textarea name="description_ru">${esc((lesson && lesson.description_ru) || "")}</textarea></label>
-        </div>
-        <div class="grid two">
-          <label class="field"><span>Реті</span><input name="sort_order" type="number" min="1" value="${esc((lesson && lesson.sort_order) || 1)}" /></label>
-          <label class="switch-field"><input name="is_active" type="checkbox" ${!lesson || lesson.is_active ? "checked" : ""} /><span>Белсенді</span></label>
-        </div>
-        <div class="action-row end">
-          <button class="ghost-btn" data-close-modal type="button">Болдырмау</button>
-          <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
-        </div>
-      </form>
-    `);
-    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
-    shell.body.querySelector("form").addEventListener("submit", async (event) => {
+        <form id="lessonModalForm" class="form admin-form-card">
+          <label class="field"><span>Деңгей</span><select name="level_id" required>${levelOptions(levels, selectedLevel)}</select></label>
+          <div class="grid two">
+            <label class="field"><span>Қазақша атауы</span><input name="title_kk" required value="${esc((lesson && lesson.title_kk) || "")}" /></label>
+            <label class="field"><span>Орысша атауы</span><input name="title_ru" value="${esc((lesson && lesson.title_ru) || "")}" /></label>
+          </div>
+          <label class="field"><span>Сабақ сілтемесі</span><input name="video_url" placeholder="Қосымша видео немесе пост URL" value="${esc((lesson && lesson.video_url) || "")}" /><small>Қосымша өріс. Қорғалған Telegram материалдар деңгейдегі канал арқылы беріледі.</small></label>
+          <div class="grid two">
+            <label class="field"><span>Сипаттама KK</span><textarea name="description_kk">${esc((lesson && lesson.description_kk) || "")}</textarea></label>
+            <label class="field"><span>Сипаттама RU</span><textarea name="description_ru">${esc((lesson && lesson.description_ru) || "")}</textarea></label>
+          </div>
+          <div class="grid two">
+            <label class="field"><span>Реті</span><input name="sort_order" type="number" min="1" value="${esc((lesson && lesson.sort_order) || 1)}" /></label>
+            <label class="switch-field"><input name="is_active" type="checkbox" ${!lesson || lesson.is_active ? "checked" : ""} /><span>Белсенді</span></label>
+          </div>
+          <div class="action-row end">
+            <button class="ghost-btn" id="cancelLessonForm" type="button">Болдырмау</button>
+            <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
+          </div>
+        </form>
+      </section>
+    `;
+    on("backToLessons", renderAdminLessons);
+    on("cancelLessonForm", renderAdminLessons);
+    document.getElementById("lessonModalForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const btn = event.currentTarget.querySelector("button[type=submit]");
       const form = new FormData(event.currentTarget);
       const body = Object.fromEntries(form.entries());
       body.sort_order = Number(body.sort_order || 1);
       body.is_active = form.get("is_active") === "on";
-      if (!body.level_id || !body.title_kk.trim() || !body.video_url.trim()) {
-        toast("Деңгей, сабақ атауы және сабақ сілтемесі міндетті", "error");
+      body.video_url = String(body.video_url || "").trim();
+      if (!body.level_id || !body.title_kk.trim()) {
+        toast("Деңгей және сабақ атауы міндетті", "error");
         return;
       }
       if (buttonIsLoading(btn)) return;
       setButtonLoading(btn, true);
-      setModalBusy(shell, true);
       try {
         const url = isEdit ? `/api/admin/lessons/${lesson.id}` : "/api/admin/lessons";
         await api(url, { method: isEdit ? "PATCH" : "POST", body: JSON.stringify(body) });
-        shell.close();
         toast("Сабақ сақталды", "success");
         renderAdminLessons();
       } catch (error) {
         toast(error.message || "Сақтау мүмкін болмады", "error");
       } finally {
-        setModalBusy(shell, false);
         setButtonLoading(btn, false);
       }
     });

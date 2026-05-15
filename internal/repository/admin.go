@@ -168,30 +168,36 @@ func (s *Store) UpsertLevel(ctx context.Context, level Level) (Level, error) {
 	if level.Number <= 0 {
 		return Level{}, ErrInvalidState
 	}
+	telegramChatID, err := NormalizeTelegramChatID(level.TelegramChatID)
+	if err != nil {
+		return Level{}, err
+	}
+	level.TelegramChatID = telegramChatID
+	level.TelegramConfigured = telegramChatID != ""
 	if level.SortOrder <= 0 {
 		level.SortOrder = level.Number
 	}
 	if strings.TrimSpace(level.ID) == "" {
 		level.ID = newID()
-		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO levels(id, number, title_kk, title_ru, description_kk, description_ru, sort_order, is_active)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-		`, level.ID, level.Number, level.TitleKK, level.TitleRU, level.DescriptionKK, level.DescriptionRU, level.SortOrder, boolInt(level.IsActive))
+		_, err = s.db.ExecContext(ctx, `
+			INSERT INTO levels(id, number, title_kk, title_ru, description_kk, description_ru, telegram_chat_id, sort_order, is_active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+		`, level.ID, level.Number, level.TitleKK, level.TitleRU, level.DescriptionKK, level.DescriptionRU, nullableString(level.TelegramChatID), level.SortOrder, boolInt(level.IsActive))
 		if err != nil {
 			return Level{}, err
 		}
 		return level, nil
 	}
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE levels SET number=?, title_kk=?, title_ru=?, description_kk=?, description_ru=?, sort_order=?, is_active=?, updated_at=CURRENT_TIMESTAMP
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE levels SET number=?, title_kk=?, title_ru=?, description_kk=?, description_ru=?, telegram_chat_id=?, sort_order=?, is_active=?, updated_at=CURRENT_TIMESTAMP
 		WHERE id=?;
-	`, level.Number, level.TitleKK, level.TitleRU, level.DescriptionKK, level.DescriptionRU, level.SortOrder, boolInt(level.IsActive), level.ID)
+	`, level.Number, level.TitleKK, level.TitleRU, level.DescriptionKK, level.DescriptionRU, nullableString(level.TelegramChatID), level.SortOrder, boolInt(level.IsActive), level.ID)
 	return level, err
 }
 
 func (s *Store) ListAdminLevels(ctx context.Context) ([]Level, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, number, title_kk, title_ru, COALESCE(description_kk, ''), COALESCE(description_ru, ''), sort_order, is_active
+		SELECT id, number, title_kk, title_ru, COALESCE(description_kk, ''), COALESCE(description_ru, ''), COALESCE(telegram_chat_id, ''), sort_order, is_active
 		FROM levels
 		ORDER BY sort_order ASC, number ASC;
 	`)
@@ -204,10 +210,11 @@ func (s *Store) ListAdminLevels(ctx context.Context) ([]Level, error) {
 	for rows.Next() {
 		var level Level
 		var active int
-		if err := rows.Scan(&level.ID, &level.Number, &level.TitleKK, &level.TitleRU, &level.DescriptionKK, &level.DescriptionRU, &level.SortOrder, &active); err != nil {
+		if err := rows.Scan(&level.ID, &level.Number, &level.TitleKK, &level.TitleRU, &level.DescriptionKK, &level.DescriptionRU, &level.TelegramChatID, &level.SortOrder, &active); err != nil {
 			return nil, err
 		}
 		level.IsActive = active == 1
+		level.TelegramConfigured = level.TelegramChatID != ""
 		levels = append(levels, level)
 	}
 	if err := rows.Err(); err != nil {
@@ -222,7 +229,7 @@ func (s *Store) DeleteLevel(ctx context.Context, levelID string) error {
 }
 
 func (s *Store) UpsertLesson(ctx context.Context, lesson Lesson) (Lesson, error) {
-	if strings.TrimSpace(lesson.LevelID) == "" || strings.TrimSpace(lesson.TitleKK) == "" || strings.TrimSpace(lesson.VideoURL) == "" {
+	if strings.TrimSpace(lesson.LevelID) == "" || strings.TrimSpace(lesson.TitleKK) == "" {
 		return Lesson{}, ErrInvalidState
 	}
 	var levelExists int

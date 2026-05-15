@@ -1243,6 +1243,36 @@ body.landing-mode {
   }
 }
 
+.financial-iq-card.compact-result {
+  border-color: rgba(112, 217, 158, 0.32);
+  background:
+    linear-gradient(145deg, rgba(112, 217, 158, 0.08), rgba(13, 16, 23, 0.96)),
+    #0E1219;
+}
+
+.dashboard-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.dashboard-mini-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: rgba(10, 13, 19, 0.5);
+}
+
+.dashboard-mini-grid strong {
+  color: var(--gold-bright);
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
 .iq-form {
   gap: 12px;
 }
@@ -1335,6 +1365,12 @@ body.landing-mode {
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.field small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 input,
@@ -1862,6 +1898,22 @@ select:focus {
 .admin-content {
   display: grid;
   gap: 18px;
+}
+
+.admin-form-page {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 16px;
+}
+
+.admin-form-card {
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(160deg, rgba(26, 30, 38, 0.96), rgba(11, 14, 20, 0.96));
+  box-shadow: var(--shadow-card);
 }
 
 .admin-grid {

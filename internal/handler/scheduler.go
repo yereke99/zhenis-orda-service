@@ -83,6 +83,11 @@ func (s *Server) runMinuteJobs(ctx context.Context) {
 	} else if n > 0 {
 		s.logger.Info("expired subscriptions", zap.Int64("count", n))
 	}
+	if n, err := s.store.ExpireLevelTelegramInvites(ctx); err != nil {
+		s.logger.Warn("expire level telegram invites failed", zap.Error(err))
+	} else if n > 0 {
+		s.logger.Info("expired level telegram invites", zap.Int64("count", n))
+	}
 }
 
 func (s *Server) runInactiveReminderJob(ctx context.Context) {

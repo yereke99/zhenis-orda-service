@@ -382,18 +382,19 @@ func (s *Server) handleAdminLevels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminPostLevel(w http.ResponseWriter, r *http.Request) {
 	actor := adminFromContext(r.Context())
 	var req struct {
-		ID            string              `json:"id"`
-		Number        int                 `json:"number"`
-		TitleKK       string              `json:"title_kk"`
-		TitleRU       string              `json:"title_ru"`
-		DescriptionKK string              `json:"description_kk"`
-		DescriptionRU string              `json:"description_ru"`
-		SortOrder     int                 `json:"sort_order"`
-		IsActive      *bool               `json:"is_active"`
-		Access        bool                `json:"access"`
-		Completed     bool                `json:"completed"`
-		Progress      repository.Progress `json:"progress"`
-		Lessons       []repository.Lesson `json:"lessons"`
+		ID             string              `json:"id"`
+		Number         int                 `json:"number"`
+		TitleKK        string              `json:"title_kk"`
+		TitleRU        string              `json:"title_ru"`
+		DescriptionKK  string              `json:"description_kk"`
+		DescriptionRU  string              `json:"description_ru"`
+		TelegramChatID string              `json:"telegram_chat_id"`
+		SortOrder      int                 `json:"sort_order"`
+		IsActive       *bool               `json:"is_active"`
+		Access         bool                `json:"access"`
+		Completed      bool                `json:"completed"`
+		Progress       repository.Progress `json:"progress"`
+		Lessons        []repository.Lesson `json:"lessons"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -404,14 +405,15 @@ func (s *Server) handleAdminPostLevel(w http.ResponseWriter, r *http.Request) {
 		active = *req.IsActive
 	}
 	level := repository.Level{
-		ID:            req.ID,
-		Number:        req.Number,
-		TitleKK:       req.TitleKK,
-		TitleRU:       req.TitleRU,
-		DescriptionKK: req.DescriptionKK,
-		DescriptionRU: req.DescriptionRU,
-		SortOrder:     req.SortOrder,
-		IsActive:      active,
+		ID:             req.ID,
+		Number:         req.Number,
+		TitleKK:        req.TitleKK,
+		TitleRU:        req.TitleRU,
+		DescriptionKK:  req.DescriptionKK,
+		DescriptionRU:  req.DescriptionRU,
+		TelegramChatID: req.TelegramChatID,
+		SortOrder:      req.SortOrder,
+		IsActive:       active,
 	}
 	if raw := r.PathValue("id"); raw != "" {
 		if !repository.IsUUID(raw) {

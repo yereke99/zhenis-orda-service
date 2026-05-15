@@ -68,6 +68,12 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := addTariffColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := addLevelTelegramColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := addLevelInviteTables(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateLessonOwnedTests(ctx, db); err != nil {
 		return err
 	}
@@ -97,6 +103,42 @@ func addTariffColumns(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func addLevelTelegramColumns(ctx context.Context, db *sql.DB) error {
+	return addColumnIfMissing(ctx, db, "levels", "telegram_chat_id", "TEXT")
+}
+
+func addLevelInviteTables(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS user_level_telegram_invites (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			telegram_user_id INTEGER,
+			level_id TEXT NOT NULL REFERENCES levels(id) ON DELETE CASCADE,
+			telegram_chat_id TEXT NOT NULL,
+			invite_link TEXT NOT NULL,
+			invite_link_id TEXT,
+			raw_payload TEXT NOT NULL DEFAULT '{}',
+			expires_at DATETIME,
+			status TEXT NOT NULL DEFAULT 'issued' CHECK(status IN ('issued','used','expired','revoked')),
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS financial_iq_results (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			score INTEGER NOT NULL,
+			result_title TEXT NOT NULL,
+			result_level TEXT NOT NULL,
+			result_text TEXT NOT NULL DEFAULT '',
+			answers_json TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	return err
 }
 
 func migrateLessonOwnedTests(ctx context.Context, db *sql.DB) error {
@@ -204,6 +246,7 @@ func guardLegacyIntegerIDs(ctx context.Context, db *sql.DB) error {
 		"payment_receipts", "payments", "subscriptions", "diagnostics",
 		"referral_rewards", "referrals", "coin_transactions",
 		"channel_invite_links", "channels",
+		"user_level_telegram_invites", "financial_iq_results",
 		"user_stream_attendance", "live_stream_recordings", "live_stream_reminders", "live_streams",
 		"broadcast_messages", "broadcasts", "support_messages", "admin_actions",
 		"levels", "tariffs", "users",

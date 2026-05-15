@@ -168,7 +168,8 @@ func (s *Store) progressForLevel(ctx context.Context, q queryer, userID string, 
 
 func (s *Store) ListLevels(ctx context.Context, userID string) ([]Level, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, number, title_kk, title_ru, COALESCE(description_kk, ''), COALESCE(description_ru, ''), sort_order, is_active
+		SELECT id, number, title_kk, title_ru, COALESCE(description_kk, ''), COALESCE(description_ru, ''),
+			CASE WHEN COALESCE(telegram_chat_id, '') <> '' THEN 1 ELSE 0 END, sort_order, is_active
 		FROM levels
 		WHERE is_active = 1
 		ORDER BY number ASC;
@@ -181,11 +182,12 @@ func (s *Store) ListLevels(ctx context.Context, userID string) ([]Level, error) 
 	var levels []Level
 	for rows.Next() {
 		var level Level
-		var active int
-		if err := rows.Scan(&level.ID, &level.Number, &level.TitleKK, &level.TitleRU, &level.DescriptionKK, &level.DescriptionRU, &level.SortOrder, &active); err != nil {
+		var active, telegramConfigured int
+		if err := rows.Scan(&level.ID, &level.Number, &level.TitleKK, &level.TitleRU, &level.DescriptionKK, &level.DescriptionRU, &telegramConfigured, &level.SortOrder, &active); err != nil {
 			return nil, err
 		}
 		level.IsActive = active == 1
+		level.TelegramConfigured = telegramConfigured == 1
 		levels = append(levels, level)
 	}
 	if err := rows.Err(); err != nil {
@@ -203,16 +205,18 @@ func (s *Store) ListLevels(ctx context.Context, userID string) ([]Level, error) 
 
 func (s *Store) GetLevel(ctx context.Context, userID string, levelNumber int) (Level, error) {
 	var level Level
-	var active int
+	var active, telegramConfigured int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, number, title_kk, title_ru, COALESCE(description_kk, ''), COALESCE(description_ru, ''), sort_order, is_active
+		SELECT id, number, title_kk, title_ru, COALESCE(description_kk, ''), COALESCE(description_ru, ''),
+			CASE WHEN COALESCE(telegram_chat_id, '') <> '' THEN 1 ELSE 0 END, sort_order, is_active
 		FROM levels
 		WHERE number = ?;
-	`, levelNumber).Scan(&level.ID, &level.Number, &level.TitleKK, &level.TitleRU, &level.DescriptionKK, &level.DescriptionRU, &level.SortOrder, &active)
+	`, levelNumber).Scan(&level.ID, &level.Number, &level.TitleKK, &level.TitleRU, &level.DescriptionKK, &level.DescriptionRU, &telegramConfigured, &level.SortOrder, &active)
 	if err != nil {
 		return Level{}, rowErr(err)
 	}
 	level.IsActive = active == 1
+	level.TelegramConfigured = telegramConfigured == 1
 	level.Access, err = s.CanAccessLevel(ctx, userID, levelNumber)
 	if err != nil {
 		return Level{}, err
