@@ -574,6 +574,9 @@
 	        const parts = url.pathname.split("/").filter(Boolean);
 	        if (parts[0] === "watch") id = url.searchParams.get("v") || "";
 	        if ((parts[0] === "shorts" || parts[0] === "embed") && parts[1]) id = parts[1];
+	      } else if (host === "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com")) {
+	        const parts = url.pathname.split("/").filter(Boolean);
+	        if (parts[0] === "embed" && parts[1]) id = parts[1];
 	      }
 	      return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : "";
 	    } catch (_) {
@@ -581,9 +584,32 @@
 	    }
 	  }
 
+	  function youtubeEmbedURLFromID(videoID) {
+	    const id = compact(videoID);
+	    if (!/^[A-Za-z0-9_-]{11}$/.test(id)) return "";
+	    const params = new URLSearchParams({
+	      rel: "0",
+	      modestbranding: "1",
+	      playsinline: "1",
+	      controls: "1",
+	      fs: "1",
+	      iv_load_policy: "3",
+	      disablekb: "0",
+	    });
+	    return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?${params.toString()}`;
+	  }
+
 	  function youtubeEmbedURL(lesson) {
-	    const id = compact(lesson && lesson.youtube_video_id) || parseYouTubeVideoID(lesson && lesson.youtube_url);
-	    return id ? `https://www.youtube.com/embed/${encodeURIComponent(id)}` : compact(lesson && lesson.youtube_embed_url);
+	    const id =
+	      compact(lesson && lesson.youtube_video_id) ||
+	      parseYouTubeVideoID(lesson && lesson.youtube_url) ||
+	      parseYouTubeVideoID(lesson && lesson.youtube_embed_url);
+	    return youtubeEmbedURLFromID(id);
+	  }
+
+	  function youtubeIframe(src, title) {
+	    if (!src) return "";
+	    return `<iframe src="${esc(src)}" title="${esc(title || "YouTube")}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups" allowfullscreen allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"></iframe>`;
 	  }
 
 	  function visibleTariffImage(tariff) {
@@ -1675,16 +1701,16 @@
 	  function freeLessonsHomeSection() {
 	    const lessons = state.freeLessons || [];
 	    if (!lessons.length) return "";
-	    const visible = lessons.slice(0, 4);
 	    return `<section class="free-lessons-section" aria-label="Тегін сабақтар">
-	      <div class="section-head">
+	      <button class="free-lessons-entry" data-free-lessons type="button" aria-label="Тегін сабақтар">
 	        <div>
-	          <p class="eyebrow">Ашық контент</p>
-	          <h2>Тегін сабақтар</h2>
+	          <span class="free-lessons-entry-label">АШЫҚ КОНТЕНТ</span>
+	          <strong>Тегін сабақтар</strong>
+	          <span>Қолжетімді тегін сабақтарды қараңыз</span>
 	        </div>
-	        ${lessons.length > visible.length ? `<button class="ghost-btn" data-free-lessons type="button">Барлығы</button>` : ""}
-	      </div>
-	      <div class="free-lesson-grid">${visible.map(freeLessonCard).join("")}</div>
+	        <span class="free-lessons-entry-badge">ТЕГІН</span>
+	        <span class="free-lessons-entry-cta">Сабақтарды ашу</span>
+	      </button>
 	    </section>`;
 	  }
 
@@ -1699,7 +1725,7 @@
 	      <div class="free-lesson-card-body">
 	        <h3>${esc(lesson.title)}</h3>
 	        <p class="muted">${esc(shortText(lesson.short_description || lesson.description, 96))}</p>
-	        <span class="gold-btn free-lesson-card-cta">Көру</span>
+	        <span class="gold-btn free-lesson-card-cta">Сабақты ашу</span>
 	      </div>
 	    </article>`;
 	  }
@@ -1732,26 +1758,49 @@
 	  function openFreeLessonDetail(lessonID) {
 	    if (!lessonID) return;
 	    state.selectedFreeLessonId = lessonID;
-	    state.freeLessonReturnScreen = state.currentScreen && state.currentScreen !== "freeLessonDetail" ? state.currentScreen : "dashboard";
+	    if (state.currentScreen !== "freeLessons" && state.currentScreen !== "freeLessonDetail") {
+	      state.freeLessonReturnScreen = state.currentScreen || "dashboard";
+	    }
 	    setScreen("freeLessonDetail");
 	  }
 
 	  function closeFreeLessonDetail() {
-	    const target = state.freeLessonReturnScreen || "dashboard";
 	    state.selectedFreeLessonId = null;
-	    setScreen(target === "freeLessonDetail" ? "dashboard" : target);
+	    setScreen("freeLessons");
 	  }
 
 	  async function renderFreeLessons() {
 	    let lessons = state.freeLessons || [];
 	    if (!lessons.length) {
+	      html(`
+	        <section class="screen free-lessons-screen">
+	          <div class="section-head">
+	            <div>
+	              <p class="eyebrow">Ашық контент</p>
+	              <h1>Тегін сабақтар</h1>
+	            </div>
+	            <button class="ghost-btn mini-back-btn" id="backFreeLessons" type="button">Артқа</button>
+	          </div>
+	          <div class="free-lesson-grid large">${skeletonRows(3)}</div>
+	        </section>
+	      `);
+	      on("backFreeLessons", closeFreeLessons);
 	      try {
 	        const data = await api("/api/free-lessons");
+	        if (state.currentScreen !== "freeLessons") return;
 	        lessons = data.free_lessons || [];
 	        state.freeLessons = lessons;
 	      } catch (error) {
-	        html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backFreeLessons" type="button">Артқа</button>${emptyState(error.message || "Тегін сабақтар табылмады")}</section>`);
+	        if (state.currentScreen !== "freeLessons") return;
+	        html(`
+	          <section class="screen free-lessons-screen">
+	            <button class="ghost-btn mini-back-btn" id="backFreeLessons" type="button">Артқа</button>
+	            ${emptyState("Сабақтарды жүктеу мүмкін болмады.")}
+	            <button class="gold-btn" id="retryFreeLessons" type="button">Қайталау</button>
+	          </section>
+	        `);
 	        on("backFreeLessons", closeFreeLessons);
+	        on("retryFreeLessons", renderFreeLessons);
 	        return;
 	      }
 	    }
@@ -1764,7 +1813,7 @@
 	          </div>
 	          <button class="ghost-btn mini-back-btn" id="backFreeLessons" type="button">Артқа</button>
 	        </div>
-	        ${lessons.length ? `<div class="free-lesson-grid large">${lessons.map(freeLessonCard).join("")}</div>` : emptyState("Қазір белсенді тегін сабақ жоқ.")}
+	        ${lessons.length ? `<div class="free-lesson-grid large">${lessons.map(freeLessonCard).join("")}</div>` : emptyState("Қазір тегін сабақтар жоқ.")}
 	      </section>
 	    `);
 	    on("backFreeLessons", closeFreeLessons);
@@ -1773,19 +1822,41 @@
 
 	  async function renderFreeLessonDetail() {
 	    const lessonID = state.selectedFreeLessonId;
-	    let lesson = (state.freeLessons || []).find((item) => item.id === lessonID);
-	    if (!lesson && lessonID) {
-	      try {
-	        const data = await api(`/api/free-lessons/${lessonID}`);
-	        lesson = data.free_lesson;
-	      } catch (error) {
-	        html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backFreeLessonDetail" type="button">Артқа</button>${emptyState(error.message || "Сабақ табылмады")}</section>`);
-	        on("backFreeLessonDetail", closeFreeLessonDetail);
-	        return;
+	    if (!lessonID) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backFreeLessonDetail" type="button">Артқа</button>${emptyState("Сабақ табылмады.")}</section>`);
+	      on("backFreeLessonDetail", closeFreeLessonDetail);
+	      return;
+	    }
+	    html(`
+	      <section class="screen free-lesson-detail-screen">
+	        <button class="ghost-btn mini-back-btn" id="backFreeLessonDetail" type="button">Артқа</button>
+	        <div class="card">
+	          <div class="skeleton-row w-50"></div>
+	          <div class="skeleton-row w-90"></div>
+	          <div class="skeleton-row w-70"></div>
+	        </div>
+	        <div class="youtube-frame skeleton"></div>
+	      </section>
+	    `);
+	    on("backFreeLessonDetail", closeFreeLessonDetail);
+	    let lesson;
+	    try {
+	      const data = await api(`/api/free-lessons/${lessonID}`);
+	      if (state.currentScreen !== "freeLessonDetail" || state.selectedFreeLessonId !== lessonID) return;
+	      lesson = data.free_lesson;
+	      if (lesson && lesson.id) {
+	        const lessons = state.freeLessons || [];
+	        const index = lessons.findIndex((item) => item.id === lesson.id);
+	        if (index >= 0) lessons[index] = lesson;
 	      }
+	    } catch (error) {
+	      if (state.currentScreen !== "freeLessonDetail" || state.selectedFreeLessonId !== lessonID) return;
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backFreeLessonDetail" type="button">Артқа</button>${emptyState("Сабақ табылмады.")}</section>`);
+	      on("backFreeLessonDetail", closeFreeLessonDetail);
+	      return;
 	    }
 	    if (!lesson) {
-	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backFreeLessonDetail" type="button">Артқа</button>${emptyState("Сабақ табылмады")}</section>`);
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backFreeLessonDetail" type="button">Артқа</button>${emptyState("Сабақ табылмады.")}</section>`);
 	      on("backFreeLessonDetail", closeFreeLessonDetail);
 	      return;
 	    }
@@ -1804,7 +1875,7 @@
 	            ${lesson.short_description ? `<p class="muted">${esc(lesson.short_description)}</p>` : ""}
 	          </div>
 	        </article>
-	        ${embed ? `<div class="youtube-frame"><iframe src="${esc(embed)}" title="${esc(lesson.title)}" loading="lazy" allowfullscreen allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"></iframe></div>` : emptyState("Видео сілтемесі табылмады")}
+	        ${embed ? `<div class="youtube-frame">${youtubeIframe(embed, lesson.title)}</div>` : emptyState("Видео сілтемесі табылмады")}
 	        <article class="card free-lesson-description-card">
 	          <p class="eyebrow">Сипаттама</p>
 	          <div class="book-description">${bookParagraphs(lesson.description)}</div>
@@ -3433,7 +3504,7 @@
 	        <input type="hidden" name="image_source" value="${esc((lesson && lesson.image_source) || "none")}" />
 	        <div id="freeLessonImagePreview" class="admin-media-preview">${image ? `<img src="${esc(image)}" alt="${esc((lesson && lesson.title) || "Тегін сабақ")}" />` : `<span class="muted small">Алдын ала көру</span>`}</div>
 	        <label class="field"><span>YouTube сілтемесі</span><input name="youtube_url" required placeholder="https://youtu.be/VIDEO_ID" value="${esc((lesson && lesson.youtube_url) || "")}" /><small>YouTube Share, watch, shorts немесе embed сілтемесін қойыңыз.</small></label>
-	        <div id="freeLessonYoutubePreview" class="admin-youtube-preview">${embed ? `<iframe src="${esc(embed)}" title="${esc((lesson && lesson.title) || "YouTube")}" loading="lazy" allowfullscreen allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"></iframe>` : `<span class="muted small">YouTube алдын ала көру</span>`}</div>
+	        <div id="freeLessonYoutubePreview" class="admin-youtube-preview">${embed ? youtubeIframe(embed, (lesson && lesson.title) || "YouTube") : `<span class="muted small">YouTube алдын ала көру</span>`}</div>
 	        <label class="switch-field"><input name="is_active" type="checkbox" ${!lesson || lesson.is_active ? "checked" : ""} /><span>Белсенді</span></label>
 	        <div class="action-row end">
 	          <button class="ghost-btn" data-close-modal type="button">Болдырмау</button>
@@ -3453,8 +3524,9 @@
 	    };
 	    const setYoutubePreview = () => {
 	      const id = parseYouTubeVideoID(youtubeInput.value);
+	      const embed = youtubeEmbedURLFromID(id);
 	      if (id) {
-	        youtubePreview.innerHTML = `<iframe src="https://www.youtube.com/embed/${esc(id)}" title="YouTube алдын ала көру" loading="lazy" allowfullscreen allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"></iframe>`;
+	        youtubePreview.innerHTML = youtubeIframe(embed, "YouTube алдын ала көру");
 	      } else {
 	        youtubePreview.innerHTML = `<span class="muted small">${compact(youtubeInput.value) ? "YouTube сілтемесі жарамсыз" : "YouTube алдын ала көру"}</span>`;
 	      }

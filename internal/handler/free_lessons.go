@@ -257,12 +257,31 @@ func parseYouTubeURL(value string) (string, string, error) {
 				}
 			}
 		}
+	case host == "youtube-nocookie.com" || strings.HasSuffix(host, ".youtube-nocookie.com"):
+		parts := pathSegments(parsed.Path)
+		if len(parts) > 1 && parts[0] == "embed" {
+			videoID = parts[1]
+		}
 	}
 	videoID = strings.TrimSpace(videoID)
 	if !youtubeVideoIDPattern.MatchString(videoID) {
 		return "", "", fmt.Errorf("bad youtube video id")
 	}
-	return videoID, "https://www.youtube.com/embed/" + videoID, nil
+	return videoID, buildYouTubeEmbedURL(videoID), nil
+}
+
+func buildYouTubeEmbedURL(videoID string) string {
+	// YouTube embeds cannot be fully white-labeled or strictly protected; use private
+	// video hosting/HLS if the business requires hard playback protection.
+	params := url.Values{}
+	params.Set("rel", "0")
+	params.Set("modestbranding", "1")
+	params.Set("playsinline", "1")
+	params.Set("controls", "1")
+	params.Set("fs", "1")
+	params.Set("iv_load_policy", "3")
+	params.Set("disablekb", "0")
+	return "https://www.youtube-nocookie.com/embed/" + videoID + "?" + params.Encode()
 }
 
 func firstPathSegment(pathValue string) string {

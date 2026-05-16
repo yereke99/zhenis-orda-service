@@ -507,7 +507,8 @@ func TestAdminFreeLessonsCRUDAndPublicVisibility(t *testing.T) {
 	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.FreeLesson.ID == "" || created.FreeLesson.YouTubeVideoID != "dQw4w9WgXcQ" || created.FreeLesson.YouTubeEmbedURL != "https://www.youtube.com/embed/dQw4w9WgXcQ" {
+	expectedEmbedURL := "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?controls=1&disablekb=0&fs=1&iv_load_policy=3&modestbranding=1&playsinline=1&rel=0"
+	if created.FreeLesson.ID == "" || created.FreeLesson.YouTubeVideoID != "dQw4w9WgXcQ" || created.FreeLesson.YouTubeEmbedURL != expectedEmbedURL {
 		t.Fatalf("unexpected created free lesson: %#v", created.FreeLesson)
 	}
 
@@ -524,6 +525,30 @@ func TestAdminFreeLessonsCRUDAndPublicVisibility(t *testing.T) {
 	srv.Routes().ServeHTTP(patchRec, patchReq)
 	if patchRec.Code != http.StatusOK {
 		t.Fatalf("patch youtu.be expected 200, got %d: %s", patchRec.Code, patchRec.Body.String())
+	}
+	var patched struct {
+		FreeLesson repository.FreeLesson `json:"free_lesson"`
+	}
+	if err := json.NewDecoder(patchRec.Body).Decode(&patched); err != nil {
+		t.Fatal(err)
+	}
+	if patched.FreeLesson.YouTubeVideoID != "dQw4w9WgXcQ" || patched.FreeLesson.YouTubeEmbedURL != expectedEmbedURL {
+		t.Fatalf("unexpected youtu.be parsed free lesson: %#v", patched.FreeLesson)
+	}
+
+	shortsReq := httptest.NewRequest(http.MethodPatch, "/api/admin/free-lessons/"+created.FreeLesson.ID, bytes.NewBufferString(`{
+		"title": "Тегін сабақ 2",
+		"short_description": "Қысқаша",
+		"description": "Ашық сабақ сипаттамасы",
+		"image_url": "https://example.com/free.webp",
+		"youtube_url": "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+		"is_active": true
+	}`))
+	shortsReq.AddCookie(cookie)
+	shortsRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(shortsRec, shortsReq)
+	if shortsRec.Code != http.StatusOK {
+		t.Fatalf("patch shorts expected 200, got %d: %s", shortsRec.Code, shortsRec.Body.String())
 	}
 
 	publicReq := httptest.NewRequest(http.MethodGet, "/api/free-lessons?miniapp_dev=1", nil)
