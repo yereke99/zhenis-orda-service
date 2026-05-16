@@ -338,7 +338,7 @@ body.landing-mode {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding: 8px max(var(--page-gutter), env(safe-area-inset-left, 0px))
-    calc(120px + var(--app-bottom-padding))
+    max(18px, calc(var(--app-bottom-padding) + 10px))
     max(var(--page-gutter), env(safe-area-inset-right, 0px));
   width: 100%;
   max-width: var(--page-max);
@@ -1559,6 +1559,7 @@ body.landing-mode {
   border-radius: var(--radius-lg);
   background: rgba(10, 13, 19, 0.7);
   box-shadow: var(--shadow-card);
+  touch-action: manipulation;
 }
 
 .youtube-frame iframe,
@@ -1755,21 +1756,75 @@ body.landing-mode {
   gap: 12px;
 }
 
-.dashboard-mini-grid > div {
-  min-width: 0;
+.progress-dashboard-card {
   display: grid;
-  gap: 4px;
-  padding: 12px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  background: rgba(10, 13, 19, 0.5);
+  gap: 18px;
 }
 
-.dashboard-mini-grid strong {
+.progress-dashboard-card .card-header {
+  align-items: center;
+}
+
+.progress-stats-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dashboard-mini-grid > div,
+.progress-stat-card {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-height: 118px;
+  padding: 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(16, 19, 27, 0.76), rgba(8, 11, 17, 0.64));
+}
+
+.progress-stats-grid .progress-stat-card:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.dashboard-mini-grid strong,
+.progress-stat-card strong {
   color: var(--gold-bright);
-  font-size: 18px;
+  font-size: 19px;
+  line-height: 1.15;
   font-weight: 900;
   letter-spacing: 0;
+}
+
+.progress-stat-card p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.42;
+}
+
+.progress-iq-action {
+  justify-self: start;
+  width: min(100%, 300px);
+  margin-top: 4px;
+}
+
+@media (min-width: 520px) {
+  .progress-stats-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .progress-stats-grid .progress-stat-card:nth-child(3) {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 360px) {
+  .progress-stats-grid {
+    grid-template-columns: 1fr;
+  }
+  .progress-iq-action {
+    width: 100%;
+  }
 }
 
 .iq-form {

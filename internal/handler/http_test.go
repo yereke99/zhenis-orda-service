@@ -507,7 +507,7 @@ func TestAdminFreeLessonsCRUDAndPublicVisibility(t *testing.T) {
 	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	expectedEmbedURL := "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?controls=1&disablekb=0&fs=1&iv_load_policy=3&modestbranding=1&playsinline=1&rel=0"
+	expectedEmbedURL := "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?controls=1&disablekb=1&fs=0&iv_load_policy=3&modestbranding=1&playsinline=1&rel=0"
 	if created.FreeLesson.ID == "" || created.FreeLesson.YouTubeVideoID != "dQw4w9WgXcQ" || created.FreeLesson.YouTubeEmbedURL != expectedEmbedURL {
 		t.Fatalf("unexpected created free lesson: %#v", created.FreeLesson)
 	}

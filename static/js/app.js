@@ -147,6 +147,29 @@
     });
   }
 
+  function telegramVersionAtLeast(tg, version) {
+    if (!tg) return false;
+    if (typeof tg.isVersionAtLeast === "function") {
+      try {
+        return tg.isVersionAtLeast(version);
+      } catch (_) {}
+    }
+    const parse = (value) =>
+      String(value || "")
+        .split(".")
+        .map((part) => Number(part) || 0);
+    const current = parse(tg.version);
+    const required = parse(version);
+    const length = Math.max(current.length, required.length);
+    for (let i = 0; i < length; i += 1) {
+      const a = current[i] || 0;
+      const b = required[i] || 0;
+      if (a > b) return true;
+      if (a < b) return false;
+    }
+    return true;
+  }
+
   function sleep(ms) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
@@ -238,15 +261,19 @@
     try {
       webApp.expand();
     } catch (_) {}
-    try {
-      if (typeof webApp.setBackgroundColor === "function") webApp.setBackgroundColor("#07090E");
-      if (typeof webApp.setHeaderColor === "function") webApp.setHeaderColor("#07090E");
-    } catch (_) {}
-    try {
-      if (typeof webApp.disableVerticalSwipes === "function") webApp.disableVerticalSwipes();
-    } catch (_) {}
+    if (telegramVersionAtLeast(webApp, "6.1")) {
+      try {
+        if (typeof webApp.setBackgroundColor === "function") webApp.setBackgroundColor("#07090E");
+        if (typeof webApp.setHeaderColor === "function") webApp.setHeaderColor("#07090E");
+      } catch (_) {}
+    }
+    if (telegramVersionAtLeast(webApp, "7.7")) {
+      try {
+        if (typeof webApp.disableVerticalSwipes === "function") webApp.disableVerticalSwipes();
+      } catch (_) {}
+    }
 
-    if (typeof webApp.requestFullscreen === "function" && !webApp.isFullscreen) {
+    if (telegramVersionAtLeast(webApp, "8.0") && typeof webApp.requestFullscreen === "function" && !webApp.isFullscreen) {
       try {
         webApp.requestFullscreen();
         state.fullscreenRequested = true;
@@ -592,9 +619,9 @@
 	      modestbranding: "1",
 	      playsinline: "1",
 	      controls: "1",
-	      fs: "1",
+	      fs: "0",
 	      iv_load_policy: "3",
-	      disablekb: "0",
+	      disablekb: "1",
 	    });
 	    return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?${params.toString()}`;
 	  }
@@ -609,7 +636,9 @@
 
 	  function youtubeIframe(src, title) {
 	    if (!src) return "";
-	    return `<iframe src="${esc(src)}" title="${esc(title || "YouTube")}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups" allowfullscreen allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"></iframe>`;
+	    // YouTube controls, branding, and in-player links are cross-origin UI owned by YouTube.
+	    // Keep this embed sandboxed and popup-free; use direct video/HLS hosting for full control.
+	    return `<iframe src="${esc(src)}" title="${esc(title || "YouTube")}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation" allow="autoplay; encrypted-media"></iframe>`;
 	  }
 
 	  function visibleTariffImage(tariff) {
@@ -1189,7 +1218,7 @@
 
 	  function syncTelegramBackButton() {
 	    const tg = getTelegram();
-	    if (!tg || !tg.BackButton) return;
+	    if (!tg || !tg.BackButton || !telegramVersionAtLeast(tg, "6.1")) return;
 	    try {
 	      const hasBack = state.currentScreen === "payment" || state.currentScreen === "bookDetail" || state.currentScreen === "freeLessons" || state.currentScreen === "freeLessonDetail" || state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult";
 	      if (hasBack) {
@@ -1397,7 +1426,7 @@
 	  function personalDashboardCard(user, progress, sub, percent) {
 	    const iq = savedFinancialIqResult();
 	    const subTitle = sub && sub.tariff_code ? sub.tariff_code : "Жоқ";
-	    return `<article class="card dashboard-card">
+	    return `<article class="card dashboard-card progress-dashboard-card">
 	      <div class="card-header">
 	        <div>
 	          <p class="eyebrow">Жеке прогресс</p>
@@ -1405,24 +1434,24 @@
 	        </div>
 	        <span class="pill">Деңгей ${esc(user.current_level || 0)}</span>
 	      </div>
-	      <div class="dashboard-mini-grid">
-	        <div>
+	      <div class="dashboard-mini-grid progress-stats-grid">
+	        <div class="progress-stat-card">
 	          <span class="muted small">Қаржылық IQ</span>
 	          <strong>${iq ? `${esc(iq.score)} балл` : "—"}</strong>
 	          <p class="muted">${esc(iq ? iq.result_level : "Тесттен өтіп, нәтижеңізді сақтаңыз.")}</p>
 	        </div>
-	        <div>
+	        <div class="progress-stat-card">
 	          <span class="muted small">Прогресс</span>
 	          <strong>${esc(percent)}%</strong>
 	          <p class="muted">${esc(progress.next_requirement || "Келесі қадам дайындалады.")}</p>
 	        </div>
-	        <div>
+	        <div class="progress-stat-card">
 	          <span class="muted small">Тариф</span>
 	          <strong>${esc(subTitle)}</strong>
 	          <p class="muted">${esc(sub && sub.expires_at ? formatDate(sub.expires_at) : "Белсенді жазылым жоқ")}</p>
 	        </div>
 	      </div>
-	      <button class="${iq ? "ghost-btn" : "gold-btn"}" data-financial-iq type="button">${iq ? "Қайта тапсыру" : "Қаржылық IQ тестін тапсыру"}</button>
+	      <button class="${iq ? "ghost-btn" : "gold-btn"} progress-iq-action" data-financial-iq type="button">${iq ? "Қайта тапсыру" : "Қаржылық IQ тестін тапсыру"}</button>
 	    </article>`;
 	  }
 

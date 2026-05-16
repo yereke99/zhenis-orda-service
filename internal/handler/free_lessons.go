@@ -278,9 +278,9 @@ func buildYouTubeEmbedURL(videoID string) string {
 	params.Set("modestbranding", "1")
 	params.Set("playsinline", "1")
 	params.Set("controls", "1")
-	params.Set("fs", "1")
+	params.Set("fs", "0")
 	params.Set("iv_load_policy", "3")
-	params.Set("disablekb", "0")
+	params.Set("disablekb", "1")
 	return "https://www.youtube-nocookie.com/embed/" + videoID + "?" + params.Encode()
 }
 
