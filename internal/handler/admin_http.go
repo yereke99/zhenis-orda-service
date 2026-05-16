@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"mime"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"zhenis-orda-service/internal/i18n"
 	"zhenis-orda-service/internal/repository"
@@ -355,6 +358,184 @@ func allowedTariffImageExt(ext string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *Server) handleAdminBooks(w http.ResponseWriter, r *http.Request) {
+	books, err := s.store.ListBooks(r.Context(), false)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"books": books})
+}
+
+func (s *Server) handleAdminPostBook(w http.ResponseWriter, r *http.Request) {
+	actor := adminFromContext(r.Context())
+	var req struct {
+		ID            string `json:"id"`
+		Title         string `json:"title"`
+		Description   string `json:"description"`
+		PriceKZT      int    `json:"price_kzt"`
+		ImageURL      string `json:"image_url"`
+		ImageFilePath string `json:"image_file_path"`
+		ImageSource   string `json:"image_source"`
+		SortOrder     int    `json:"sort_order"`
+		IsActive      *bool  `json:"is_active"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if raw := r.PathValue("id"); raw != "" {
+		if !repository.IsUUID(raw) {
+			writeError(w, http.StatusBadRequest, "bad id")
+			return
+		}
+		req.ID = raw
+	}
+	if strings.TrimSpace(req.ImageURL) != "" && !isHTTPURL(req.ImageURL) {
+		writeError(w, http.StatusBadRequest, "invalid image url")
+		return
+	}
+	active := true
+	if req.IsActive != nil {
+		active = *req.IsActive
+	}
+	book := repository.Book{
+		ID:            req.ID,
+		Title:         req.Title,
+		Description:   req.Description,
+		PriceKZT:      req.PriceKZT,
+		ImageURL:      req.ImageURL,
+		ImageFilePath: req.ImageFilePath,
+		ImageSource:   req.ImageSource,
+		SortOrder:     req.SortOrder,
+		IsActive:      active,
+	}
+	out, err := s.store.UpsertBook(r.Context(), book)
+	if mapRepoError(w, err) {
+		return
+	}
+	action := "book_create"
+	if r.Method == http.MethodPatch {
+		action = "book_update"
+	}
+	_ = s.store.Audit(r.Context(), actor, action, "book", out.ID, out)
+	writeJSON(w, http.StatusOK, map[string]any{"book": out})
+}
+
+func (s *Server) handleAdminArchiveBook(w http.ResponseWriter, r *http.Request) {
+	actor := adminFromContext(r.Context())
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	if err := s.store.ArchiveBook(r.Context(), id); mapRepoError(w, err) {
+		return
+	}
+	_ = s.store.Audit(r.Context(), actor, "book_archive", "book", id, nil)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleAdminBookImageUpload(w http.ResponseWriter, r *http.Request) {
+	maxBytes := s.cfg.MaxBookImageBytes
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+1024)
+	if err := r.ParseMultipartForm(maxBytes + 1024); err != nil {
+		writeError(w, http.StatusBadRequest, "image file is too large or invalid")
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "image file is required")
+		return
+	}
+	defer file.Close()
+
+	fileName := filepath.Base(header.Filename)
+	if ext := strings.ToLower(filepath.Ext(fileName)); ext != "" && !allowedBookImageExt(ext) {
+		writeError(w, http.StatusBadRequest, "unsupported image file type")
+		return
+	}
+	head := make([]byte, 512)
+	n, readErr := file.Read(head)
+	if readErr != nil && readErr != io.EOF {
+		writeError(w, http.StatusBadRequest, "image file is invalid")
+		return
+	}
+	ext, ok := detectedBookImageExt(head[:n])
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unsupported image file type")
+		return
+	}
+
+	now := time.Now()
+	dir := filepath.Join(s.cfg.BookUploadDir, now.Format("2006"), now.Format("01"))
+	if err := ensureUploadDir(dir); err != nil {
+		writeError(w, http.StatusInternalServerError, "image directory error")
+		return
+	}
+	path := filepath.Join(dir, uuid.NewString()+ext)
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "image save error")
+		return
+	}
+	limited := io.LimitReader(io.MultiReader(bytes.NewReader(head[:n]), file), maxBytes+1)
+	written, copyErr := io.Copy(out, limited)
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		writeError(w, http.StatusInternalServerError, "image save error")
+		return
+	}
+	if written > maxBytes {
+		_ = os.Remove(path)
+		writeError(w, http.StatusBadRequest, "image file is too large")
+		return
+	}
+	publicPath := safePublicBookUploadPath(s.cfg.BookUploadDir, path)
+	if publicPath == "" {
+		_ = os.Remove(path)
+		writeError(w, http.StatusInternalServerError, "image path error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"image_file_path": publicPath,
+		"image_source":    "uploaded",
+	})
+}
+
+func isHTTPURL(value string) bool {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(value))
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
+}
+
+func allowedBookImageExt(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg", ".png", ".webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func detectedBookImageExt(sample []byte) (string, bool) {
+	if len(sample) >= 12 && string(sample[0:4]) == "RIFF" && string(sample[8:12]) == "WEBP" {
+		return ".webp", true
+	}
+	switch http.DetectContentType(sample) {
+	case "image/jpeg":
+		return ".jpg", true
+	case "image/png":
+		return ".png", true
+	case "image/webp":
+		return ".webp", true
+	default:
+		return "", false
 	}
 }
 

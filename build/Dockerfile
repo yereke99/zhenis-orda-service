@@ -13,7 +13,7 @@ WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/zhenis-orda /app/zhenis-orda
 COPY static /app/static
-RUN mkdir -p /app/data /app/uploads
+RUN mkdir -p /app/data /app/uploads/books
 
 EXPOSE 8080
 CMD ["/app/zhenis-orda"]

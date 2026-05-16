@@ -500,6 +500,33 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"channels": channels})
 }
 
+func (s *Server) handleBooks(w http.ResponseWriter, r *http.Request) {
+	books, err := s.store.ListBooks(r.Context(), true)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"books":                books,
+		"whatsapp_sales_phone": s.cfg.WhatsAppSalesPhone,
+	})
+}
+
+func (s *Server) handleBook(w http.ResponseWriter, r *http.Request) {
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad book")
+		return
+	}
+	book, err := s.store.GetBook(r.Context(), id, true)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"book":                 book,
+		"whatsapp_sales_phone": s.cfg.WhatsAppSalesPhone,
+	})
+}
+
 func (s *Server) handleIssueInvite(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	channelID, err := parsePathID(r, "id")

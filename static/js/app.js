@@ -14,10 +14,14 @@
     platform: null,
     levels: [],
     lessons: [],
+    books: [],
     referral: null,
     coins: null,
     currentScreen: "dashboard",
     selectedTariff: null,
+    selectedBookId: null,
+    bookReturnScreen: "dashboard",
+    whatsappSalesPhone: "",
     financialIqAnswers: {},
     financialIqResult: null,
     financialIqReturnScreen: "dashboard",
@@ -36,6 +40,8 @@
   const TELEGRAM_AUTH_FAILED_MESSAGE =
     "Telegram авторизациясы сәтсіз аяқталды. Mini App-ты бот ішіндегі батырма арқылы қайта ашыңыз.";
   const DEFAULT_CHANNEL_LINK = "https://t.me/zhenisOrdaFinanceBot";
+  let certificatePopoverNode = null;
+  let certificatePopoverOutsideHandler = null;
 
   /* ===========================================================
      DOM ELEMENT REGISTRY
@@ -546,6 +552,46 @@
 	    return compact(tariff.image_file_path) || compact(tariff.image_url);
 	  }
 
+	  function visibleBookImage(book) {
+	    if (!book) return "";
+	    return compact(book.image_file_path) || compact(book.image_url);
+	  }
+
+	  function shortText(value, limit) {
+	    const text = compact(value).replace(/\s+/g, " ");
+	    const max = limit || 120;
+	    return text.length > max ? `${text.slice(0, max - 1).trim()}…` : text;
+	  }
+
+	  function bookParagraphs(value) {
+	    return compact(value)
+	      .split(/\n{2,}/)
+	      .map((paragraph) => paragraph.trim())
+	      .filter(Boolean)
+	      .map((paragraph) => `<p class="muted">${esc(paragraph)}</p>`)
+	      .join("");
+	  }
+
+	  function bookBuyUrl(book) {
+	    const phone = compact(state.whatsappSalesPhone).replace(/\D/g, "");
+	    if (!phone || !book) return "";
+	    const message = `Сәлеметсіз бе! Мен «${book.title || ""}» кітабын сатып алғым келеді. Бағасы: ${money(book.price_kzt)} ₸.`;
+	    return `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(message)}`;
+	  }
+
+	  function openExternalLink(url) {
+	    if (!url) {
+	      toast("WhatsApp нөмірі бапталмаған", "error");
+	      return;
+	    }
+	    const tg = getTelegram();
+	    if (tg && typeof tg.openLink === "function") {
+	      tg.openLink(url);
+	      return;
+	    }
+	    window.open(url, "_blank", "noopener");
+	  }
+
 	  function selectedTariff() {
 	    const tariffs = (state.platform && state.platform.tariffs) || [];
 	    const selected = compact(state.selectedTariff);
@@ -616,11 +662,13 @@
     access_closed: "Қолжетімділік",
 	    tariff_code: "Тариф",
 	    code: "Код",
-	    price_kzt: "Баға",
-	    short_description_kk: "Қысқа сипаттама",
+		    price_kzt: "Баға",
+		    description: "Сипаттама",
+		    short_description_kk: "Қысқа сипаттама",
 	    full_description_kk: "Толық сипаттама",
 	    image_url: "Сурет URL",
-	    image_file_path: "Жүктелген сурет",
+		    image_file_path: "Жүктелген сурет",
+		    image_source: "Сурет түрі",
 	    amount_kzt: "Сома",
     provider: "Провайдер",
     status: "Статус",
@@ -976,14 +1024,17 @@
   }
 
   async function loadMiniAppData() {
-    const [me, platform, levels] = await Promise.all([
+    const [me, platform, levels, books] = await Promise.all([
       api("/api/me"),
       api("/api/platform").catch(() => null),
       api("/api/levels").catch(() => ({ levels: [] })),
+      api("/api/books").catch(() => ({ books: [], whatsapp_sales_phone: "" })),
     ]);
     state.me = me;
     state.platform = platform;
     state.levels = (levels && levels.levels) || [];
+    state.books = (books && books.books) || [];
+    state.whatsappSalesPhone = compact(books && books.whatsapp_sales_phone);
 
     const user = me && me.user ? me.user : {};
     const sub = user.subscription || {};
@@ -1000,6 +1051,7 @@
      =========================================================== */
 
 	  function setScreen(screen) {
+	    closeCertificatePopover();
 	    state.currentScreen = screen;
 	    syncTelegramBackButton();
 	    renderMini();
@@ -1025,6 +1077,7 @@
       coins: renderCoins,
       streams: renderStreams,
       channels: renderChannels,
+      bookDetail: renderBookDetail,
       profile: renderProfile,
       support: renderSupport,
     };
@@ -1039,6 +1092,10 @@
 	      setScreen("tariffs");
 	      return;
 	    }
+	    if (state.currentScreen === "bookDetail") {
+	      closeBookDetail();
+	      return;
+	    }
 	    if (state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult") {
 	      returnFromFinancialIq();
 	    }
@@ -1048,7 +1105,7 @@
 	    const tg = getTelegram();
 	    if (!tg || !tg.BackButton) return;
 	    try {
-	      const hasBack = state.currentScreen === "payment" || state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult";
+	      const hasBack = state.currentScreen === "payment" || state.currentScreen === "bookDetail" || state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult";
 	      if (hasBack) {
 	        if (!state.telegramBackHandlerBound && typeof tg.BackButton.onClick === "function") {
 	          tg.BackButton.onClick(handleMiniAppBack);
@@ -1289,6 +1346,61 @@
 	    });
 	  }
 
+	  function bindCertificateGoal() {
+	    const button = document.getElementById("certificateGoal");
+	    if (!button) return;
+	    button.addEventListener("click", (event) => {
+	      event.stopPropagation();
+	      toggleCertificatePopover(button);
+	    });
+	  }
+
+	  function toggleCertificatePopover(anchor) {
+	    if (certificatePopoverNode) {
+	      closeCertificatePopover();
+	      if (anchor) anchor.setAttribute("aria-expanded", "false");
+	      return;
+	    }
+	    if (!anchor || !els.modalRoot) return;
+	    const popover = document.createElement("div");
+	    popover.className = "certificate-popover";
+	    popover.innerHTML = `
+	      <button class="certificate-popover-close" type="button" aria-label="Жабу">×</button>
+	      <p>Курсты толық аяқтаған соң сертификат/диплом аласыз.</p>
+	    `;
+	    els.modalRoot.appendChild(popover);
+	    const rect = anchor.getBoundingClientRect();
+	    const width = Math.min(240, Math.max(180, window.innerWidth - 24));
+	    const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.right - width));
+	    let top = rect.bottom + 10;
+	    if (top + 110 > window.innerHeight) top = Math.max(12, rect.top - 104);
+	    popover.style.width = `${width}px`;
+	    popover.style.left = `${left}px`;
+	    popover.style.top = `${top}px`;
+	    certificatePopoverNode = popover;
+	    anchor.setAttribute("aria-expanded", "true");
+	    popover.querySelector(".certificate-popover-close").addEventListener("click", closeCertificatePopover);
+	    certificatePopoverOutsideHandler = (event) => {
+	      if (!certificatePopoverNode) return;
+	      if (certificatePopoverNode.contains(event.target) || anchor.contains(event.target)) return;
+	      closeCertificatePopover();
+	    };
+	    window.setTimeout(() => document.addEventListener("click", certificatePopoverOutsideHandler), 0);
+	  }
+
+	  function closeCertificatePopover() {
+	    if (certificatePopoverOutsideHandler) {
+	      document.removeEventListener("click", certificatePopoverOutsideHandler);
+	      certificatePopoverOutsideHandler = null;
+	    }
+	    if (certificatePopoverNode) {
+	      certificatePopoverNode.remove();
+	      certificatePopoverNode = null;
+	    }
+	    const button = document.getElementById("certificateGoal");
+	    if (button) button.setAttribute("aria-expanded", "false");
+	  }
+
 	  function openFinancialIq() {
 	    if (state.currentScreen !== "financialIq" && state.currentScreen !== "financialIqResult") {
 	      state.financialIqReturnScreen = state.currentScreen || "dashboard";
@@ -1405,6 +1517,7 @@
           <button class="ghost-btn lg" id="goTariffs" type="button">Тариф таңдау</button>
         </div>
         ${savedFinancialIqResult() ? "" : financialIqCtaCard()}
+        ${booksHomeSection()}
         <div class="card">
           <p class="eyebrow">Premium жабық клуб</p>
           <h2>Жабық мүшелік</h2>
@@ -1415,6 +1528,7 @@
     on("goDiagnostics", () => setScreen("diagnostics"));
     on("goTariffs", () => setScreen("tariffs"));
     bindFinancialIqCta();
+    bindBookCards();
   }
 
   function renderDashboard() {
@@ -1434,7 +1548,7 @@
 	          <p class="muted">${esc(progress.next_requirement || "Ойлау, қаржы, бизнес және лидерлік бойынша жүйелі дамыңыз.")}</p>
 	          <div class="progress-wrap">
 	            <div class="progress-track"><div class="progress-fill" style="--progress:${percent}%"></div></div>
-	            <div class="certificate-goal ${percent >= 100 ? "active" : ""}" title="Сертификат"><span class="certificate-icon" aria-hidden="true"></span></div>
+	            <button class="certificate-goal ${percent >= 100 ? "active" : ""}" id="certificateGoal" type="button" aria-label="Сертификат" aria-expanded="false"><span class="certificate-icon" aria-hidden="true"></span></button>
 	          </div>
 	          <div class="progress-row">
 	            <span>${percent >= 100 ? "Сертификат" : "Сіздің прогресіңіз"}</span>
@@ -1451,6 +1565,8 @@
         ${personalDashboardCard(user, progress, sub, percent)}
 
         ${savedFinancialIqResult() ? "" : financialIqCtaCard()}
+
+        ${booksHomeSection()}
 
         <div class="card">
           <div class="card-header">
@@ -1487,7 +1603,114 @@
     `);
     bindNext();
     bindFinancialIqCta();
+    bindCertificateGoal();
+    bindBookCards();
   }
+
+	  function booksHomeSection() {
+	    const books = state.books || [];
+	    if (!books.length) return "";
+	    return `<section class="books-section" aria-label="Авторлық кітаптар">
+	      <div class="section-head">
+	        <div>
+	          <p class="eyebrow">Кітаптар</p>
+	          <h2>Авторлық кітаптар</h2>
+	        </div>
+	      </div>
+	      <div class="book-grid">${books.map(bookCard).join("")}</div>
+	    </section>`;
+	  }
+
+	  function bookCard(book) {
+	    const image = visibleBookImage(book);
+	    const buyUrl = bookBuyUrl(book);
+	    return `<article class="book-card" data-book-detail="${esc(book.id)}" tabindex="0" role="button" aria-label="${esc(book.title)}">
+	      ${image ? `<img class="book-image" src="${esc(image)}" alt="${esc(book.title)}" loading="lazy" />` : `<div class="book-image placeholder" aria-hidden="true">ZO</div>`}
+	      <div class="book-card-body">
+	        <h3>${esc(book.title)}</h3>
+	        <p class="muted">${esc(shortText(book.description, 96))}</p>
+	        <div class="book-card-foot">
+	          <strong>${money(book.price_kzt)} ₸</strong>
+	          <button class="gold-btn" data-buy-book="${esc(book.id)}" data-buy-url="${esc(buyUrl)}" type="button">Сатып алу</button>
+	        </div>
+	      </div>
+	    </article>`;
+	  }
+
+	  function bindBookCards() {
+	    document.querySelectorAll("[data-book-detail]").forEach((card) => {
+	      card.addEventListener("click", (event) => {
+	        if (event.target.closest("[data-buy-book]")) return;
+	        openBookDetail(card.dataset.bookDetail);
+	      });
+	      card.addEventListener("keydown", (event) => {
+	        if (event.key === "Enter" || event.key === " ") {
+	          event.preventDefault();
+	          openBookDetail(card.dataset.bookDetail);
+	        }
+	      });
+	    });
+	    document.querySelectorAll("[data-buy-book]").forEach((button) => {
+	      button.addEventListener("click", (event) => {
+	        event.stopPropagation();
+	        const book = (state.books || []).find((item) => item.id === button.dataset.buyBook);
+	        openExternalLink(button.dataset.buyUrl || bookBuyUrl(book));
+	      });
+	    });
+	  }
+
+	  function openBookDetail(bookID) {
+	    if (!bookID) return;
+	    state.selectedBookId = bookID;
+	    state.bookReturnScreen = state.currentScreen && state.currentScreen !== "bookDetail" ? state.currentScreen : "dashboard";
+	    setScreen("bookDetail");
+	  }
+
+	  function closeBookDetail() {
+	    const target = state.bookReturnScreen || "dashboard";
+	    state.selectedBookId = null;
+	    setScreen(target === "bookDetail" ? "dashboard" : target);
+	  }
+
+	  async function renderBookDetail() {
+	    const bookID = state.selectedBookId;
+	    let book = (state.books || []).find((item) => item.id === bookID);
+	    if (!book && bookID) {
+	      try {
+	        const data = await api(`/api/books/${bookID}`);
+	        book = data.book;
+	        state.whatsappSalesPhone = compact(data.whatsapp_sales_phone || state.whatsappSalesPhone);
+	      } catch (error) {
+	        html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backBook" type="button">Артқа</button>${emptyState(error.message || "Кітап табылмады")}</section>`);
+	        on("backBook", closeBookDetail);
+	        return;
+	      }
+	    }
+	    if (!book) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backBook" type="button">Артқа</button>${emptyState("Кітап табылмады")}</section>`);
+	      on("backBook", closeBookDetail);
+	      return;
+	    }
+	    const image = visibleBookImage(book);
+	    const buyUrl = bookBuyUrl(book);
+	    html(`
+	      <section class="screen book-detail-screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backBook" type="button">Артқа</button>
+	        </div>
+	        <article class="card book-detail-card">
+	          ${image ? `<img class="book-detail-image" src="${esc(image)}" alt="${esc(book.title)}" loading="lazy" />` : ""}
+	          <p class="eyebrow">Авторлық кітап</p>
+	          <h1>${esc(book.title)}</h1>
+	          <div class="price">${money(book.price_kzt)} <small>₸</small></div>
+	          <div class="book-description">${bookParagraphs(book.description)}</div>
+	          <button class="gold-btn lg block" id="buyBookDetail" type="button">Сатып алу</button>
+	        </article>
+	      </section>
+	    `);
+	    on("backBook", closeBookDetail);
+	    on("buyBookDetail", () => openExternalLink(buyUrl));
+	  }
 
   function metric(label, value, hint, statusKind) {
     const status = statusKind ? `<span class="status ${statusKind}">${esc(hint)}</span>` : `<span class="muted">${esc(hint || "")}</span>`;
@@ -2454,6 +2677,7 @@
 	    ["tariffs", "Тарифтер"],
 	    ["levels", "Деңгейлер"],
     ["lessons", "Сабақтар"],
+    ["books", "Кітаптар"],
     ["tests", "Тесттер"],
     ["assignments", "Тапсырмалар"],
 	    ["referrals", "Дос шақыру"],
@@ -2510,6 +2734,7 @@
 	      if (screen === "tariffs") return await renderAdminTariffs();
       if (screen === "levels") return await renderAdminLevels();
       if (screen === "lessons") return await renderAdminLessons();
+      if (screen === "books") return await renderAdminBooks();
       if (screen === "tests") return await renderAdminTests();
       if (screen === "assignments") return await renderAdminItems("/api/admin/assignments/submissions", "Тапсырма жауаптары");
 	      if (screen === "referrals") return await renderAdminItems("/api/admin/referrals", "Дос шақыру");
@@ -2764,11 +2989,164 @@
 	        setModalBusy(shell, false);
 	        setButtonLoading(btn, false);
 	      }
+		    });
+		  }
+
+	  async function renderAdminBooks() {
+	    const data = await api("/api/admin/books");
+	    const books = data.books || [];
+	    els.adminContent.innerHTML = `
+	      <div class="card">
+	        <div class="admin-section-head">
+	          <div><p class="eyebrow">Сату</p><h2>Кітаптар</h2></div>
+	          <div class="admin-toolbar"><button class="gold-btn" id="addBook" type="button">+ Кітап қосу</button></div>
+	        </div>
+	        ${bookTableHtml(books)}
+	      </div>
+	    `;
+	    on("addBook", () => openBookModal(null, books));
+	    delegate(els.adminContent, "[data-edit-book]", "click", (event, target) => {
+	      const book = books.find((item) => item.id === target.dataset.editBook);
+	      if (book) openBookModal(book, books);
+	    });
+	    delegate(els.adminContent, "[data-archive-book]", "click", async (event, target) => {
+	      const book = books.find((item) => item.id === target.dataset.archiveBook);
+	      const ok = await confirmAction({
+	        title: "Кітапты белсенді емес ету",
+	        body: `<p class="muted">${esc(book ? book.title : "Бұл кітап")} клиент жағында көрінбейді. Жалғастырасыз ба?</p>`,
+	        confirmLabel: "Белсенді емес",
+	        action: () => api(`/api/admin/books/${target.dataset.archiveBook}`, { method: "DELETE" }),
+	        successMessage: "Кітап белсенді емес күйге ауысты",
+	        errorMessage: "Кітапты өзгерту мүмкін болмады",
+	      });
+	      if (!ok) return;
+	      renderAdminBooks();
 	    });
 	  }
 
-	  async function renderAdminItems(url, title) {
-    const data = await api(url);
+	  function bookTableHtml(books) {
+	    if (!books.length) return emptyState("Кітаптар табылмады");
+	    return `<div class="table-wrap"><table>
+	      <thead><tr><th>Сурет</th><th>Кітап</th><th>Баға</th><th>Реті</th><th>Статус</th><th>Әрекет</th></tr></thead>
+	      <tbody>${books
+	        .map((book) => {
+	          const image = visibleBookImage(book);
+	          return `<tr>
+	            <td>${image ? `<img class="tariff-admin-thumb" src="${esc(image)}" alt="${esc(book.title)}" loading="lazy" />` : "—"}</td>
+	            <td><strong>${esc(book.title)}</strong><div class="muted small">${esc(shortId(book.id))}</div><div class="muted small">${esc(shortText(book.description, 110))}</div></td>
+	            <td>${money(book.price_kzt)} ₸</td>
+	            <td>${esc(book.sort_order || 0)}</td>
+	            <td>${statusBadge(book.is_active ? "active" : "inactive")}</td>
+	            <td><div class="action-row">
+	              <button class="ghost-btn" data-edit-book="${esc(book.id)}" type="button">Өзгерту</button>
+	              <button class="danger-btn" data-archive-book="${esc(book.id)}" type="button">Белсенді емес</button>
+	            </div></td>
+	          </tr>`;
+	        })
+	        .join("")}</tbody></table></div>`;
+	  }
+
+	  function openBookModal(book, books) {
+	    const isEdit = Boolean(book && book.id);
+	    const image = visibleBookImage(book);
+	    const nextOrder = Math.max(0, ...books.map((item) => Number(item.sort_order) || 0)) + 1;
+	    const shell = openModalShell(isEdit ? "Кітапты өзгерту" : "Кітап қосу", `
+	      <form id="bookModalForm" class="form">
+	        <div class="grid two">
+	          <label class="field"><span>Атауы</span><input name="title" required value="${esc((book && book.title) || "")}" /></label>
+	          <label class="field"><span>Баға, KZT</span><input name="price_kzt" type="number" min="1" required value="${esc((book && book.price_kzt) || "")}" /></label>
+	        </div>
+	        <label class="field"><span>Сипаттама</span><textarea name="description" required>${esc((book && book.description) || "")}</textarea></label>
+	        <div class="grid two">
+	          <label class="field"><span>Сурет URL</span><input name="image_url" placeholder="https://" value="${esc((book && book.image_url) || "")}" /></label>
+	          <label class="field"><span>Реті</span><input name="sort_order" type="number" min="1" value="${esc((book && book.sort_order) || nextOrder)}" /></label>
+	        </div>
+	        <label class="upload-drop book-upload">
+	          <input name="image_upload" type="file" accept=".jpg,.jpeg,.png,.webp,image/*" />
+	          <span class="upload-title">Кітап суретін жүктеу</span>
+	          <small>JPG, PNG немесе WEBP, 5 MB дейін</small>
+	          <strong id="bookUploadName">Файл таңдалмады</strong>
+	        </label>
+	        <input type="hidden" name="image_file_path" value="${esc((book && book.image_file_path) || "")}" />
+	        <input type="hidden" name="image_source" value="${esc((book && book.image_source) || "none")}" />
+	        <div id="bookImagePreview" class="tariff-image-preview">${image ? `<img src="${esc(image)}" alt="${esc((book && book.title) || "Кітап")}" />` : ""}</div>
+	        <label class="switch-field"><input name="is_active" type="checkbox" ${!book || book.is_active ? "checked" : ""} /><span>Белсенді</span></label>
+	        <div class="action-row end">
+	          <button class="ghost-btn" data-close-modal type="button">Болдырмау</button>
+	          <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
+	        </div>
+	      </form>
+	    `);
+	    const form = shell.body.querySelector("form");
+	    const upload = form.querySelector("input[name=image_upload]");
+	    const uploadName = shell.body.querySelector("#bookUploadName");
+	    const preview = shell.body.querySelector("#bookImagePreview");
+	    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
+	    upload.addEventListener("change", async () => {
+	      const file = upload.files && upload.files[0];
+	      uploadName.textContent = file ? file.name : "Файл таңдалмады";
+	      if (!file) return;
+	      const fd = new FormData();
+	      fd.append("image", file);
+	      try {
+	        const res = await api("/api/admin/books/upload-image", { method: "POST", body: fd });
+	        form.elements.image_file_path.value = res.image_file_path || "";
+	        form.elements.image_source.value = "uploaded";
+	        form.elements.image_url.value = "";
+	        preview.innerHTML = res.image_file_path ? `<img src="${esc(res.image_file_path)}" alt="Кітап суреті" />` : "";
+	        toast("Сурет жүктелді", "success");
+	      } catch (error) {
+	        toast(error.message || "Сурет жүктеу мүмкін болмады", "error");
+	      }
+	    });
+	    form.addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const btn = form.querySelector("button[type=submit]");
+	      const fd = new FormData(form);
+	      const imageURL = compact(fd.get("image_url"));
+	      const existingImageURL = compact(book && book.image_url);
+	      const preferURL = imageURL && imageURL !== existingImageURL;
+	      const imageFilePath = preferURL ? "" : compact(fd.get("image_file_path"));
+	      const payload = {
+	        title: compact(fd.get("title")),
+	        description: compact(fd.get("description")),
+	        price_kzt: Number(fd.get("price_kzt") || 0),
+	        image_url: imageURL,
+	        image_file_path: imageFilePath,
+	        image_source: imageFilePath ? "uploaded" : imageURL ? "url" : "none",
+	        sort_order: Number(fd.get("sort_order") || 0),
+	        is_active: fd.get("is_active") === "on",
+	      };
+	      if (!payload.title || !payload.description || payload.price_kzt <= 0) {
+	        toast("Атауы, сипаттама және баға міндетті", "error");
+	        return;
+	      }
+	      if (!payload.image_url && !payload.image_file_path) {
+	        toast("Кітап суретін URL арқылы немесе файл жүктеп қосыңыз", "error");
+	        return;
+	      }
+	      if (buttonIsLoading(btn)) return;
+	      setButtonLoading(btn, true);
+	      setModalBusy(shell, true);
+	      try {
+	        await api(isEdit ? `/api/admin/books/${book.id}` : "/api/admin/books", {
+	          method: isEdit ? "PATCH" : "POST",
+	          body: JSON.stringify(payload),
+	        });
+	        shell.close();
+	        toast("Кітап сақталды", "success");
+	        renderAdminBooks();
+	      } catch (error) {
+	        toast(error.message || "Кітапты сақтау мүмкін болмады", "error");
+	      } finally {
+	        setModalBusy(shell, false);
+	        setButtonLoading(btn, false);
+	      }
+	    });
+	  }
+
+		  async function renderAdminItems(url, title) {
+	    const data = await api(url);
     const rows = data.items || [];
     const columns = rows[0] ? Object.keys(rows[0]).slice(0, 7) : ["id", "status"];
     els.adminContent.innerHTML = `

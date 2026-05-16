@@ -59,6 +59,9 @@ DISABLE_TELEGRAM_BOT=true docker compose up --build
 - `ADMIN_IDS`
 - `ADMIN_PASSWORD_HASH`
 - `UPLOAD_DIR`
+- `BOOK_UPLOAD_DIR` default `UPLOAD_DIR/books`, used for uploaded author book images
+- `WHATSAPP_SALES_PHONE` digits or formatted phone for book sales WhatsApp links
+- `MAX_BOOK_IMAGE_BYTES` default `5242880`
 - `PAYMENT_DIR` default `payment`, used for original receipt files
 - `SEED_DEMO_CONTENT=1` enables development-only demo lessons/tests
 - `RESET_LEGACY_INTEGER_IDS=1` recreates legacy integer-ID MVP tables as UUID tables after you have backed up development data
@@ -113,3 +116,4 @@ Covered critical paths:
 - Admin creates real lessons and level-end tests from `/admin`; test questions/options are saved transactionally.
 - Receipt parsing stores hashes and safe extracted fields, flags duplicate/suspicious receipts, and keeps final approval manual.
 - Broadcasts are queued in DB and delivered by the scheduler through Telegram with per-user delivery records.
+- Docker Compose stores uploaded images under the persistent `app-uploads` volume. Book images are saved in `/app/uploads/books` by default.

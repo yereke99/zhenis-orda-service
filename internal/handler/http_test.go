@@ -49,11 +49,14 @@ func newTestHTTPServerWithConfig(t *testing.T, env string, configure func(*confi
 		MiniAppURL:              "http://localhost:8080",
 		DBPath:                  ":memory:",
 		UploadDir:               t.TempDir(),
+		BookUploadDir:           t.TempDir(),
 		PaymentDir:              t.TempDir(),
 		AllowedOrigins:          []string{"http://localhost:8080"},
+		WhatsAppSalesPhone:      "77476823396",
 		PaymentPendingTTL:       time.Hour,
 		SubscriptionDefaultDays: 30,
 		MaxReceiptBytes:         1024 * 1024,
+		MaxBookImageBytes:       1024 * 1024,
 		BrowserSessionTTL:       time.Hour,
 		TelegramInitDataMaxAge:  time.Hour,
 	}
@@ -253,6 +256,37 @@ func loginAdminCookie(t *testing.T, srv *handler.Server) *http.Cookie {
 	return cookies[0]
 }
 
+func multipartBody(t *testing.T, fieldName, fileName string, data []byte) (*bytes.Buffer, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile(fieldName, fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf, writer.FormDataContentType()
+}
+
+func tinyPNG() []byte {
+	return []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+		0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+		0x42, 0x60, 0x82,
+	}
+}
+
 func setLevelTelegramChat(t *testing.T, srv *handler.Server, cookie *http.Cookie, levelNumber int, chatID string) repository.Level {
 	t.Helper()
 	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/levels", nil)
@@ -312,6 +346,124 @@ func TestAdminStatsRequiresAuth(t *testing.T) {
 	srv.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+func TestAdminBooksCRUDAndPublicVisibility(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	cookie := loginAdminCookie(t, srv)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/books", bytes.NewBufferString(`{
+		"title": "Ақша формуласы",
+		"description": "Авторлық кітап сипаттамасы",
+		"price_kzt": 12000,
+		"image_url": "https://example.com/book.webp",
+		"is_active": true
+	}`))
+	createReq.AddCookie(cookie)
+	createRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create book expected 200, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Book repository.Book `json:"book"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Book.ID == "" || !created.Book.IsActive {
+		t.Fatalf("unexpected created book: %#v", created.Book)
+	}
+
+	publicReq := httptest.NewRequest(http.MethodGet, "/api/books?miniapp_dev=1", nil)
+	publicRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(publicRec, publicReq)
+	if publicRec.Code != http.StatusOK {
+		t.Fatalf("public books expected 200, got %d: %s", publicRec.Code, publicRec.Body.String())
+	}
+	var publicBody struct {
+		Books              []repository.Book `json:"books"`
+		WhatsAppSalesPhone string            `json:"whatsapp_sales_phone"`
+	}
+	if err := json.NewDecoder(publicRec.Body).Decode(&publicBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(publicBody.Books) != 1 || publicBody.Books[0].ID != created.Book.ID {
+		t.Fatalf("expected one active public book, got %#v", publicBody.Books)
+	}
+	if publicBody.WhatsAppSalesPhone != "77476823396" {
+		t.Fatalf("whatsapp phone = %q", publicBody.WhatsAppSalesPhone)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/admin/books/"+created.Book.ID, nil)
+	deleteReq.AddCookie(cookie)
+	deleteRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete book expected 200, got %d: %s", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	publicAfterReq := httptest.NewRequest(http.MethodGet, "/api/books?miniapp_dev=1", nil)
+	publicAfterRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(publicAfterRec, publicAfterReq)
+	if publicAfterRec.Code != http.StatusOK {
+		t.Fatalf("public books after delete expected 200, got %d: %s", publicAfterRec.Code, publicAfterRec.Body.String())
+	}
+	publicBody.Books = nil
+	if err := json.NewDecoder(publicAfterRec.Body).Decode(&publicBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(publicBody.Books) != 0 {
+		t.Fatalf("expected inactive book hidden from public API, got %#v", publicBody.Books)
+	}
+}
+
+func TestAdminBookImageUploadValidationAndServing(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	cookie := loginAdminCookie(t, srv)
+
+	unauthReq := httptest.NewRequest(http.MethodPost, "/api/admin/books/upload-image", nil)
+	unauthRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected upload auth 401, got %d", unauthRec.Code)
+	}
+
+	badBuf, badType := multipartBody(t, "image", "bad.txt", []byte("not an image"))
+	badReq := httptest.NewRequest(http.MethodPost, "/api/admin/books/upload-image", badBuf)
+	badReq.Header.Set("Content-Type", badType)
+	badReq.AddCookie(cookie)
+	badRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("bad image expected 400, got %d: %s", badRec.Code, badRec.Body.String())
+	}
+
+	imageBuf, imageType := multipartBody(t, "image", "cover.png", tinyPNG())
+	imageReq := httptest.NewRequest(http.MethodPost, "/api/admin/books/upload-image", imageBuf)
+	imageReq.Header.Set("Content-Type", imageType)
+	imageReq.AddCookie(cookie)
+	imageRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(imageRec, imageReq)
+	if imageRec.Code != http.StatusOK {
+		t.Fatalf("image upload expected 200, got %d: %s", imageRec.Code, imageRec.Body.String())
+	}
+	var body struct {
+		ImageFilePath string `json:"image_file_path"`
+		ImageSource   string `json:"image_source"`
+	}
+	if err := json.NewDecoder(imageRec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(body.ImageFilePath, "/uploads/books/") || body.ImageSource != "uploaded" {
+		t.Fatalf("unexpected upload payload: %#v", body)
+	}
+	staticReq := httptest.NewRequest(http.MethodGet, body.ImageFilePath, nil)
+	staticRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(staticRec, staticReq)
+	if staticRec.Code != http.StatusOK {
+		t.Fatalf("uploaded image static serve expected 200, got %d", staticRec.Code)
 	}
 }
 

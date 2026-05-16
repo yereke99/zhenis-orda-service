@@ -82,6 +82,20 @@ type Tariff struct {
 	IsActive           bool     `json:"is_active"`
 }
 
+type Book struct {
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Description   string    `json:"description"`
+	PriceKZT      int       `json:"price_kzt"`
+	ImageURL      string    `json:"image_url,omitempty"`
+	ImageFilePath string    `json:"image_file_path,omitempty"`
+	ImageSource   string    `json:"image_source"`
+	SortOrder     int       `json:"sort_order"`
+	IsActive      bool      `json:"is_active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 type Subscription struct {
 	ID          string     `json:"id"`
 	UserID      string     `json:"user_id"`

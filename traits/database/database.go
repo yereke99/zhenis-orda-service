@@ -249,7 +249,7 @@ func guardLegacyIntegerIDs(ctx context.Context, db *sql.DB) error {
 		"user_level_telegram_invites", "financial_iq_results",
 		"user_stream_attendance", "live_stream_recordings", "live_stream_reminders", "live_streams",
 		"broadcast_messages", "broadcasts", "support_messages", "admin_actions",
-		"levels", "tariffs", "users",
+		"books", "levels", "tariffs", "users",
 	}
 	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF;`); err != nil {
 		return err

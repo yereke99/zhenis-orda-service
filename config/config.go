@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +24,10 @@ type Config struct {
 	AdminIDs                    []int64
 	AdminPasswordHash           string
 	UploadDir                   string
+	BookUploadDir               string
 	PaymentDir                  string
 	AllowedOrigins              []string
+	WhatsAppSalesPhone          string
 	KaspiPayURL                 string
 	KaspiQRImageURL             string
 	HalykPaymentURL             string
@@ -36,6 +39,7 @@ type Config struct {
 	DisableTelegramBot          bool
 	TelegramTestCommandsEnabled bool
 	MaxReceiptBytes             int64
+	MaxBookImageBytes           int64
 	BrowserSessionTTL           time.Duration
 	TelegramInitDataMaxAge      time.Duration
 	InactiveReminderCooldown    time.Duration
@@ -45,6 +49,7 @@ type Config struct {
 var defaultAdminIDs = []int64{800703982}
 
 func Load() (Config, error) {
+	uploadDir := getEnv("UPLOAD_DIR", "uploads")
 	cfg := Config{
 		Token:                     "8146044709:AAGljvxX5uoj1TkYcAA05XKkhgmOffHadtY",
 		Port:                      getEnv("PORT", "8088"),
@@ -56,9 +61,11 @@ func Load() (Config, error) {
 		RedisPassword:             "YOUR_PASSWORD_HERE_1999",
 		AdminPasswordHash:         strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
 		AdminIDs:                  defaultAdminIDs,
-		UploadDir:                 getEnv("UPLOAD_DIR", "uploads"),
+		UploadDir:                 uploadDir,
+		BookUploadDir:             getEnv("BOOK_UPLOAD_DIR", filepath.Join(uploadDir, "books")),
 		PaymentDir:                getEnv("PAYMENT_DIR", "payment"),
 		AllowedOrigins:            splitCSV(getEnv("ALLOWED_ORIGINS", "https://zhenis-orda.kz")),
+		WhatsAppSalesPhone:        digitsOnly(os.Getenv("WHATSAPP_SALES_PHONE")),
 		KaspiPayURL:               "https://pay.kaspi.kz/pay/vdx8u2ff",
 		KaspiQRImageURL:           os.Getenv("KASPI_QR_IMAGE_URL"),
 		HalykPaymentURL:           os.Getenv("HALYK_PAYMENT_URL"),
@@ -66,6 +73,7 @@ func Load() (Config, error) {
 		SubscriptionDefaultDays:   getEnvInt("SUBSCRIPTION_DEFAULT_DAYS", 30),
 		DisableTelegramBot:        getEnvBool("DISABLE_TELEGRAM_BOT", false),
 		MaxReceiptBytes:           int64(getEnvInt("MAX_RECEIPT_BYTES", 10*1024*1024)),
+		MaxBookImageBytes:         int64(getEnvInt("MAX_BOOK_IMAGE_BYTES", 5*1024*1024)),
 		BrowserSessionTTL:         time.Duration(getEnvInt("BROWSER_SESSION_TTL_HOURS", 24)) * time.Hour,
 		TelegramInitDataMaxAge:    time.Duration(getEnvInt("TELEGRAM_INIT_DATA_MAX_AGE_HOURS", 24)) * time.Hour,
 		InactiveReminderCooldown:  time.Duration(getEnvInt("INACTIVE_REMINDER_COOLDOWN_HOURS", 72)) * time.Hour,
@@ -111,6 +119,9 @@ func (c Config) Validate() error {
 	if c.PaymentDir == "" {
 		problems = append(problems, "PAYMENT_DIR is required")
 	}
+	if c.BookUploadDir == "" {
+		problems = append(problems, "BOOK_UPLOAD_DIR is required")
+	}
 	if c.SubscriptionDefaultDays <= 0 {
 		problems = append(problems, "SUBSCRIPTION_DEFAULT_DAYS must be positive")
 	}
@@ -119,6 +130,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxReceiptBytes <= 0 {
 		problems = append(problems, "MAX_RECEIPT_BYTES must be positive")
+	}
+	if c.MaxBookImageBytes <= 0 {
+		problems = append(problems, "MAX_BOOK_IMAGE_BYTES must be positive")
 	}
 	if c.Env == "production" {
 		if c.Token == "" {
@@ -211,6 +225,16 @@ func parseInt64List(raw string) []int64 {
 		}
 	}
 	return result
+}
+
+func digitsOnly(raw string) string {
+	var builder strings.Builder
+	for _, r := range raw {
+		if r >= '0' && r <= '9' {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
 }
 
 func (c Config) PaymentURL(provider string) string {
