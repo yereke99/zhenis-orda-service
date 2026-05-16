@@ -96,6 +96,23 @@ type Book struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+type FreeLesson struct {
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	ShortDescription string    `json:"short_description"`
+	Description      string    `json:"description"`
+	ImageURL         string    `json:"image_url,omitempty"`
+	ImageFilePath    string    `json:"image_file_path,omitempty"`
+	ImageSource      string    `json:"image_source"`
+	YouTubeURL       string    `json:"youtube_url"`
+	YouTubeVideoID   string    `json:"youtube_video_id"`
+	YouTubeEmbedURL  string    `json:"youtube_embed_url"`
+	SortOrder        int       `json:"sort_order"`
+	IsActive         bool      `json:"is_active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
 type Subscription struct {
 	ID          string     `json:"id"`
 	UserID      string     `json:"user_id"`

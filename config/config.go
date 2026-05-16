@@ -25,6 +25,7 @@ type Config struct {
 	AdminPasswordHash           string
 	UploadDir                   string
 	BookUploadDir               string
+	FreeLessonUploadDir         string
 	PaymentDir                  string
 	AllowedOrigins              []string
 	WhatsAppSalesPhone          string
@@ -40,6 +41,7 @@ type Config struct {
 	TelegramTestCommandsEnabled bool
 	MaxReceiptBytes             int64
 	MaxBookImageBytes           int64
+	MaxFreeLessonImageBytes     int64
 	BrowserSessionTTL           time.Duration
 	TelegramInitDataMaxAge      time.Duration
 	InactiveReminderCooldown    time.Duration
@@ -63,6 +65,7 @@ func Load() (Config, error) {
 		AdminIDs:                  defaultAdminIDs,
 		UploadDir:                 uploadDir,
 		BookUploadDir:             getEnv("BOOK_UPLOAD_DIR", filepath.Join(uploadDir, "books")),
+		FreeLessonUploadDir:       getEnv("FREE_LESSON_UPLOAD_DIR", filepath.Join(uploadDir, "free-lessons")),
 		PaymentDir:                getEnv("PAYMENT_DIR", "payment"),
 		AllowedOrigins:            splitCSV(getEnv("ALLOWED_ORIGINS", "https://zhenis-orda.kz")),
 		WhatsAppSalesPhone:        digitsOnly(os.Getenv("WHATSAPP_SALES_PHONE")),
@@ -74,6 +77,7 @@ func Load() (Config, error) {
 		DisableTelegramBot:        getEnvBool("DISABLE_TELEGRAM_BOT", false),
 		MaxReceiptBytes:           int64(getEnvInt("MAX_RECEIPT_BYTES", 10*1024*1024)),
 		MaxBookImageBytes:         int64(getEnvInt("MAX_BOOK_IMAGE_BYTES", 5*1024*1024)),
+		MaxFreeLessonImageBytes:   int64(getEnvInt("MAX_FREE_LESSON_IMAGE_BYTES", 5*1024*1024)),
 		BrowserSessionTTL:         time.Duration(getEnvInt("BROWSER_SESSION_TTL_HOURS", 24)) * time.Hour,
 		TelegramInitDataMaxAge:    time.Duration(getEnvInt("TELEGRAM_INIT_DATA_MAX_AGE_HOURS", 24)) * time.Hour,
 		InactiveReminderCooldown:  time.Duration(getEnvInt("INACTIVE_REMINDER_COOLDOWN_HOURS", 72)) * time.Hour,
@@ -122,6 +126,9 @@ func (c Config) Validate() error {
 	if c.BookUploadDir == "" {
 		problems = append(problems, "BOOK_UPLOAD_DIR is required")
 	}
+	if c.FreeLessonUploadDir == "" {
+		problems = append(problems, "FREE_LESSON_UPLOAD_DIR is required")
+	}
 	if c.SubscriptionDefaultDays <= 0 {
 		problems = append(problems, "SUBSCRIPTION_DEFAULT_DAYS must be positive")
 	}
@@ -133,6 +140,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxBookImageBytes <= 0 {
 		problems = append(problems, "MAX_BOOK_IMAGE_BYTES must be positive")
+	}
+	if c.MaxFreeLessonImageBytes <= 0 {
+		problems = append(problems, "MAX_FREE_LESSON_IMAGE_BYTES must be positive")
 	}
 	if c.Env == "production" {
 		if c.Token == "" {

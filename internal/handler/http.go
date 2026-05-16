@@ -66,6 +66,7 @@ func (s *Server) Routes() http.Handler {
 	staticDir := http.Dir("static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(staticDir)))
 	mux.Handle("GET /uploads/books/", http.StripPrefix("/uploads/books/", http.FileServer(http.Dir(s.cfg.BookUploadDir))))
+	mux.Handle("GET /uploads/free-lessons/", http.StripPrefix("/uploads/free-lessons/", http.FileServer(http.Dir(s.cfg.FreeLessonUploadDir))))
 	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.cfg.UploadDir))))
 	mux.HandleFunc("GET /", s.serveIndex)
 	mux.HandleFunc("GET /admin", s.serveIndex)
@@ -101,6 +102,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/channels/{id}/invite", s.withMiniAppAuth(http.HandlerFunc(s.handleIssueInvite)))
 	mux.Handle("GET /api/books", s.withMiniAppAuth(http.HandlerFunc(s.handleBooks)))
 	mux.Handle("GET /api/books/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handleBook)))
+	mux.Handle("GET /api/free-lessons", s.withMiniAppAuth(http.HandlerFunc(s.handleFreeLessons)))
+	mux.Handle("GET /api/free-lessons/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handleFreeLesson)))
 	mux.Handle("POST /api/support", s.withMiniAppAuth(http.HandlerFunc(s.handleSupport)))
 
 	admin := func(h http.HandlerFunc, roles ...string) http.Handler {
@@ -131,6 +134,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /api/admin/lessons", admin(s.handleAdminPostLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("PATCH /api/admin/lessons/{id}", admin(s.handleAdminPostLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("DELETE /api/admin/lessons/{id}", admin(s.handleAdminDeleteLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("GET /api/admin/free-lessons", admin(s.handleAdminFreeLessons, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
+	mux.Handle("GET /api/admin/free-lessons/{id}", admin(s.handleAdminFreeLesson, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/free-lessons", admin(s.handleAdminPostFreeLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("PATCH /api/admin/free-lessons/{id}", admin(s.handleAdminPostFreeLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("DELETE /api/admin/free-lessons/{id}", admin(s.handleAdminArchiveFreeLesson, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("POST /api/admin/free-lessons/upload-image", admin(s.handleAdminFreeLessonImageUpload, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("GET /api/admin/books", admin(s.handleAdminBooks, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
 	mux.Handle("POST /api/admin/books", admin(s.handleAdminPostBook, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("PATCH /api/admin/books/{id}", admin(s.handleAdminPostBook, repository.RoleSuperAdmin, repository.RoleContentManager))
@@ -483,6 +492,17 @@ func safePublicBookUploadPath(bookUploadDir, filePath string) string {
 		return ""
 	}
 	return "/uploads/books/" + strings.ReplaceAll(rel, string(os.PathSeparator), "/")
+}
+
+func safePublicFreeLessonUploadPath(uploadDir, filePath string) string {
+	if filePath == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(uploadDir, filePath)
+	if err != nil || rel == "." || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return "/uploads/free-lessons/" + strings.ReplaceAll(rel, string(os.PathSeparator), "/")
 }
 
 func formatRejectMessage(language, comment string) string {

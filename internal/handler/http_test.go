@@ -50,6 +50,7 @@ func newTestHTTPServerWithConfig(t *testing.T, env string, configure func(*confi
 		DBPath:                  ":memory:",
 		UploadDir:               t.TempDir(),
 		BookUploadDir:           t.TempDir(),
+		FreeLessonUploadDir:     t.TempDir(),
 		PaymentDir:              t.TempDir(),
 		AllowedOrigins:          []string{"http://localhost:8080"},
 		WhatsAppSalesPhone:      "77476823396",
@@ -57,6 +58,7 @@ func newTestHTTPServerWithConfig(t *testing.T, env string, configure func(*confi
 		SubscriptionDefaultDays: 30,
 		MaxReceiptBytes:         1024 * 1024,
 		MaxBookImageBytes:       1024 * 1024,
+		MaxFreeLessonImageBytes: 1024 * 1024,
 		BrowserSessionTTL:       time.Hour,
 		TelegramInitDataMaxAge:  time.Hour,
 	}
@@ -464,6 +466,157 @@ func TestAdminBookImageUploadValidationAndServing(t *testing.T) {
 	srv.Routes().ServeHTTP(staticRec, staticReq)
 	if staticRec.Code != http.StatusOK {
 		t.Fatalf("uploaded image static serve expected 200, got %d", staticRec.Code)
+	}
+}
+
+func TestAdminFreeLessonsCRUDAndPublicVisibility(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	cookie := loginAdminCookie(t, srv)
+
+	badReq := httptest.NewRequest(http.MethodPost, "/api/admin/free-lessons", bytes.NewBufferString(`{
+		"title": "Тегін сабақ",
+		"description": "Ашық сабақ сипаттамасы",
+		"image_url": "https://example.com/free.webp",
+		"youtube_url": "https://example.com/watch?v=dQw4w9WgXcQ",
+		"is_active": true
+	}`))
+	badReq.AddCookie(cookie)
+	badRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid youtube expected 400, got %d: %s", badRec.Code, badRec.Body.String())
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/free-lessons", bytes.NewBufferString(`{
+		"title": "Тегін сабақ",
+		"short_description": "Қысқаша",
+		"description": "Ашық сабақ сипаттамасы",
+		"image_url": "https://example.com/free.webp",
+		"youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		"is_active": true
+	}`))
+	createReq.AddCookie(cookie)
+	createRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create free lesson expected 200, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		FreeLesson repository.FreeLesson `json:"free_lesson"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.FreeLesson.ID == "" || created.FreeLesson.YouTubeVideoID != "dQw4w9WgXcQ" || created.FreeLesson.YouTubeEmbedURL != "https://www.youtube.com/embed/dQw4w9WgXcQ" {
+		t.Fatalf("unexpected created free lesson: %#v", created.FreeLesson)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/admin/free-lessons/"+created.FreeLesson.ID, bytes.NewBufferString(`{
+		"title": "Тегін сабақ 2",
+		"short_description": "Қысқаша",
+		"description": "Ашық сабақ сипаттамасы",
+		"image_url": "https://example.com/free.webp",
+		"youtube_url": "https://youtu.be/dQw4w9WgXcQ?si=test",
+		"is_active": true
+	}`))
+	patchReq.AddCookie(cookie)
+	patchRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch youtu.be expected 200, got %d: %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	publicReq := httptest.NewRequest(http.MethodGet, "/api/free-lessons?miniapp_dev=1", nil)
+	publicRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(publicRec, publicReq)
+	if publicRec.Code != http.StatusOK {
+		t.Fatalf("public free lessons expected 200, got %d: %s", publicRec.Code, publicRec.Body.String())
+	}
+	var publicBody struct {
+		FreeLessons []repository.FreeLesson `json:"free_lessons"`
+	}
+	if err := json.NewDecoder(publicRec.Body).Decode(&publicBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(publicBody.FreeLessons) != 1 || publicBody.FreeLessons[0].ID != created.FreeLesson.ID {
+		t.Fatalf("expected one active public free lesson, got %#v", publicBody.FreeLessons)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/free-lessons/"+created.FreeLesson.ID+"?miniapp_dev=1", nil)
+	detailRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("public free lesson detail expected 200, got %d: %s", detailRec.Code, detailRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/admin/free-lessons/"+created.FreeLesson.ID, nil)
+	deleteReq.AddCookie(cookie)
+	deleteRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("archive free lesson expected 200, got %d: %s", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	publicAfterReq := httptest.NewRequest(http.MethodGet, "/api/free-lessons?miniapp_dev=1", nil)
+	publicAfterRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(publicAfterRec, publicAfterReq)
+	if publicAfterRec.Code != http.StatusOK {
+		t.Fatalf("public free lessons after delete expected 200, got %d: %s", publicAfterRec.Code, publicAfterRec.Body.String())
+	}
+	publicBody.FreeLessons = nil
+	if err := json.NewDecoder(publicAfterRec.Body).Decode(&publicBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(publicBody.FreeLessons) != 0 {
+		t.Fatalf("expected inactive free lesson hidden from public API, got %#v", publicBody.FreeLessons)
+	}
+}
+
+func TestAdminFreeLessonImageUploadValidationAndServing(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	cookie := loginAdminCookie(t, srv)
+
+	unauthReq := httptest.NewRequest(http.MethodPost, "/api/admin/free-lessons/upload-image", nil)
+	unauthRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected upload auth 401, got %d", unauthRec.Code)
+	}
+
+	badBuf, badType := multipartBody(t, "image", "bad.txt", []byte("not an image"))
+	badReq := httptest.NewRequest(http.MethodPost, "/api/admin/free-lessons/upload-image", badBuf)
+	badReq.Header.Set("Content-Type", badType)
+	badReq.AddCookie(cookie)
+	badRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("bad free lesson image expected 400, got %d: %s", badRec.Code, badRec.Body.String())
+	}
+
+	imageBuf, imageType := multipartBody(t, "image", "cover.png", tinyPNG())
+	imageReq := httptest.NewRequest(http.MethodPost, "/api/admin/free-lessons/upload-image", imageBuf)
+	imageReq.Header.Set("Content-Type", imageType)
+	imageReq.AddCookie(cookie)
+	imageRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(imageRec, imageReq)
+	if imageRec.Code != http.StatusOK {
+		t.Fatalf("free lesson image upload expected 200, got %d: %s", imageRec.Code, imageRec.Body.String())
+	}
+	var body struct {
+		ImageFilePath string `json:"image_file_path"`
+		ImageSource   string `json:"image_source"`
+	}
+	if err := json.NewDecoder(imageRec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(body.ImageFilePath, "/uploads/free-lessons/") || body.ImageSource != "uploaded" {
+		t.Fatalf("unexpected free lesson upload payload: %#v", body)
+	}
+	staticReq := httptest.NewRequest(http.MethodGet, body.ImageFilePath, nil)
+	staticRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(staticRec, staticReq)
+	if staticRec.Code != http.StatusOK {
+		t.Fatalf("uploaded free lesson image static serve expected 200, got %d", staticRec.Code)
 	}
 }
 

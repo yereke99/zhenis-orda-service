@@ -83,6 +83,23 @@ CREATE TABLE IF NOT EXISTS books (
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS free_lessons (
+	id TEXT PRIMARY KEY,
+	title TEXT NOT NULL,
+	short_description TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL,
+	image_url TEXT,
+	image_file_path TEXT,
+	image_source TEXT NOT NULL DEFAULT 'none',
+	youtube_url TEXT NOT NULL,
+	youtube_video_id TEXT NOT NULL,
+	youtube_embed_url TEXT NOT NULL,
+	sort_order INTEGER NOT NULL DEFAULT 0,
+	is_active INTEGER NOT NULL DEFAULT 1,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS subscriptions (
 	id TEXT PRIMARY KEY,
 	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -436,6 +453,7 @@ CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_status_expires ON subscriptions(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_books_active_sort ON books(is_active, sort_order, created_at);
+CREATE INDEX IF NOT EXISTS idx_free_lessons_active_sort ON free_lessons(is_active, sort_order, created_at);
 CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
 CREATE INDEX IF NOT EXISTS idx_payments_expires ON payments(expires_at);

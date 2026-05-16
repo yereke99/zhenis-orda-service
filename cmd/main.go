@@ -51,6 +51,9 @@ func main() {
 	if err := os.MkdirAll(cfg.BookUploadDir, 0o755); err != nil {
 		log.Fatal("book upload directory create failed", zap.String("dir", cfg.BookUploadDir), zap.Error(err))
 	}
+	if err := os.MkdirAll(cfg.FreeLessonUploadDir, 0o755); err != nil {
+		log.Fatal("free lesson upload directory create failed", zap.String("dir", cfg.FreeLessonUploadDir), zap.Error(err))
+	}
 
 	store := repository.New(db)
 	kv := buildKV(ctx, cfg, log)
