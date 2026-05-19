@@ -2,9 +2,9 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -102,7 +102,7 @@ func (s *Server) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 			"kaspi_pay_url":      s.cfg.KaspiPayURL,
 			"halyk_payment_url":  s.cfg.HalykPaymentURL,
 			"bank_card_url":      s.cfg.BankCardPaymentURL,
-			"text":               "Kaspi QR / Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF немесе сурет ретінде жіберіңіз.",
+			"text":               "Kaspi QR / Kaspi Pay арқылы төлем жасап, Telegram ботқа PDF түбіртек құжатын жіберіңіз.",
 		},
 	})
 }
@@ -125,6 +125,14 @@ func (s *Server) handlePayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"payment": payment})
 }
 
+func (s *Server) receiptValidationOptions() repository.ReceiptValidationOptions {
+	return repository.ReceiptValidationOptions{
+		ExpectedRecipientBIN: s.cfg.PaymentRecipientBIN,
+		AmountToleranceKZT:   s.cfg.PaymentAmountToleranceKZT,
+		SubscriptionDays:     s.cfg.SubscriptionDefaultDays,
+	}
+}
+
 func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	paymentID, err := parsePathID(r, "id")
@@ -140,7 +148,15 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	if payment.Status != repository.PaymentStatusPending && payment.Status != repository.PaymentStatusUploadedReceipt {
+	if payment.Status == repository.PaymentStatusExpired || (payment.ExpiresAt != nil && !payment.ExpiresAt.After(time.Now().UTC())) {
+		writeError(w, http.StatusConflict, "payment expired")
+		return
+	}
+	if payment.Status == repository.PaymentStatusCancelled {
+		writeError(w, http.StatusConflict, "payment cancelled")
+		return
+	}
+	if payment.Status != repository.PaymentStatusPending && payment.Status != repository.PaymentStatusUploadedReceipt && payment.Status != repository.PaymentStatusApproved {
 		writeError(w, http.StatusConflict, "payment cannot accept receipt")
 		return
 	}
@@ -157,17 +173,12 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 	defer file.Close()
 
 	fileName := filepath.Base(header.Filename)
-	ext := strings.ToLower(filepath.Ext(fileName))
 	mimeType := header.Header.Get("Content-Type")
-	if !allowedReceiptExt(ext) {
-		if guessed, _ := mime.ExtensionsByType(mimeType); len(guessed) > 0 {
-			ext = guessed[0]
-		}
-	}
-	if !allowedReceiptExt(ext) {
-		writeError(w, http.StatusBadRequest, "unsupported receipt file type")
+	if !isPDFReceipt(fileName, mimeType) {
+		writeError(w, http.StatusBadRequest, "upload PDF receipt only")
 		return
 	}
+	ext := ".pdf"
 	now := time.Now()
 	dir := filepath.Join(s.cfg.PaymentDir, "receipts", now.Format("2006"), now.Format("01"))
 	if err := ensureUploadDir(dir); err != nil {
@@ -196,14 +207,42 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "receipt file is too large")
 		return
 	}
-	updated, receipt, err := s.store.AttachReceiptToPayment(r.Context(), user.ID, paymentID, path, fileName, mimeType, written)
-	if mapRepoError(w, err) {
+	updated, receipt, err := s.store.AttachReceiptToPaymentWithValidation(r.Context(), user.ID, paymentID, path, fileName, mimeType, written, s.receiptValidationOptions())
+	if err != nil {
 		_ = os.Remove(path)
+		if errors.Is(err, repository.ErrReceiptAlreadyApproved) {
+			writeJSON(w, http.StatusOK, map[string]any{"payment": updated, "receipt": receipt, "message": "receipt already approved"})
+			return
+		}
+		if errors.Is(err, repository.ErrReceiptDuplicate) {
+			if s.bot != nil {
+				for _, adminID := range s.cfg.AdminIDs {
+					text := fmt.Sprintf("Қайталанған түбіртек әрекеті\nТөлем: %s\nҚолданушы: %s @%s\nТүбіртек: %s", updated.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, receipt.ID)
+					_ = s.bot.SendMessage(r.Context(), adminID, text)
+				}
+			}
+			writeError(w, http.StatusConflict, "duplicate receipt")
+			return
+		}
+		if errors.Is(err, repository.ErrPaymentExpired) {
+			writeError(w, http.StatusConflict, "payment expired")
+			return
+		}
+		if errors.Is(err, repository.ErrPaymentCancelled) {
+			writeError(w, http.StatusConflict, "payment cancelled")
+			return
+		}
+		if mapRepoError(w, err) {
+			return
+		}
 		return
 	}
 	if s.bot != nil {
+		if updated.Status == repository.PaymentStatusApproved {
+			_ = s.bot.SendMessage(r.Context(), user.TelegramID, i18n.T(user.Language, "payment_approved"))
+		}
 		for _, adminID := range s.cfg.AdminIDs {
-			text := fmt.Sprintf("Жаңа чек жүктелді\nТөлем: %s\nҚолданушы: %s @%s\nСома: %d KZT\nСтатус: %s", updated.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, updated.AmountKZT, receipt.ValidationStatus)
+			text := fmt.Sprintf("Төлем түбіртегі өңделді\nТөлем: %s\nҚолданушы: %s @%s\nСома: %d KZT\nТөлем статусы: %s\nТүбіртек: %s\nСебеп: %s", updated.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, updated.AmountKZT, updated.Status, receipt.ValidationStatus, strings.Join(receipt.ValidationErrors, ", "))
 			_ = s.bot.SendMessage(r.Context(), adminID, text)
 		}
 	}

@@ -1,0 +1,1327 @@
+ПОЛНОЕ ОПИСАНИЕ ФУНКЦИОНАЛА ПРОЕКТА
+ZHENIS ORDA INSIDE / Genius Orda
+
+Дата разбора: 2026-05-19
+Источник: текущий код проекта zhenis-orda-service.
+
+ВАЖНО:
+Этот документ описывает именно то, что найдено в коде. Если какая-то бизнес-идея
+не реализована в backend/frontend/SQL, она не записана как готовая функция.
+
+
+1. ЧТО ЭТО ЗА ПРОЕКТ
+
+zhenis-orda-service - это backend на Go + статический frontend для образовательной
+платформы ZHENIS ORDA INSIDE / Genius Orda.
+
+Проект объединяет:
+
+1. Telegram Bot.
+   Бот регистрирует пользователя, показывает меню, открывает Telegram Mini App,
+   принимает чеки оплаты, ведет диагностику в чате и отправляет уведомления.
+
+2. Telegram Mini App.
+   Основной пользовательский интерфейс внутри Telegram. В Mini App пользователь
+   видит профиль, прогресс, уровни, уроки, тесты, тарифы, оплату, книги,
+   бесплатные уроки, рефералку, монеты, эфиры, каналы и поддержку.
+
+3. Browser Admin Panel.
+   Админка открывается по /admin. Через нее админ управляет пользователями,
+   платежами, подписками, тарифами, уровнями, уроками, тестами, книгами,
+   бесплатными уроками, каналами, эфирами, рассылками, настройками и аудитом.
+
+4. Образовательная платформа.
+   В базе есть 12 уровней развития. Пользователь получает доступ после оплаты,
+   проходит уроки, отмечает просмотр, сдает тесты, получает ZHENIS Coin и
+   постепенно открывает следующие уровни.
+
+5. Платежная и подписочная логика.
+   Пользователь выбирает тариф, создает платеж, загружает чек. Админ вручную
+   проверяет чек и одобряет или отклоняет платеж. После одобрения создается или
+   продлевается подписка.
+
+
+2. ТЕХНИЧЕСКИЙ СОСТАВ
+
+Основной стек:
+
+- Go backend.
+- HTTP server на стандартном net/http.
+- Telegram Bot API через long polling.
+- Telegram Mini App auth через проверку initData.
+- SQLite database с WAL, foreign keys и миграциями.
+- Redis для временных состояний, сессий и антидублей. Если Redis недоступен,
+  используется in-memory KV.
+- zap logger.
+- Static frontend без сборщика:
+  - static/index.html
+  - static/css/style.css
+  - static/js/app.js
+- Docker / Docker Compose.
+
+Основные папки:
+
+- cmd/main.go - точка входа приложения.
+- config/ - загрузка env-конфига.
+- internal/handler/ - HTTP routes, Telegram bot, auth, scheduler.
+- internal/repository/ - SQL, транзакции, бизнес-правила.
+- internal/service/ - чистые helper-функции домена и Telegram auth.
+- internal/i18n/ - тексты Telegram bot.
+- traits/database/ - SQLite schema, migrations, seed.
+- traits/logger/ - настройка логгера.
+- static/ - Mini App, landing и admin UI.
+
+
+3. КАК ЗАПУСКАЕТСЯ СЕРВИС
+
+Логика запуска в cmd/main.go:
+
+1. Создается context с graceful shutdown по SIGINT/SIGTERM.
+2. Загружается Config из env и дефолтов.
+3. Создается zap logger.
+4. Открывается SQLite database.
+5. Запускается database.Migrate():
+   - создает таблицы;
+   - добавляет недостающие колонки;
+   - мигрирует старую схему тестов;
+   - создает индексы;
+   - запускает seed тарифов, уровней и app_settings.
+6. Создаются папки:
+   - PAYMENT_DIR;
+   - UPLOAD_DIR;
+   - BOOK_UPLOAD_DIR;
+   - FREE_LESSON_UPLOAD_DIR.
+7. Создается repository.Store.
+8. Создается KV:
+   - Redis, если доступен;
+   - MemoryKV, если Redis пустой или недоступен.
+9. Создается HTTP Server.
+10. Если DISABLE_TELEGRAM_BOT=false, создается TelegramBot и запускается long polling.
+11. Запускаются background schedulers.
+12. HTTP server слушает PORT.
+13. При остановке выполняется graceful shutdown.
+
+
+4. КОНФИГУРАЦИЯ
+
+В config/config.go используются такие важные параметры:
+
+- TOKEN - Telegram bot token.
+- PORT - HTTP port, дефолт в коде 8088.
+- ENV - development или production.
+- BASE_URL - базовый URL проекта.
+- MINI_APP_URL - URL, который бот открывает как Telegram WebApp.
+- DB_PATH - путь к SQLite базе.
+- REDIS_ADDR, REDIS_PASSWORD, REDIS_DB - Redis.
+- ADMIN_IDS - Telegram ID админов для уведомлений.
+- ADMIN_PASSWORD_HASH - bcrypt hash пароля админки.
+- UPLOAD_DIR - общая папка загрузок.
+- BOOK_UPLOAD_DIR - картинки книг.
+- FREE_LESSON_UPLOAD_DIR - картинки бесплатных уроков.
+- PAYMENT_DIR - чеки оплат.
+- ALLOWED_ORIGINS - CORS.
+- WHATSAPP_SALES_PHONE - номер для покупки книг через WhatsApp.
+- KASPI_PAY_URL, KASPI_QR_IMAGE_URL, HALYK_PAYMENT_URL, BANK_CARD_PAYMENT_URL.
+- PAYMENT_PENDING_TTL_MINUTES - срок жизни pending payment.
+- SUBSCRIPTION_DEFAULT_DAYS - сколько дней подписки дает обычное одобрение.
+- MAX_RECEIPT_BYTES - лимит файла чека.
+- MAX_BOOK_IMAGE_BYTES - лимит картинки книги.
+- MAX_FREE_LESSON_IMAGE_BYTES - лимит картинки бесплатного урока.
+- BROWSER_SESSION_TTL_HOURS - срок cookie-сессии админки.
+- TELEGRAM_INIT_DATA_MAX_AGE_HOURS - максимальный возраст Telegram initData.
+- INACTIVE_REMINDER_COOLDOWN_HOURS - cooldown напоминаний неактивным.
+- SUBSCRIPTION_REMINDER_HOURS - за сколько часов напоминать об окончании подписки.
+- ENABLE_TELEGRAM_TEST_COMMANDS - временные тестовые bot-команды.
+- DISABLE_TELEGRAM_BOT - отключение Telegram bot.
+
+В production обязательны TOKEN, ADMIN_PASSWORD_HASH и ADMIN_IDS.
+В development, если ADMIN_PASSWORD_HASH пустой, пароль админки равен admin.
+
+Замечание по текущему состоянию:
+В config.go сейчас есть дефолтные значения для Telegram token и Redis password.
+Для production их лучше вынести в env и не хранить секреты в коде.
+
+
+5. HTTP ROUTING
+
+Публичные страницы:
+
+- GET / - отдает static/index.html.
+- GET /admin - отдает static/index.html в режиме админки.
+- GET /static/* - статические CSS/JS.
+- GET /uploads/* - публичные uploads.
+- GET /uploads/books/* - картинки книг.
+- GET /uploads/free-lessons/* - картинки бесплатных уроков.
+
+Browser admin auth:
+
+- POST /api/browser-auth/login
+- POST /api/browser-auth/logout
+- GET /api/browser-auth/me
+
+Mini App API, требует Telegram auth:
+
+- GET /api/me
+- GET /api/platform
+- POST /api/diagnostics
+- GET /api/tariffs
+- POST /api/payments
+- GET /api/payments/{id}
+- POST /api/payments/{id}/receipt
+- GET /api/subscription
+- GET /api/levels
+- GET /api/levels/{id}
+- POST /api/levels/{id}/telegram-invite
+- GET /api/lessons
+- GET /api/lessons/{id}
+- POST /api/lessons/{id}/watched
+- POST /api/financial-iq
+- GET /api/tests/{level_id}
+- POST /api/tests/{level_id}/submit
+- GET /api/assignments/{level_id}
+- POST /api/assignments/{level_id}/submit
+- GET /api/referral
+- GET /api/bonuses
+- GET /api/coins
+- GET /api/streams
+- GET /api/channels
+- POST /api/channels/{id}/invite
+- GET /api/books
+- GET /api/books/{id}
+- GET /api/free-lessons
+- GET /api/free-lessons/{id}
+- POST /api/support
+
+Admin API, требует browser session + роль:
+
+- GET /api/admin/stats
+- GET /api/admin/users
+- GET /api/admin/users/{id}
+- PATCH /api/admin/users/{id}/access
+- POST /api/admin/users/{id}/bonus
+- GET /api/admin/payments
+- GET /api/admin/payments/{id}
+- GET /api/admin/receipts/{id}/file
+- POST /api/admin/payments/{id}/approve
+- POST /api/admin/payments/{id}/reject
+- GET /api/admin/subscriptions
+- PATCH /api/admin/subscriptions/{id}
+- GET /api/admin/tariffs
+- POST /api/admin/tariffs
+- PATCH /api/admin/tariffs/{id}
+- DELETE /api/admin/tariffs/{id}
+- POST /api/admin/tariffs/image
+- GET /api/admin/levels
+- POST /api/admin/levels
+- PATCH /api/admin/levels/{id}
+- DELETE /api/admin/levels/{id}
+- GET /api/admin/lessons
+- POST /api/admin/lessons
+- PATCH /api/admin/lessons/{id}
+- DELETE /api/admin/lessons/{id}
+- GET /api/admin/free-lessons
+- GET /api/admin/free-lessons/{id}
+- POST /api/admin/free-lessons
+- PATCH /api/admin/free-lessons/{id}
+- DELETE /api/admin/free-lessons/{id}
+- POST /api/admin/free-lessons/upload-image
+- GET /api/admin/books
+- POST /api/admin/books
+- PATCH /api/admin/books/{id}
+- DELETE /api/admin/books/{id}
+- POST /api/admin/books/upload-image
+- GET /api/admin/tests
+- POST /api/admin/tests
+- PATCH /api/admin/tests/{id}
+- DELETE /api/admin/tests/{id}
+- GET /api/admin/assignments
+- GET /api/admin/assignments/submissions
+- PATCH /api/admin/assignments/submissions/{id}
+- GET /api/admin/referrals
+- GET /api/admin/coins
+- POST /api/admin/coins/adjust
+- GET /api/admin/channels
+- POST /api/admin/channels
+- PATCH /api/admin/channels/{id}
+- DELETE /api/admin/channels/{id}
+- POST /api/admin/channels/{id}/issue-invite
+- GET /api/admin/streams
+- POST /api/admin/streams
+- PATCH /api/admin/streams/{id}
+- DELETE /api/admin/streams/{id}
+- POST /api/admin/broadcast
+- GET /api/admin/broadcasts
+- GET /api/admin/settings
+- PATCH /api/admin/settings
+- GET /api/admin/audit
+
+
+6. АВТОРИЗАЦИЯ MINI APP
+
+Mini App API защищен middleware withMiniAppAuth.
+
+В production/staging сценарии:
+
+1. Frontend берет Telegram.WebApp.initData.
+2. Передает initData в header X-Telegram-Init-Data.
+3. Backend проверяет HMAC-подпись Telegram initData через bot token.
+4. Проверяется auth_date и max age.
+5. Из initData достается Telegram user.
+6. Пользователь создается или обновляется в users.
+
+Альтернативно initData можно передать как Authorization: tma <initData>.
+
+Development preview:
+
+Если ENV=development и передан query/header miniapp_dev=1, backend создает
+тестового пользователя без Telegram подписи. Можно передать telegram_id,
+username, first_name, last_name, photo_url.
+
+
+7. АВТОРИЗАЦИЯ АДМИНКИ
+
+Админка использует cookie zo_admin_session.
+
+Логика:
+
+1. POST /api/browser-auth/login принимает password.
+2. Если ADMIN_PASSWORD_HASH задан, пароль проверяется через bcrypt.
+3. Если hash пустой и ENV=development, пароль admin.
+4. Создается BrowserSession в Redis/MemoryKV.
+5. Cookie HttpOnly, SameSite=Lax, Secure=true только в production.
+6. Все /api/admin/* routes требуют эту cookie.
+
+Роли в коде:
+
+- super_admin
+- content_manager
+- support
+- analyst
+
+Важно:
+Таблица staff_users есть в базе, но текущий login админки не проверяет staff_users.
+После входа через пароль создается session с ролью super_admin.
+Role middleware уже написан, но полноценная multi-admin авторизация через
+staff_users в текущем коде не реализована.
+
+
+8. TELEGRAM BOT
+
+Telegram bot находится в internal/handler/telegram.go.
+
+Что умеет бот:
+
+1. Работает через long polling getUpdates.
+2. Обрабатывает /start.
+3. Создает или обновляет пользователя в users.
+4. Принимает start payload для реферальной системы.
+5. Показывает выбор языка.
+6. Показывает основное меню.
+7. Дает inline кнопку открытия Mini App.
+8. Запускает диагностику в Telegram-чате.
+9. Принимает чек оплаты как document или photo.
+10. Скачивает файл из Telegram.
+11. Сохраняет чек в PAYMENT_DIR/receipts/YYYY/MM.
+12. Привязывает чек к последнему pending/uploaded_receipt платежу пользователя.
+13. Уведомляет админов из ADMIN_IDS о новом чеке.
+14. Умеет создавать Telegram invite link для каналов/уровней.
+15. Есть временная команда /test для админов, если ENABLE_TELEGRAM_TEST_COMMANDS=true.
+
+Меню бота:
+
+- Мой уровень.
+- Сабақтарым.
+- Тест тапсыру.
+- Тапсырмаларым.
+- Жабық эфир.
+- Дос шақыру.
+- Бонустар.
+- Төлем мерзімі.
+- Қолдау.
+- Открытие Mini App.
+
+Замечание:
+В коде есть ru i18n map, но тексты в основном казахские. При выборе "Русский"
+бот сейчас тоже сохраняет language="kk". Это текущее поведение кода.
+
+
+9. ПОЛЬЗОВАТЕЛЬСКИЙ СЦЕНАРИЙ: КАК БУДЕТ РАБОТАТЬ
+
+Полный путь пользователя:
+
+1. Пользователь открывает Telegram bot.
+2. Нажимает /start.
+3. Backend создает user:
+   - telegram_id;
+   - username;
+   - first_name;
+   - last_name;
+   - language;
+   - referral_code вида ref<telegram_id>;
+   - current_level=0.
+4. Если /start пришел с ref-кодом другого пользователя, создается referral.
+5. Бот показывает меню и кнопку Mini App.
+6. Пользователь открывает Mini App.
+7. Mini App валидирует Telegram initData через backend.
+8. Если подписки нет, пользователь видит onboarding/tariffs/payment flow.
+9. Пользователь может пройти диагностику.
+10. Пользователь выбирает тариф BASIC/STANDARD/VIP.
+11. Backend создает pending payment.
+12. Пользователь оплачивает через Kaspi QR / Kaspi Pay / Halyk / Bank Card.
+13. Пользователь загружает чек:
+    - через Mini App;
+    - или как файл/фото в Telegram bot.
+14. Payment становится uploaded_receipt.
+15. Админ видит чек в /admin.
+16. Админ вручную одобряет или отклоняет платеж.
+17. При одобрении:
+    - создается или продлевается active subscription;
+    - payment становится approved;
+    - current_level пользователя становится минимум 1;
+    - если пользователь пришел по рефералке, inviter получает reward;
+    - пользователь получает Telegram уведомление.
+18. Пользователь открывает уровень 1.
+19. Пользователь смотрит уроки и отмечает их как watched.
+20. За каждый просмотренный урок начисляется 5 ZHENIS Coin.
+21. Пользователь проходит тесты уровня.
+22. За успешно сданный тест начисляется 20 ZHENIS Coin.
+23. Когда все уроки текущего уровня просмотрены и все активные тесты уровня
+    сданы, backend повышает current_level.
+24. Пользователь переходит к следующему уровню.
+25. Процесс повторяется до уровня 12.
+
+
+10. КУРСЫ, УРОВНИ И ОБРАЗОВАТЕЛЬНАЯ ЛОГИКА
+
+В проекте заложено 12 уровней. Они создаются seed-логикой при миграции.
+
+Список уровней:
+
+1. ОЙЛАУ / ІРГЕТАС
+2. ҚАРЖЫ RESET
+3. АЛТЫН ФОРМУЛА START
+4. АЛТЫН ФОРМУЛА FULL
+5. БИЗНЕС ІРГЕТАСЫ
+6. БИЗНЕС ПРАКТИКУМ
+7. BUSINESS UPGRADE
+8. САТУ ЖӘНЕ ЫҚПАЛ
+9. КӨШБАСШЫЛЫҚ
+10. ІШКІ ЖҰМЫС
+11. ЖЕКЕ БРЕНД
+12. MASTER ДЕҢГЕЙ
+
+В production seed создает только уровни, тарифы и app_settings.
+
+Если SEED_DEMO_CONTENT=1, seed дополнительно создает демо-уроки, демо-тесты
+и задания:
+
+- уровень 1: 4 демо-урока и задание;
+- уровень 2: 2 демо-урока и задание;
+- уровень 3: 3 демо-урока;
+- уровень 4: 3 демо-урока;
+- уровень 5: 1 демо-урок;
+- уровень 6: 1 демо-урок;
+- уровень 7: 4 демо-урока;
+- уровень 8: 3 демо-урока;
+- уровень 9: 3 демо-урока;
+- уровень 10: 5 демо-уроков;
+- уровень 11: 4 демо-урока;
+- уровень 12: 4 демо-урока.
+
+Для каждого демо-уровня seed создает тест с 10 вопросами и 4 вариантами ответа.
+Правильный вариант в демо-данных - первый.
+
+Админ может создавать реальные уровни, уроки и тесты через /admin.
+
+
+11. ПРАВИЛА ДОСТУПА К УРОВНЯМ
+
+Функции доступа находятся в internal/repository/progress.go.
+
+Пользователь может открыть уровень, если:
+
+1. levelNumber от 1 до 12.
+2. У пользователя access_closed=false.
+3. У пользователя есть active subscription, у которой expires_at > now.
+4. user.current_level >= нужный levelNumber.
+
+После одобрения первого платежа current_level становится минимум 1.
+
+Как открывается следующий уровень:
+
+1. Backend смотрит текущий current_level.
+2. Проверяет, что есть active subscription.
+3. Проверяет, что в текущем уровне есть активные уроки.
+4. Проверяет, что все активные уроки текущего уровня watched.
+5. Проверяет, что в уровне есть активные тесты и все они passed.
+6. Если все выполнено, current_level увеличивается на 1.
+7. Процесс повторяется в цикле, пока пользователь может открыть следующий уровень.
+
+Важная деталь:
+Assignments участвуют в расчете процента progress, но не являются обязательным
+условием для открытия следующего уровня. Для unlock нужны уроки + тесты.
+
+Если в уровне нет активных уроков или нет активных тестов, следующий уровень не
+откроется автоматически.
+
+
+12. ПРОГРЕСС
+
+Progress содержит:
+
+- level_number;
+- total_lessons;
+- watched_lessons;
+- test_passed;
+- assignment_done;
+- completed;
+- percent;
+- next_requirement;
+- can_unlock_next;
+- subscription_ok.
+
+Расчет:
+
+1. Считаются активные уроки уровня.
+2. Считаются просмотренные уроки пользователя.
+3. Проверяется, все ли тесты уровня сданы.
+4. Проверяется, есть ли отправленное задание.
+5. Percent считается как выполненные единицы / все единицы:
+   - уроки;
+   - тест;
+   - задание, если оно есть.
+
+Тексты next_requirement:
+
+- если нет оплаты: "Төлем жасаңыз."
+- если подписка закончилась: "Жазылымыңызды ұзартыңыз."
+- если не все уроки пройдены: нужно пройти все уроки;
+- если тест не сдан: нужно сдать тест;
+- если уровень 12 завершен: MASTER завершен, сертификат готовится;
+- если все готово: следующий уровень готов к открытию.
+
+
+13. УРОКИ
+
+Lesson хранит:
+
+- id;
+- level_id;
+- level_number;
+- title_kk;
+- title_ru;
+- description_kk;
+- description_ru;
+- video_url;
+- sort_order;
+- is_active;
+- watched;
+- watched_at;
+- access.
+
+Пользовательский API:
+
+- GET /api/lessons?level=N - список уроков.
+- GET /api/lessons/{id} - конкретный урок.
+- POST /api/lessons/{id}/watched - отметить урок как просмотренный.
+
+При отметке watched:
+
+1. Проверяется доступ к уровню.
+2. В lesson_progress создается или обновляется запись.
+3. Начисляется 5 ZHENIS Coin.
+4. Начисление идемпотентное за счет уникальности user + reason + source.
+5. Пересчитывается progress и возможно открывается следующий уровень.
+
+
+14. ТЕСТЫ
+
+Тесты привязаны к lesson_id. В базе есть level_id тоже, но актуальная логика
+работает через lesson_id и уровень урока.
+
+Admin может создать один тест на урок, потому что есть unique index по lesson_id.
+
+Test содержит:
+
+- id;
+- level_id;
+- lesson_id;
+- title;
+- pass_percent;
+- is_active;
+- questions;
+- options.
+
+Правила теста:
+
+1. pass_percent должен быть от 1 до 100.
+2. В тесте должен быть минимум один вопрос.
+3. В каждом вопросе минимум два варианта.
+4. В каждом вопросе ровно один correct option.
+5. Пользователю correct flags не отдаются.
+6. При submit backend считает correct_count и score_percent.
+7. passed=true, если score_percent >= pass_percent.
+8. Успешная сдача дает 20 ZHENIS Coin.
+9. Для открытия следующего уровня должны быть сданы все активные тесты уровня.
+
+Пользовательский API:
+
+- GET /api/tests/{level_id}
+- POST /api/tests/{level_id}/submit
+
+
+15. ЗАДАНИЯ
+
+Assignment хранит:
+
+- id;
+- level_id;
+- title_kk;
+- title_ru;
+- description_kk;
+- description_ru;
+- is_active.
+
+Пользователь может отправить:
+
+- answer_text;
+- file_path;
+- link_url.
+
+API:
+
+- GET /api/assignments/{level_id}
+- POST /api/assignments/{level_id}/submit
+
+Submission получает status=submitted.
+
+Admin может смотреть submissions через placeholder endpoint и менять статус:
+
+- reviewed;
+- rejected.
+
+Ограничение:
+В текущей админке нет полноценного CRUD для создания assignment как отдельной
+формы. Есть список и review submissions. Демо-задания создаются seed-логикой
+только при SEED_DEMO_CONTENT=1.
+
+
+16. ТАРИФЫ
+
+Seed создает 3 тарифа:
+
+1. BASIC
+   Цена: 9 900 KZT
+   Базовый доступ к платформе.
+
+2. STANDARD
+   Цена: 24 900 KZT
+   BASIC + закрытые эфиры, диагностика, мастер-класс, спецконтент.
+
+3. VIP
+   Цена: 49 900 KZT
+   STANDARD + VIP эфиры, mentor touchpoint, mini-разбор, priority support.
+
+Платежные провайдеры:
+
+- kaspi_qr
+- kaspi_pay
+- halyk
+- bank_card
+
+Если provider не распознан, backend ставит kaspi_qr.
+
+Admin может:
+
+- смотреть все тарифы;
+- создавать тариф;
+- редактировать тариф;
+- архивировать тариф через is_active=false;
+- загружать картинку тарифа в UPLOAD_DIR/tariffs/YYYY/MM.
+
+
+17. ПЛАТЕЖИ И ЧЕКИ
+
+Payment statuses:
+
+- pending;
+- uploaded_receipt;
+- approved;
+- rejected;
+- expired;
+- cancelled.
+
+Сценарий payment:
+
+1. Пользователь выбирает тариф.
+2. POST /api/payments создает pending payment.
+3. amount_kzt берется из тарифа.
+4. expires_at = now + PAYMENT_PENDING_TTL_MINUTES.
+5. Пользователь получает payment instructions.
+6. Пользователь загружает чек.
+7. Backend сохраняет файл.
+8. Backend парсит чек насколько возможно.
+9. Создается payment_receipts.
+10. Payment переводится в uploaded_receipt.
+11. Admin принимает решение.
+
+Загрузка чека возможна:
+
+- через Mini App: POST /api/payments/{id}/receipt, multipart field receipt;
+- через Telegram bot: document или photo.
+
+Допустимые форматы чеков:
+
+- PDF;
+- JPG/JPEG;
+- PNG;
+- WEBP.
+
+Receipt validation:
+
+- считается SHA256 файла;
+- из PDF пытается вытащить printable text;
+- image OCR сейчас не реализован;
+- QR decode сейчас не реализован;
+- ищется сумма;
+- ищется валюта;
+- ищутся transaction/check/reference IDs;
+- ищется дата платежа;
+- определяется provider по тексту;
+- проверяется amount mismatch;
+- проверяется дата раньше payment.created_at - 24 часа;
+- проверяются дубликаты по file_hash, raw_text_hash, qr_payload_hash,
+  parsed_transaction_id, parsed_check_id.
+
+Receipt validation statuses:
+
+- uploaded;
+- parse_failed;
+- parse_partial;
+- valid_candidate;
+- suspicious;
+- duplicate;
+- rejected;
+- approved.
+
+Важное ограничение:
+OCR для изображений и QR decoding сейчас являются stub-функциями. Поэтому фото
+чека чаще будет уходить в ручную проверку.
+
+
+18. ОДОБРЕНИЕ И ОТКЛОНЕНИЕ ПЛАТЕЖА
+
+Admin approve:
+
+1. Проверяет, что payment pending или uploaded_receipt.
+2. Если чек duplicate или suspicious, approve требует super_admin и comment.
+3. Если чек parse_failed или parse_partial, approve требует comment.
+4. Если у пользователя уже есть active subscription, она продлевается от текущей
+   даты окончания.
+5. Если active subscription нет, создается новая.
+6. subscription_days берется из запроса или SUBSCRIPTION_DEFAULT_DAYS.
+7. payment становится approved.
+8. latest receipt получает validation_status=approved.
+9. user.current_level становится минимум 1.
+10. Применяются referral rewards.
+11. Пользователь получает Telegram уведомление об одобрении.
+
+Admin reject:
+
+1. Нельзя отклонить уже approved payment.
+2. payment становится rejected.
+3. latest receipt получает validation_status=rejected.
+4. admin_comment сохраняется в payment.
+5. Пользователь получает Telegram уведомление с причиной.
+
+Background job каждую минуту:
+
+- pending платежи с истекшим expires_at переводит в expired;
+- active subscriptions с истекшим expires_at переводит в expired.
+
+
+19. ПОДПИСКИ
+
+Subscription statuses:
+
+- active;
+- expired;
+- cancelled;
+- paused.
+
+Активной считается подписка:
+
+- status='active';
+- expires_at > CURRENT_TIMESTAMP.
+
+Подписка нужна для:
+
+- доступа к уровням;
+- доступа к урокам;
+- открытия тестов;
+- получения invite links в level Telegram groups;
+- доступа к channels;
+- просмотра stream_url/recording_url для эфиров по тарифу.
+
+Admin может:
+
+- смотреть список подписок;
+- менять статус подписки;
+- вручную добавить дни пользователю через user bonus.
+
+
+20. РЕФЕРАЛЬНАЯ СИСТЕМА
+
+Каждый user получает referral_code:
+
+- ref<telegram_id>
+
+Referral link:
+
+- https://t.me/zhenisOrdaFinanceBot?start=<referral_code>
+
+Когда новый пользователь приходит по ref-коду:
+
+1. Backend ищет inviter по users.referral_code.
+2. Self-referral запрещен.
+3. invited_by_user_id записывается в users.
+4. Создается referrals со status=registered.
+
+Когда приглашенный пользователь оплачивает и payment approve:
+
+1. Referral переводится registered -> paid.
+2. Inviter получает 100 ZHENIS Coin.
+3. Считается paid referral count.
+4. Выдаются threshold rewards.
+
+Threshold rewards:
+
+- 1 оплаченный друг: 7 дней бесплатно.
+- 3 оплаченных друга: 1 месяц бесплатно.
+- 5 оплаченных друзей: закрытый VIP эфир.
+- 10 оплаченных друзей: личный mini-review.
+- 20 оплаченных друзей: 1 месяц VIP tariff access.
+- 50 оплаченных друзей: личный Zoom с ментором.
+
+Реально автоматизировано:
+
+- threshold 1 продлевает/создает BASIC subscription на 7 дней;
+- threshold 3 продлевает/создает BASIC subscription на 30 дней;
+- остальные rewards записываются как granted, но без отдельной автоматической
+  выдачи доступа.
+
+
+21. ZHENIS COIN
+
+Coin balance считается как сумма coin_transactions.amount.
+
+Автоматические начисления:
+
+- 5 coins за watched lesson.
+- 20 coins за passed test.
+- 100 coins за paid referral.
+
+Admin может вручную добавить или снять coins.
+
+Идемпотентность:
+coin_transactions имеет unique(user_id, reason, source_type, source_id), поэтому
+один и тот же урок/тест/реферал не должен начисляться повторно.
+
+
+22. ФИНАНСОВЫЙ IQ
+
+Frontend содержит Financial IQ тест в static/js/app.js.
+
+Пользователь проходит опрос в Mini App:
+
+- frontend считает score;
+- определяет result_title/result_level/result_text;
+- отправляет результат в POST /api/financial-iq.
+
+Backend сохраняет:
+
+- score;
+- result_title;
+- result_level;
+- result_text;
+- answers_json.
+
+GET /api/me возвращает latest financial_iq result.
+
+Важно:
+Логика вопросов и подсчета score находится на frontend. Backend только сохраняет
+результат, не перепроверяет формулу.
+
+
+23. КНИГИ
+
+Book содержит:
+
+- title;
+- description;
+- price_kzt;
+- image_url или image_file_path;
+- image_source;
+- sort_order;
+- is_active.
+
+Пользовательский Mini App:
+
+- GET /api/books - список активных книг.
+- GET /api/books/{id} - детали книги.
+- frontend строит WhatsApp buy link через WHATSAPP_SALES_PHONE.
+
+Admin:
+
+- GET /api/admin/books
+- POST /api/admin/books
+- PATCH /api/admin/books/{id}
+- DELETE /api/admin/books/{id}
+- POST /api/admin/books/upload-image
+
+Ограничения:
+
+- Для книги обязательны title, description, price_kzt и картинка.
+- Поддерживаемые картинки: JPG, PNG, WEBP.
+- Delete фактически архивирует книгу: is_active=false.
+
+
+24. БЕСПЛАТНЫЕ УРОКИ
+
+FreeLesson содержит:
+
+- title;
+- short_description;
+- description;
+- image_url или image_file_path;
+- youtube_url;
+- youtube_video_id;
+- youtube_embed_url;
+- sort_order;
+- is_active.
+
+Пользовательский Mini App:
+
+- GET /api/free-lessons
+- GET /api/free-lessons/{id}
+
+Admin:
+
+- GET /api/admin/free-lessons
+- GET /api/admin/free-lessons/{id}
+- POST /api/admin/free-lessons
+- PATCH /api/admin/free-lessons/{id}
+- DELETE /api/admin/free-lessons/{id}
+- POST /api/admin/free-lessons/upload-image
+
+YouTube logic:
+
+- принимает youtube.com/watch?v=...
+- принимает youtu.be/...
+- принимает shorts/embed links;
+- формирует embed через youtube-nocookie.com;
+- включает параметры rel=0, modestbranding=1, playsinline=1, controls=1,
+  fs=0, iv_load_policy=3, disablekb=1.
+
+Delete архивирует урок: is_active=false.
+
+
+25. КАНАЛЫ И TELEGRAM INVITES
+
+Channel содержит:
+
+- title;
+- telegram_chat_id;
+- invite_link_type: bot или manual;
+- manual_invite_link;
+- tariff_requirement: BASIC/STANDARD/VIP;
+- level_requirement;
+- is_active.
+
+Доступ к каналу:
+
+1. user.access_closed=false.
+2. Есть active subscription.
+3. user.current_level >= channel.level_requirement.
+4. tariff rank пользователя >= tariff_requirement.
+
+Пользовательский API:
+
+- GET /api/channels - список активных каналов без раскрытия telegram_chat_id и manual link.
+- POST /api/channels/{id}/invite - выдать invite link, если доступ есть.
+
+Если invite_link_type=bot и bot подключен:
+
+- backend вызывает Telegram createChatInviteLink;
+- link живет примерно 24 часа;
+- member_limit=1.
+
+Если invite_link_type=manual:
+
+- возвращается manual_invite_link.
+
+Level Telegram invite:
+
+- У каждого level может быть telegram_chat_id.
+- Пользователь может вызвать POST /api/levels/{id}/telegram-invite.
+- Доступ проверяется по active subscription и current_level.
+- Invite link действует до окончания подписки.
+- Если уже есть неистекшая invite link, она переиспользуется.
+
+Background job каждую минуту помечает истекшие user_level_telegram_invites как expired.
+
+
+26. ЭФИРЫ
+
+LiveStream содержит:
+
+- title;
+- description;
+- starts_at;
+- stream_url;
+- tariff_requirement;
+- status: scheduled/live/finished/cancelled;
+- recording_url берется из live_stream_recordings.
+
+Пользовательский API:
+
+- GET /api/streams
+
+Если пользователь не имеет нужного тарифа:
+
+- stream_url скрывается;
+- recording_url скрывается.
+
+Admin:
+
+- GET /api/admin/streams
+- POST /api/admin/streams
+- PATCH /api/admin/streams/{id}
+- DELETE /api/admin/streams/{id}
+
+Delete переводит status в cancelled.
+
+Background reminders:
+
+- за 24 часа;
+- за 3 часа;
+- за 30 минут.
+
+Напоминания отправляются активным пользователям с тарифом не ниже требования
+эфира.
+
+
+27. ПОДДЕРЖКА
+
+Пользовательский API:
+
+- POST /api/support
+
+Логика:
+
+1. Пользователь отправляет body.
+2. Backend сохраняет support_messages со status=open.
+3. Backend отправляет Telegram сообщение всем ADMIN_IDS.
+4. Пользователь получает success message.
+
+Если bot не настроен или нет ADMIN_IDS, backend вернет ошибку отправки.
+
+
+28. BROADCAST / РАССЫЛКИ
+
+Admin создает broadcast:
+
+- POST /api/admin/broadcast
+
+Поля:
+
+- title;
+- body;
+- target.
+
+Target:
+
+- all;
+- active;
+- inactive.
+
+Если target неизвестный, backend ставит all.
+
+Scheduler каждые 5 секунд:
+
+1. Берет первый queued broadcast.
+2. Переводит в processing.
+3. Находит recipients.
+4. Отправляет Telegram сообщения через bot.
+5. На каждого recipient пишет broadcast_messages:
+   - sent;
+   - failed.
+6. Завершает broadcast как completed или failed.
+
+
+29. НАПОМИНАНИЯ И ФОНОВЫЕ ЗАДАЧИ
+
+Schedulers запускаются в Server.StartSchedulers().
+
+Задачи:
+
+1. Каждую минуту:
+   - expire pending payments;
+   - expire subscriptions;
+   - expire level telegram invites.
+
+2. Каждые 5 секунд:
+   - обработка queued broadcasts.
+
+3. Каждые 10 минут:
+   - поиск пользователей, не заходивших 72 часа;
+   - отправка inactive reminder;
+   - антидубль через KV key reminder:inactive3:<userID>.
+
+4. Каждые 24 часа:
+   - поиск подписок, которые заканчиваются примерно через SUBSCRIPTION_REMINDER_HOURS;
+   - отправка subscription ending reminder.
+
+5. Каждую минуту:
+   - напоминания по live streams за 24h/3h/30m.
+
+
+30. MINI APP FRONTEND
+
+Frontend находится в static/js/app.js.
+
+Режимы:
+
+- miniapp - если открыт внутри Telegram или через ?miniapp_dev=1.
+- admin - если path /admin.
+- landing - если открыт / в обычном браузере без Telegram.
+
+Mini App экраны:
+
+- onboarding;
+- dashboard;
+- diagnostics;
+- tariffs;
+- payment;
+- financialIq;
+- financialIqResult;
+- levels;
+- lessons;
+- test;
+- assignment;
+- referral;
+- coins;
+- streams;
+- channels;
+- freeLessons;
+- freeLessonDetail;
+- bookDetail;
+- profile;
+- support.
+
+При загрузке Mini App frontend параллельно получает:
+
+- /api/me
+- /api/platform
+- /api/levels
+- /api/books
+- /api/free-lessons
+
+Если user.current_level > 0 или есть active subscription, открывается dashboard.
+Иначе открывается onboarding.
+
+Особенности Mini App:
+
+- использует Telegram.WebApp API;
+- учитывает viewport/safe area;
+- использует BackButton Telegram;
+- добавляет X-Telegram-Init-Data;
+- в dev mode добавляет X-Miniapp-Dev;
+- умеет загружать чек payment receipt;
+- умеет открывать внешние Telegram/WhatsApp links.
+
+
+31. ADMIN FRONTEND
+
+Admin frontend также находится в static/js/app.js.
+
+Разделы админки:
+
+- Басты бет / dashboard;
+- Қолданушылар / users;
+- Төлемдер / payments;
+- Жазылымдар / subscriptions;
+- Тарифтер / tariffs;
+- Деңгейлер / levels;
+- Сабақтар / lessons;
+- Тегін сабақтар / free lessons;
+- Кітаптар / books;
+- Тесттер / tests;
+- Тапсырмалар / assignments;
+- Дос шақыру / referrals;
+- ZHENIS Coin;
+- Каналдар / channels;
+- Эфирлер / streams;
+- Хабарлама / broadcast;
+- Аналитика / analytics;
+- Баптаулар / settings;
+- Аудит журналы / audit.
+
+Реально реализованные разделы:
+
+- dashboard stats;
+- users list/search;
+- payments approve/reject + receipt review;
+- subscriptions list/status patch;
+- tariffs CRUD + image upload;
+- levels CRUD;
+- lessons CRUD;
+- tests CRUD with question builder;
+- books CRUD + image upload;
+- free lessons CRUD + image upload + YouTube preview;
+- channels CRUD;
+- streams CRUD;
+- broadcast create/history;
+- settings patch;
+- audit list;
+- placeholder lists for assignments/referrals/coins.
+
+
+32. DATABASE TABLES
+
+Основные таблицы:
+
+- users
+- admins
+- staff_users
+- diagnostics
+- tariffs
+- books
+- free_lessons
+- subscriptions
+- payments
+- payment_receipts
+- levels
+- lessons
+- lesson_progress
+- tests
+- test_questions
+- test_options
+- test_attempts
+- test_answers
+- assignments
+- assignment_submissions
+- referrals
+- referral_rewards
+- coin_transactions
+- channels
+- channel_invite_links
+- user_level_telegram_invites
+- financial_iq_results
+- live_streams
+- live_stream_reminders
+- live_stream_recordings
+- user_stream_attendance
+- broadcasts
+- broadcast_messages
+- support_messages
+- admin_actions
+- app_settings
+- schema_migrations
+
+ID основной доменной схемы - UUID TEXT.
+
+Если база старая с integer IDs, migration остановится с ошибкой, пока не будет
+установлен RESET_LEGACY_INTEGER_IDS=1. Это защита от случайной потери данных.
+
+
+33. AUDIT
+
+Admin actions пишутся в admin_actions.
+
+Логируются действия:
+
+- user access change;
+- user bonus;
+- payment approve/reject;
+- subscription update;
+- tariff create/update/archive;
+- book create/update/archive;
+- free lesson create/update/archive;
+- level upsert/delete;
+- lesson create/update/delete;
+- test create/update/delete;
+- assignment submission review;
+- coin adjust;
+- channel upsert/delete/invite issue;
+- stream upsert/delete;
+- broadcast create;
+- settings patch.
+
+
+34. ЧТО УЖЕ ЕСТЬ И ЧТО НУЖНО ДОРАБОТАТЬ
+
+Уже есть:
+
+- Telegram Bot.
+- Telegram Mini App auth.
+- Browser admin auth.
+- SQLite schema/migrations/seed.
+- Тарифы, платежи, чеки, ручное одобрение.
+- Подписки.
+- 12 уровней.
+- Уроки, тесты, прогресс, открытие уровней.
+- Задания и submissions.
+- Referral rewards.
+- ZHENIS Coin.
+- Книги.
+- Бесплатные уроки.
+- Каналы и invite links.
+- Level Telegram invite links.
+- Эфиры и reminders.
+- Broadcast queue.
+- Support messages.
+- Admin audit.
+
+Текущие ограничения:
+
+1. OCR изображений чеков не реализован.
+2. QR decode чеков не реализован.
+3. Staff users есть в базе, но не подключены к login flow.
+4. Русская локализация почти полностью дублирует казахские тексты.
+5. При выборе "Русский" в Telegram bot сейчас сохраняется kk.
+6. Assignments не обязательны для открытия следующего уровня, хотя входят в percent.
+7. Financial IQ score считается на frontend, backend не перепроверяет формулу.
+8. Channels/streams/books/free lessons по умолчанию не сидятся, их нужно создавать
+   через admin.
+9. BASE_URL валидируется, но основная логика чаще использует MINI_APP_URL и
+   frontend routes.
+10. В config.go есть дефолтные секреты/токен, это нужно убрать перед production.
+
+
+35. КОРОТКО: КАК ЭТО ДОЛЖНО ВЫГЛЯДЕТЬ ДЛЯ БИЗНЕСА
+
+Это не просто "курс". Это Telegram-based платформа закрытого клуба:
+
+1. Пользователь заходит через Telegram.
+2. Видит брендированный Mini App.
+3. Проходит диагностику и Financial IQ.
+4. Покупает тариф.
+5. Загружает чек.
+6. Админ подтверждает оплату.
+7. Пользователь получает доступ к уровню 1.
+8. Каждый уровень состоит из уроков и тестов.
+9. После выполнения условий открывается следующий уровень.
+10. Пользователь набирает ZHENIS Coin.
+11. Пользователь зовет друзей и получает бонусы.
+12. По тарифу и уровню открываются закрытые каналы и эфиры.
+13. Админ управляет контентом, оплатами, пользователями и рассылками из /admin.
+
+Итоговая логика курса:
+
+- Оплата открывает вход.
+- Подписка удерживает доступ.
+- Уроки + тесты двигают пользователя по 12 уровням.
+- Coins, referrals, закрытые каналы и эфиры добавляют мотивацию и клубность.
+- Admin panel закрывает операционку: контент, платежи, пользователи, рассылки,
+  настройки и аудит.

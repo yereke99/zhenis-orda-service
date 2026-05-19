@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -32,6 +32,7 @@ type TelegramBot struct {
 	logger              *zap.Logger
 	client              *http.Client
 	maxReceipt          int64
+	receiptValidation   repository.ReceiptValidationOptions
 	testCommandsEnabled bool
 }
 
@@ -53,6 +54,10 @@ func NewTelegramBot(token string, store *repository.Store, kv KV, uploadDir, min
 
 func (b *TelegramBot) SetTemporaryTestCommandsEnabled(enabled bool) {
 	b.testCommandsEnabled = enabled
+}
+
+func (b *TelegramBot) SetReceiptValidationOptions(opts repository.ReceiptValidationOptions) {
+	b.receiptValidation = opts
 }
 
 func (b *TelegramBot) StartLongPolling(ctx context.Context) {
@@ -525,59 +530,100 @@ func (b *TelegramBot) handleReceiptUpload(ctx context.Context, user repository.U
 	fileName := ""
 	mimeType := ""
 	fileSize := int64(0)
-	ext := ""
 	if msg.Document != nil {
 		fileID = msg.Document.FileID
 		fileName = msg.Document.FileName
 		mimeType = msg.Document.MimeType
 		fileSize = msg.Document.FileSize
-		ext = strings.ToLower(filepath.Ext(fileName))
 	} else if len(msg.Photo) > 0 {
-		photo := msg.Photo[len(msg.Photo)-1]
-		fileID = photo.FileID
-		fileSize = photo.FileSize
-		fileName = "receipt.jpg"
-		mimeType = "image/jpeg"
-		ext = ".jpg"
+		return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "receipt_bad_file"))
 	}
 	if fileSize > b.maxReceipt {
 		return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "receipt_too_large"))
 	}
-	if !allowedReceiptExt(ext) {
-		if guessed, _ := mime.ExtensionsByType(mimeType); len(guessed) > 0 {
-			ext = guessed[0]
-		}
-	}
-	if !allowedReceiptExt(ext) {
+	if !isPDFReceipt(fileName, mimeType) {
 		return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "receipt_bad_file"))
 	}
-	filePath, err := b.downloadTelegramFile(ctx, fileID, user.ID, ext)
+	filePath, err := b.downloadTelegramFile(ctx, fileID, user.ID, ".pdf")
 	if err != nil {
-		return err
-	}
-	payment, err := b.store.AttachReceipt(ctx, user.ID, filePath, fileName, mimeType, fileSize)
-	if err != nil {
-		if err == repository.ErrNotFound {
-			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_no_pending"))
+		if strings.Contains(strings.ToLower(err.Error()), "too large") {
+			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "receipt_too_large"))
 		}
 		return err
 	}
-	if err := b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_uploaded")); err != nil {
+	payment, receipt, err := b.store.AttachReceiptWithValidation(ctx, user.ID, filePath, fileName, mimeType, fileSize, b.receiptValidation)
+	if err != nil {
+		_ = os.Remove(filePath)
+		switch {
+		case errors.Is(err, repository.ErrReceiptAlreadyApproved):
+			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "receipt_already_approved"))
+		case errors.Is(err, repository.ErrReceiptDuplicate):
+			b.notifyReceiptAdmins(ctx, user, payment, receipt, "Duplicate receipt upload attempt")
+			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "receipt_duplicate"))
+		case errors.Is(err, repository.ErrPaymentExpired):
+			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_expired"))
+		case errors.Is(err, repository.ErrPaymentCancelled):
+			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_cancelled"))
+		case errors.Is(err, repository.ErrNotFound):
+			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_no_pending"))
+		default:
+			return err
+		}
+	}
+	userMessage := receiptUserMessage(user.Language, payment, receipt)
+	if err := b.SendMessage(ctx, msg.Chat.ID, userMessage); err != nil {
 		return err
 	}
-	for _, adminID := range b.adminIDs {
-		text := fmt.Sprintf("New receipt uploaded\nPayment #%s\nUser: %s @%s\nAmount: %d KZT\nProvider: %s", payment.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, payment.AmountKZT, payment.Provider)
-		_ = b.SendMessage(ctx, adminID, text)
-	}
+	b.notifyReceiptAdmins(ctx, user, payment, receipt, "Payment receipt processed")
 	return nil
 }
 
-func allowedReceiptExt(ext string) bool {
-	switch strings.ToLower(ext) {
-	case ".pdf", ".jpg", ".jpeg", ".png", ".webp":
-		return true
+func isPDFReceipt(fileName, mimeType string) bool {
+	ext := strings.ToLower(filepath.Ext(fileName))
+	return ext == ".pdf" || strings.EqualFold(strings.TrimSpace(mimeType), "application/pdf")
+}
+
+func receiptUserMessage(language string, payment repository.Payment, receipt repository.Receipt) string {
+	switch {
+	case payment.Status == repository.PaymentStatusApproved:
+		return i18n.T(language, "payment_approved")
+	case receiptHasValidationError(receipt, "duplicate_identity_found") || receipt.ValidationStatus == repository.ReceiptStatusDuplicate:
+		return i18n.T(language, "receipt_duplicate")
+	case receiptHasValidationError(receipt, "amount_mismatch"):
+		return i18n.T(language, "receipt_wrong_amount")
+	case receiptHasValidationError(receipt, "recipient_bin_mismatch") || receiptHasValidationError(receipt, "recipient_bin_missing"):
+		return i18n.T(language, "receipt_wrong_recipient")
 	default:
-		return false
+		return i18n.T(language, "payment_uploaded")
+	}
+}
+
+func receiptHasValidationError(receipt repository.Receipt, code string) bool {
+	for _, value := range receipt.ValidationErrors {
+		if value == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *TelegramBot) notifyReceiptAdmins(ctx context.Context, user repository.User, payment repository.Payment, receipt repository.Receipt, title string) {
+	for _, adminID := range b.adminIDs {
+		status := receipt.ValidationStatus
+		if status == "" {
+			status = "not_stored"
+		}
+		text := fmt.Sprintf("%s\nPayment #%s\nUser: %s @%s\nAmount: %d KZT\nProvider: %s\nReceipt status: %s\nReason: %s",
+			title,
+			payment.ID,
+			strings.TrimSpace(user.FirstName+" "+user.LastName),
+			user.Username,
+			payment.AmountKZT,
+			payment.Provider,
+			status,
+			strings.Join(receipt.ValidationErrors, ", "),
+		)
+		_ = b.SendMessage(ctx, adminID, text)
 	}
 }
 
@@ -625,6 +671,7 @@ func (b *TelegramBot) downloadTelegramFile(ctx context.Context, fileID string, u
 	limited := io.LimitReader(resp.Body, b.maxReceipt+1)
 	written, err := io.Copy(out, limited)
 	if err != nil {
+		_ = os.Remove(path)
 		return "", err
 	}
 	if written > b.maxReceipt {

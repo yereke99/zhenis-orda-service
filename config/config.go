@@ -34,6 +34,8 @@ type Config struct {
 	HalykPaymentURL             string
 	BankCardPaymentURL          string
 	PaymentPendingTTL           time.Duration
+	PaymentRecipientBIN         string
+	PaymentAmountToleranceKZT   int
 	SubscriptionDefaultDays     int
 	TelegramLogChatID           int64
 	TelegramLogThreadID         int
@@ -73,6 +75,8 @@ func Load() (Config, error) {
 		KaspiQRImageURL:           os.Getenv("KASPI_QR_IMAGE_URL"),
 		HalykPaymentURL:           os.Getenv("HALYK_PAYMENT_URL"),
 		BankCardPaymentURL:        os.Getenv("BANK_CARD_PAYMENT_URL"),
+		PaymentRecipientBIN:       digitsOnly(getEnv("PAYMENT_RECIPIENT_BIN", "830520499025")),
+		PaymentAmountToleranceKZT: getEnvInt("PAYMENT_AMOUNT_TOLERANCE_KZT", 0),
 		SubscriptionDefaultDays:   getEnvInt("SUBSCRIPTION_DEFAULT_DAYS", 30),
 		DisableTelegramBot:        getEnvBool("DISABLE_TELEGRAM_BOT", false),
 		MaxReceiptBytes:           int64(getEnvInt("MAX_RECEIPT_BYTES", 10*1024*1024)),
@@ -134,6 +138,12 @@ func (c Config) Validate() error {
 	}
 	if c.PaymentPendingTTL <= 0 {
 		problems = append(problems, "PAYMENT_PENDING_TTL_MINUTES must be positive")
+	}
+	if c.PaymentRecipientBIN == "" {
+		problems = append(problems, "PAYMENT_RECIPIENT_BIN is required")
+	}
+	if c.PaymentAmountToleranceKZT < 0 {
+		problems = append(problems, "PAYMENT_AMOUNT_TOLERANCE_KZT must be zero or positive")
 	}
 	if c.MaxReceiptBytes <= 0 {
 		problems = append(problems, "MAX_RECEIPT_BYTES must be positive")

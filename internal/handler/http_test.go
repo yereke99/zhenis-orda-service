@@ -42,25 +42,27 @@ func newTestHTTPServerWithConfig(t *testing.T, env string, configure func(*confi
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		Token:                   "test-token",
-		Port:                    "8080",
-		Env:                     env,
-		BaseURL:                 "http://localhost:8080",
-		MiniAppURL:              "http://localhost:8080",
-		DBPath:                  ":memory:",
-		UploadDir:               t.TempDir(),
-		BookUploadDir:           t.TempDir(),
-		FreeLessonUploadDir:     t.TempDir(),
-		PaymentDir:              t.TempDir(),
-		AllowedOrigins:          []string{"http://localhost:8080"},
-		WhatsAppSalesPhone:      "77476823396",
-		PaymentPendingTTL:       time.Hour,
-		SubscriptionDefaultDays: 30,
-		MaxReceiptBytes:         1024 * 1024,
-		MaxBookImageBytes:       1024 * 1024,
-		MaxFreeLessonImageBytes: 1024 * 1024,
-		BrowserSessionTTL:       time.Hour,
-		TelegramInitDataMaxAge:  time.Hour,
+		Token:                     "test-token",
+		Port:                      "8080",
+		Env:                       env,
+		BaseURL:                   "http://localhost:8080",
+		MiniAppURL:                "http://localhost:8080",
+		DBPath:                    ":memory:",
+		UploadDir:                 t.TempDir(),
+		BookUploadDir:             t.TempDir(),
+		FreeLessonUploadDir:       t.TempDir(),
+		PaymentDir:                t.TempDir(),
+		AllowedOrigins:            []string{"http://localhost:8080"},
+		WhatsAppSalesPhone:        "77476823396",
+		PaymentPendingTTL:         time.Hour,
+		PaymentRecipientBIN:       "830520499025",
+		PaymentAmountToleranceKZT: 0,
+		SubscriptionDefaultDays:   30,
+		MaxReceiptBytes:           1024 * 1024,
+		MaxBookImageBytes:         1024 * 1024,
+		MaxFreeLessonImageBytes:   1024 * 1024,
+		BrowserSessionTTL:         time.Hour,
+		TelegramInitDataMaxAge:    time.Hour,
 	}
 	if configure != nil {
 		configure(&cfg)
@@ -675,7 +677,7 @@ func TestMiniAppReceiptUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := part.Write([]byte("Kaspi чек transaction XYZ999 amount 4 990 ₸ 10.05.2026")); err != nil {
+	if _, err := part.Write([]byte("Kaspi чек transaction XYZ999 Получатель БИН 830520499025 amount 9 900,00 ₸")); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -687,6 +689,51 @@ func TestMiniAppReceiptUpload(t *testing.T) {
 	srv.Routes().ServeHTTP(uploadRec, uploadReq)
 	if uploadRec.Code != http.StatusOK {
 		t.Fatalf("upload expected 200, got %d: %s", uploadRec.Code, uploadRec.Body.String())
+	}
+	var uploaded struct {
+		Payment repository.Payment `json:"payment"`
+		Receipt repository.Receipt `json:"receipt"`
+	}
+	if err := json.NewDecoder(uploadRec.Body).Decode(&uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Payment.Status != repository.PaymentStatusApproved {
+		t.Fatalf("expected auto-approved payment, got %s with receipt %#v", uploaded.Payment.Status, uploaded.Receipt)
+	}
+}
+
+func TestMiniAppReceiptUploadRejectsNonPDF(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, createReq)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create payment expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Payment repository.Payment `json:"payment"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("receipt", "receipt.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("not a pdf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	uploadReq := httptest.NewRequest(http.MethodPost, "/api/payments/"+created.Payment.ID+"/receipt?miniapp_dev=1", &buf)
+	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
+	uploadRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusBadRequest {
+		t.Fatalf("non-PDF upload expected 400, got %d: %s", uploadRec.Code, uploadRec.Body.String())
 	}
 }
 

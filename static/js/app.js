@@ -2535,7 +2535,7 @@
 	          <div class="price">${money(tariff.price_kzt)} <small>₸ / ай</small></div>
 	          ${tariff.full_description_kk ? `<p class="muted">${esc(tariff.full_description_kk)}</p>` : tariff.short_description_kk ? `<p class="muted">${esc(tariff.short_description_kk)}</p>` : ""}
 	          ${tariffBenefitsHtml(tariff.features)}
-	          <p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF немесе сурет ретінде жіберіңіз.</p>
+	          <p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF құжат ретінде жіберіңіз.</p>
 	        </div>
 	        <form id="paymentForm" class="form">
 	          <label class="field">
@@ -2584,22 +2584,22 @@
         <div class="card-header">
           <div>
             <p class="eyebrow">Түбіртек жүктеу</p>
-            <h2>PDF немесе сурет жүктеңіз</h2>
+            <h2>PDF түбіртек жүктеңіз</h2>
           </div>
-          <span class="status warn">Қолмен тексеріледі</span>
+          <span class="status warn">Тексеріледі</span>
         </div>
         <form id="receiptUploadForm" class="form">
           <label class="upload-drop">
-            <input name="receipt" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" required />
+            <input name="receipt" type="file" accept=".pdf,application/pdf" required />
             <span class="upload-title">Түбіртек жүктеу</span>
-            <small>PDF, JPG, PNG немесе WEBP</small>
+            <small>PDF құжат</small>
             <strong id="receiptFileName">Файл таңдалмады</strong>
           </label>
           <button class="gold-btn lg" type="submit">
             <span class="btn-label">Тексеруге жіберу</span><span class="btn-spinner"></span>
           </button>
         </form>
-        <div id="receiptUploadState" class="muted small">Әкімші тексергеннен кейін қолжетімділік ашылады.</div>
+        <div id="receiptUploadState" class="muted small">PDF түбіртек тексерілгеннен кейін қолжетімділік ашылады.</div>
       </div>
     `;
   }
@@ -4367,12 +4367,23 @@
 
   function receiptValidationSummary(receipt, payment) {
     const errors = receipt.validation_errors || [];
+    const diff = typeof receipt.amount_difference_kzt === "number"
+      ? receipt.amount_difference_kzt
+      : typeof receipt.parsed_amount_kzt === "number"
+        ? receipt.parsed_amount_kzt - payment.amount_kzt
+        : null;
     return `<div class="receipt-validation">
       ${statusBadge(receipt.validation_status)}
       <span>Төлем сомасы: ${money(payment.amount_kzt)} ₸</span>
       <span>Чектегі сома: ${receipt.parsed_amount_kzt ? `${money(receipt.parsed_amount_kzt)} ₸` : "—"}</span>
+      <span>Айырма: ${diff === null ? "—" : `${money(diff)} ₸`}</span>
+      <span>БИН: ${esc(receipt.parsed_recipient_bin || "—")}</span>
+      <span>Күтілетін БИН: ${esc(receipt.expected_recipient_bin || "—")}</span>
+      <span>Транзакция: ${esc(receipt.receipt_transaction_key || receipt.parsed_transaction_id || receipt.parsed_check_id || "—")}</span>
       <span>Провайдер: ${esc(receipt.provider || "unknown")}</span>
       <span>QR: ${receipt.qr_found ? "QR табылды" : "QR табылмады"}</span>
+      <span>Файл hash: ${esc(receipt.file_hash ? receipt.file_hash.slice(0, 12) : "—")}</span>
+      <span>Text hash: ${esc(receipt.raw_text_hash ? receipt.raw_text_hash.slice(0, 12) : "—")}</span>
       <span>Қайталану: ${receipt.duplicate_of_receipt_id ? "Күдікті/қайталанған" : "Бірегей"}</span>
       ${errors.length ? `<small>${esc(errors.join(", "))}</small>` : ""}
     </div>`;

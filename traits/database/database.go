@@ -74,11 +74,17 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := addLevelInviteTables(ctx, db); err != nil {
 		return err
 	}
+	if err := addPaymentReceiptColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateLessonOwnedTests(ctx, db); err != nil {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, indexesV1); err != nil {
 		return fmt.Errorf("migration indexes: %w", err)
+	}
+	if err := addReceiptUniqueIndexes(ctx, db); err != nil {
+		return err
 	}
 	if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, name) VALUES (1, 'initial_zhenis_orda_schema');`); err != nil {
 		return err
@@ -139,6 +145,77 @@ func addLevelInviteTables(ctx context.Context, db *sql.DB) error {
 		);
 	`)
 	return err
+}
+
+func addPaymentReceiptColumns(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"expected_amount_kzt", "INTEGER"},
+		{"amount_difference_kzt", "INTEGER"},
+		{"receipt_transaction_key", "TEXT"},
+		{"parsed_recipient_bin", "TEXT"},
+		{"expected_recipient_bin", "TEXT"},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(ctx, db, "payment_receipts", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addReceiptUniqueIndexes(ctx context.Context, db *sql.DB) error {
+	indexes := []struct {
+		name   string
+		column string
+	}{
+		{"uniq_receipts_approved_file_hash", "file_hash"},
+		{"uniq_receipts_approved_transaction_key", "receipt_transaction_key"},
+		{"uniq_receipts_approved_check", "parsed_check_id"},
+		{"uniq_receipts_approved_qr_hash", "qr_payload_hash"},
+		{"uniq_receipts_approved_raw_text_hash", "raw_text_hash"},
+	}
+	for _, index := range indexes {
+		ok, err := noApprovedReceiptDuplicates(ctx, db, index.column)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		stmt := fmt.Sprintf(
+			`CREATE UNIQUE INDEX IF NOT EXISTS %s ON payment_receipts(%s) WHERE validation_status = 'approved' AND %s IS NOT NULL AND %s <> '';`,
+			index.name,
+			index.column,
+			index.column,
+			index.column,
+		)
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func noApprovedReceiptDuplicates(ctx context.Context, db *sql.DB, column string) (bool, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM (
+			SELECT %s
+			FROM payment_receipts
+			WHERE validation_status = 'approved' AND %s IS NOT NULL AND %s <> ''
+			GROUP BY %s
+			HAVING COUNT(*) > 1
+			LIMIT 1
+		);
+	`, column, column, column, column)
+	var count int
+	if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 0, nil
 }
 
 func migrateLessonOwnedTests(ctx context.Context, db *sql.DB) error {

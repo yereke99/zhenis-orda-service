@@ -143,12 +143,17 @@ CREATE TABLE IF NOT EXISTS payment_receipts (
 	qr_payload_hash TEXT,
 	provider TEXT NOT NULL DEFAULT 'unknown',
 	parsed_amount_kzt INTEGER,
+	expected_amount_kzt INTEGER,
+	amount_difference_kzt INTEGER,
 	parsed_currency TEXT,
 	parsed_transaction_id TEXT,
+	receipt_transaction_key TEXT,
 	parsed_check_id TEXT,
 	parsed_reference_id TEXT,
 	parsed_payment_date DATETIME,
 	parsed_recipient TEXT,
+	parsed_recipient_bin TEXT,
+	expected_recipient_bin TEXT,
 	parsed_payer_masked TEXT,
 	validation_status TEXT NOT NULL DEFAULT 'uploaded',
 	validation_errors TEXT NOT NULL DEFAULT '[]',
@@ -461,6 +466,7 @@ CREATE INDEX IF NOT EXISTS idx_receipts_payment ON payment_receipts(payment_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_file_hash ON payment_receipts(file_hash);
 CREATE INDEX IF NOT EXISTS idx_receipts_qr_hash ON payment_receipts(qr_payload_hash);
 CREATE INDEX IF NOT EXISTS idx_receipts_transaction ON payment_receipts(parsed_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_receipts_transaction_key ON payment_receipts(receipt_transaction_key);
 CREATE INDEX IF NOT EXISTS idx_receipts_check ON payment_receipts(parsed_check_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_validation ON payment_receipts(validation_status);
 CREATE INDEX IF NOT EXISTS idx_lessons_level ON lessons(level_id);

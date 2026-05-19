@@ -13,9 +13,13 @@ import (
 )
 
 var (
-	ErrNotFound     = errors.New("not found")
-	ErrForbidden    = errors.New("forbidden")
-	ErrInvalidState = errors.New("invalid state")
+	ErrNotFound               = errors.New("not found")
+	ErrForbidden              = errors.New("forbidden")
+	ErrInvalidState           = errors.New("invalid state")
+	ErrReceiptAlreadyApproved = errors.New("receipt already approved")
+	ErrReceiptDuplicate       = errors.New("receipt duplicate")
+	ErrPaymentExpired         = errors.New("payment expired")
+	ErrPaymentCancelled       = errors.New("payment cancelled")
 )
 
 type Store struct {
