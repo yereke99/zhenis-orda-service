@@ -50,7 +50,7 @@ type Config struct {
 	SubscriptionReminderHours   int
 }
 
-var defaultAdminIDs = []int64{800703982}
+var defaultAdminIDs = []int64{800703982, 513594097}
 
 func Load() (Config, error) {
 	uploadDir := getEnv("UPLOAD_DIR", "uploads")
