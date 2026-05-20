@@ -564,6 +564,8 @@ func (b *TelegramBot) handleReceiptUpload(ctx context.Context, user repository.U
 			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_expired"))
 		case errors.Is(err, repository.ErrPaymentCancelled):
 			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_cancelled"))
+		case errors.Is(err, repository.ErrAmbiguousPayment):
+			return b.SendMessage(ctx, msg.Chat.ID, "Сізде бірнеше күту төлем бар. Mini App ішіндегі нақты төлем экранында түбіртекті жүктеңіз.")
 		case errors.Is(err, repository.ErrNotFound):
 			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_no_pending"))
 		default:
@@ -586,7 +588,7 @@ func isPDFReceipt(fileName, mimeType string) bool {
 func receiptUserMessage(language string, payment repository.Payment, receipt repository.Receipt) string {
 	switch {
 	case payment.Status == repository.PaymentStatusApproved:
-		return i18n.T(language, "payment_approved")
+		return formatPaymentApprovedMessage(language, payment)
 	case receiptHasValidationError(receipt, "duplicate_identity_found") || receipt.ValidationStatus == repository.ReceiptStatusDuplicate:
 		return i18n.T(language, "receipt_duplicate")
 	case receiptHasValidationError(receipt, "amount_mismatch"):

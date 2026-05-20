@@ -239,7 +239,7 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 	}
 	if s.bot != nil {
 		if updated.Status == repository.PaymentStatusApproved {
-			_ = s.bot.SendMessage(r.Context(), user.TelegramID, i18n.T(user.Language, "payment_approved"))
+			_ = s.bot.SendMessage(r.Context(), user.TelegramID, formatPaymentApprovedMessage(user.Language, updated))
 		}
 		for _, adminID := range s.cfg.AdminIDs {
 			text := fmt.Sprintf("Төлем түбіртегі өңделді\nТөлем: %s\nҚолданушы: %s @%s\nСома: %d KZT\nТөлем статусы: %s\nТүбіртек: %s\nСебеп: %s", updated.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, updated.AmountKZT, updated.Status, receipt.ValidationStatus, strings.Join(receipt.ValidationErrors, ", "))
@@ -537,6 +537,166 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 		channels[i].ManualInviteLink = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"channels": channels})
+}
+
+func (s *Server) handlePremiumCourses(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	courses, err := s.store.ListPremiumCoursesForUser(r.Context(), user.ID)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"premium_courses":      courses,
+		"whatsapp_sales_phone": s.cfg.WhatsAppSalesPhone,
+	})
+}
+
+func (s *Server) handlePremiumCourse(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	courseID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad course")
+		return
+	}
+	course, err := s.store.GetPremiumCourseForUser(r.Context(), user.ID, courseID)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"premium_course":       course,
+		"whatsapp_sales_phone": s.cfg.WhatsAppSalesPhone,
+	})
+}
+
+func (s *Server) handlePremiumCourseLessons(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	courseID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad course")
+		return
+	}
+	if _, err := s.store.GetPremiumCourse(r.Context(), courseID, true); mapRepoError(w, err) {
+		return
+	}
+	lessons, err := s.store.ListPremiumCourseLessons(r.Context(), user.ID, courseID)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lessons": lessons})
+}
+
+func (s *Server) handlePremiumCourseLesson(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	lessonID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad lesson")
+		return
+	}
+	lesson, err := s.store.GetPremiumCourseLesson(r.Context(), user.ID, lessonID)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lesson": lesson})
+}
+
+func (s *Server) handleCreatePremiumCoursePayment(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	courseID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad course")
+		return
+	}
+	var req struct {
+		Provider string `json:"provider"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	payment, err := s.store.CreatePremiumCoursePayment(r.Context(), user.ID, courseID, req.Provider, s.cfg.PaymentPendingTTL)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"payment": payment,
+		"instructions": map[string]any{
+			"kaspi_qr_image_url": s.cfg.KaspiQRImageURL,
+			"kaspi_pay_url":      s.cfg.KaspiPayURL,
+			"halyk_payment_url":  s.cfg.HalykPaymentURL,
+			"bank_card_url":      s.cfg.BankCardPaymentURL,
+			"text":               "Premium курс төлемін жасап, осы экранда PDF түбіртек жүктеңіз.",
+		},
+	})
+}
+
+func (s *Server) handlePremiumCourseTelegramInvite(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	courseID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad course")
+		return
+	}
+	course, err := s.store.GetPremiumCourse(r.Context(), courseID, true)
+	if mapRepoError(w, err) {
+		return
+	}
+	access, err := s.store.ActivePremiumCourseAccess(r.Context(), user.ID, course.ID)
+	if mapRepoError(w, err) {
+		return
+	}
+	if access == nil {
+		writeError(w, http.StatusForbidden, "premium course locked")
+		return
+	}
+	link := strings.TrimSpace(course.ManualInviteLink)
+	expiresAt := time.Now().Add(24 * time.Hour)
+	if access.ExpiresAt != nil && access.ExpiresAt.Before(expiresAt) {
+		expiresAt = *access.ExpiresAt
+	}
+	if course.InviteLinkType == "bot" {
+		if strings.TrimSpace(course.TelegramChatID) == "" {
+			writeError(w, http.StatusConflict, "telegram chat is not configured")
+			return
+		}
+		if existing, err := s.store.ReusablePremiumCourseTelegramInvite(r.Context(), user.ID, course.ID, course.TelegramChatID); err != nil {
+			if mapRepoError(w, err) {
+				return
+			}
+		} else if existing != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"invite_link": existing.InviteLink, "expires_at": existing.ExpiresAt})
+			return
+		}
+		if s.bot == nil {
+			writeError(w, http.StatusConflict, "telegram bot is not configured")
+			return
+		}
+		name := fmt.Sprintf("user:%d premium:%s", user.TelegramID, course.Slug)
+		generated, err := s.bot.CreateInviteLink(r.Context(), course.TelegramChatID, name, expiresAt)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("premium course telegram invite create failed", zap.String("user_id", user.ID), zap.String("course_id", course.ID), zap.Error(err))
+			}
+			writeError(w, http.StatusBadGateway, "telegram invite link could not be created")
+			return
+		}
+		link = generated
+	}
+	if link == "" {
+		writeError(w, http.StatusConflict, "invite link is not configured")
+		return
+	}
+	invite, err := s.store.CreatePremiumCourseTelegramInvite(r.Context(), repository.PremiumCourseTelegramInvite{
+		UserID:         user.ID,
+		CourseID:       course.ID,
+		TelegramChatID: firstNonEmpty(course.TelegramChatID, "manual"),
+		InviteLink:     link,
+		ExpiresAt:      &expiresAt,
+		Status:         "issued",
+	})
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invite_link": invite.InviteLink, "expires_at": invite.ExpiresAt})
 }
 
 func (s *Server) handleBooks(w http.ResponseWriter, r *http.Request) {

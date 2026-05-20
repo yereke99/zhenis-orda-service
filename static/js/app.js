@@ -16,6 +16,7 @@
     lessons: [],
     books: [],
     freeLessons: [],
+    premiumCourses: [],
     referral: null,
     coins: null,
     currentScreen: "dashboard",
@@ -24,6 +25,8 @@
     bookReturnScreen: "dashboard",
     selectedFreeLessonId: null,
     freeLessonReturnScreen: "dashboard",
+    selectedPremiumCourseId: null,
+    premiumCourseReturnScreen: "dashboard",
     whatsappSalesPhone: "",
     financialIqAnswers: {},
     financialIqResult: null,
@@ -656,6 +659,11 @@
 	    return compact(book.image_file_path) || compact(book.image_url);
 	  }
 
+	  function visiblePremiumCourseImage(course) {
+	    if (!course) return "";
+	    return compact(course.cover_image_path) || compact(course.cover_image_url);
+	  }
+
 	  function shortText(value, limit) {
 	    const text = compact(value).replace(/\s+/g, " ");
 	    const max = limit || 120;
@@ -678,6 +686,13 @@
 	    return `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(message)}`;
 	  }
 
+	  function premiumCourseManagerUrl(course) {
+	    const phone = compact(state.whatsappSalesPhone).replace(/\D/g, "");
+	    if (!phone || !course) return "";
+	    const message = `Сәлеметсіз бе! Мен «${course.title || ""}» premium курсына қолжетімділік алғым келеді. Бағасы: ${money(course.price_kzt)} ₸.`;
+	    return `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(message)}`;
+	  }
+
 	  function openExternalLink(url) {
 	    if (!url) {
 	      toast("WhatsApp нөмірі бапталмаған", "error");
@@ -695,6 +710,12 @@
 	    const tariffs = (state.platform && state.platform.tariffs) || [];
 	    const selected = compact(state.selectedTariff);
 	    return tariffs.find((item) => item.id === selected || item.code === selected) || tariffs[0] || null;
+	  }
+
+	  function selectedPremiumCourse() {
+	    const courses = state.premiumCourses || [];
+	    const selected = compact(state.selectedPremiumCourseId);
+	    return courses.find((item) => item.id === selected) || null;
 	  }
 
 	  function copyText(value) {
@@ -816,6 +837,16 @@
     processing: "Жіберіліп жатыр",
     completed: "Аяқталды",
     failed: "Қате",
+    manual: "Қолмен",
+    payment: "Төлем",
+    bonus: "Бонус",
+    gift: "Сыйлық",
+    revoked: "Жабылды",
+    archived: "Архив",
+    lifetime: "Lifetime",
+    "30_days": "30 күн",
+    "90_days": "90 күн",
+    custom: "Custom",
     valid_candidate: "Тексеруге дайын",
     parse_partial: "Қолмен тексеру қажет",
     parse_failed: "Қолмен тексеру қажет",
@@ -1127,19 +1158,21 @@
   }
 
   async function loadMiniAppData() {
-    const [me, platform, levels, books, freeLessons] = await Promise.all([
+    const [me, platform, levels, books, freeLessons, premiumCourses] = await Promise.all([
       api("/api/me"),
       api("/api/platform").catch(() => null),
       api("/api/levels").catch(() => ({ levels: [] })),
       api("/api/books").catch(() => ({ books: [], whatsapp_sales_phone: "" })),
       api("/api/free-lessons").catch(() => ({ free_lessons: [] })),
+      api("/api/premium-courses").catch(() => ({ premium_courses: [], whatsapp_sales_phone: "" })),
     ]);
     state.me = me;
     state.platform = platform;
     state.levels = (levels && levels.levels) || [];
     state.books = (books && books.books) || [];
     state.freeLessons = (freeLessons && freeLessons.free_lessons) || [];
-    state.whatsappSalesPhone = compact(books && books.whatsapp_sales_phone);
+    state.premiumCourses = (premiumCourses && premiumCourses.premium_courses) || [];
+    state.whatsappSalesPhone = compact((premiumCourses && premiumCourses.whatsapp_sales_phone) || (books && books.whatsapp_sales_phone));
 
     const user = me && me.user ? me.user : {};
     const sub = user.subscription || {};
@@ -1172,6 +1205,9 @@
       diagnostics: renderDiagnostics,
       tariffs: renderTariffs,
       payment: renderPayment,
+      premiumCourses: renderPremiumCourses,
+      premiumCourseDetail: renderPremiumCourseDetail,
+      premiumPayment: renderPremiumPayment,
       financialIq: renderFinancialIq,
       financialIqResult: renderFinancialIqResult,
       levels: renderLevels,
@@ -1199,6 +1235,18 @@
 	      setScreen("tariffs");
 	      return;
 	    }
+	    if (state.currentScreen === "premiumPayment") {
+	      setScreen("premiumCourseDetail");
+	      return;
+	    }
+	    if (state.currentScreen === "premiumCourseDetail") {
+	      closePremiumCourseDetail();
+	      return;
+	    }
+	    if (state.currentScreen === "premiumCourses") {
+	      closePremiumCourses();
+	      return;
+	    }
 	    if (state.currentScreen === "bookDetail") {
 	      closeBookDetail();
 	      return;
@@ -1220,7 +1268,7 @@
 	    const tg = getTelegram();
 	    if (!tg || !tg.BackButton || !telegramVersionAtLeast(tg, "6.1")) return;
 	    try {
-	      const hasBack = state.currentScreen === "payment" || state.currentScreen === "bookDetail" || state.currentScreen === "freeLessons" || state.currentScreen === "freeLessonDetail" || state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult";
+	      const hasBack = state.currentScreen === "payment" || state.currentScreen === "premiumPayment" || state.currentScreen === "premiumCourses" || state.currentScreen === "premiumCourseDetail" || state.currentScreen === "bookDetail" || state.currentScreen === "freeLessons" || state.currentScreen === "freeLessonDetail" || state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult";
 	      if (hasBack) {
 	        if (!state.telegramBackHandlerBound && typeof tg.BackButton.onClick === "function") {
 	          tg.BackButton.onClick(handleMiniAppBack);
@@ -1632,6 +1680,7 @@
           <button class="ghost-btn lg" id="goTariffs" type="button">Тариф таңдау</button>
         </div>
         ${savedFinancialIqResult() ? "" : financialIqCtaCard()}
+        ${premiumCoursesHomeSection()}
         ${freeLessonsHomeSection()}
         ${booksHomeSection()}
         <div class="card">
@@ -1643,8 +1692,10 @@
     `);
     on("goDiagnostics", () => setScreen("diagnostics"));
     on("goTariffs", () => setScreen("tariffs"));
+    bindNext();
     bindFinancialIqCta();
     bindFreeLessonCards();
+    bindPremiumCourseCards();
     bindBookCards();
   }
 
@@ -1685,6 +1736,8 @@
 
         ${freeLessonsHomeSection()}
 
+        ${premiumCoursesHomeSection()}
+
         ${booksHomeSection()}
 
         <div class="card">
@@ -1715,6 +1768,7 @@
 	          <button class="ghost-btn lg" data-next="referral" type="button">Дос шақыру</button>
           <button class="ghost-btn lg" data-next="streams" type="button">Жабық эфир</button>
           <button class="ghost-btn lg" data-next="channels" type="button">Жабық арналар</button>
+          <button class="ghost-btn lg" data-next="premiumCourses" type="button">Premium курстар</button>
           <button class="ghost-btn lg" data-next="assignment" type="button">Тапсырмаларым</button>
           <button class="ghost-btn lg" data-next="support" type="button">Қолдау қызметі</button>
         </div>
@@ -1724,8 +1778,326 @@
     bindFinancialIqCta();
     bindCertificateGoal();
     bindFreeLessonCards();
+    bindPremiumCourseCards();
     bindBookCards();
   }
+
+	  function premiumCoursesHomeSection() {
+	    const courses = state.premiumCourses || [];
+	    if (!courses.length) return "";
+	    return `<section class="premium-courses-section" aria-label="Premium курстар">
+	      <div class="section-head">
+	        <div>
+	          <p class="eyebrow">Premium курстар</p>
+	          <h2>Бөлек ақылы курстар</h2>
+	        </div>
+	        <button class="ghost-btn" data-next="premiumCourses" type="button">Барлығы</button>
+	      </div>
+	      <div class="premium-course-grid">${courses.map(premiumCourseCard).join("")}</div>
+	    </section>`;
+	  }
+
+	  function premiumCourseCard(course) {
+	    const access = Boolean(course.access);
+	    const image = visiblePremiumCourseImage(course);
+	    return `<article class="premium-course-card ${access ? "open" : "locked"}" data-premium-course="${esc(course.id)}" tabindex="0" role="button" aria-label="${esc(course.title)}">
+	      ${image ? `<img class="premium-course-image" src="${esc(image)}" alt="${esc(course.title)}" loading="lazy" />` : ""}
+	      <div class="premium-course-body">
+	        <div class="card-header">
+	          <div>
+	            <p class="eyebrow">${access ? "Ашық" : "Құлыпталған"}</p>
+	            <h3>${access ? "✓" : "🔒"} ${esc(course.title)}</h3>
+	          </div>
+	          <span class="status ${access ? "ok" : "bad"}">${access ? "Ашық" : "Құлыпталған"}</span>
+	        </div>
+	        <p class="muted">Бағасы: ${money(course.price_kzt)} тг</p>
+	        <div class="action-row">
+	          <button class="${access ? "ghost-btn" : "gold-btn"}" data-open-premium-course="${esc(course.id)}" type="button">${access ? "Курсты ашу" : "Сатып алу"}</button>
+	        </div>
+	      </div>
+	    </article>`;
+	  }
+
+	  function bindPremiumCourseCards() {
+	    document.querySelectorAll("[data-premium-course]").forEach((card) => {
+	      card.addEventListener("click", (event) => {
+	        if (event.target.closest("[data-open-premium-course]")) return;
+	        openPremiumCourseDetail(card.dataset.premiumCourse);
+	      });
+	      card.addEventListener("keydown", (event) => {
+	        if (event.key === "Enter" || event.key === " ") {
+	          event.preventDefault();
+	          openPremiumCourseDetail(card.dataset.premiumCourse);
+	        }
+	      });
+	    });
+	    document.querySelectorAll("[data-open-premium-course]").forEach((button) => {
+	      button.addEventListener("click", (event) => {
+	        event.stopPropagation();
+	        openPremiumCourseDetail(button.dataset.openPremiumCourse);
+	      });
+	    });
+	  }
+
+	  function openPremiumCourses() {
+	    state.premiumCourseReturnScreen = state.currentScreen && state.currentScreen !== "premiumCourses" ? state.currentScreen : "dashboard";
+	    setScreen("premiumCourses");
+	  }
+
+	  function closePremiumCourses() {
+	    const target = state.premiumCourseReturnScreen || "dashboard";
+	    setScreen(target === "premiumCourses" || target === "premiumCourseDetail" || target === "premiumPayment" ? "dashboard" : target);
+	  }
+
+	  function openPremiumCourseDetail(courseID) {
+	    if (!courseID) return;
+	    state.selectedPremiumCourseId = courseID;
+	    if (state.currentScreen !== "premiumCourses" && state.currentScreen !== "premiumCourseDetail" && state.currentScreen !== "premiumPayment") {
+	      state.premiumCourseReturnScreen = state.currentScreen || "dashboard";
+	    }
+	    setScreen("premiumCourseDetail");
+	  }
+
+	  function closePremiumCourseDetail() {
+	    state.selectedPremiumCourseId = null;
+	    const target = state.premiumCourseReturnScreen || "dashboard";
+	    setScreen(target === "premiumCourseDetail" || target === "premiumPayment" ? "dashboard" : target);
+	  }
+
+	  async function renderPremiumCourses() {
+	    let courses = state.premiumCourses || [];
+	    if (!courses.length) {
+	      try {
+	        const data = await api("/api/premium-courses");
+	        courses = data.premium_courses || [];
+	        state.premiumCourses = courses;
+	        state.whatsappSalesPhone = compact(data.whatsapp_sales_phone || state.whatsappSalesPhone);
+	      } catch (error) {
+	        html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backPremiumCourses" type="button">Артқа</button>${emptyState("Premium курстарды жүктеу мүмкін болмады.")}</section>`);
+	        on("backPremiumCourses", closePremiumCourses);
+	        return;
+	      }
+	    }
+	    html(`
+	      <section class="screen premium-courses-screen">
+	        <div class="section-head">
+	          <div>
+	            <p class="eyebrow">Premium курстар</p>
+	            <h1>Premium курстар</h1>
+	          </div>
+	          <button class="ghost-btn mini-back-btn" id="backPremiumCourses" type="button">Артқа</button>
+	        </div>
+	        ${courses.length ? `<div class="premium-course-grid large">${courses.map(premiumCourseCard).join("")}</div>` : emptyState("Қазір premium курс жоқ.")}
+	      </section>
+	    `);
+	    on("backPremiumCourses", closePremiumCourses);
+	    bindPremiumCourseCards();
+	  }
+
+	  async function renderPremiumCourseDetail() {
+	    const courseID = state.selectedPremiumCourseId;
+	    if (!courseID) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backPremiumCourse" type="button">Артқа</button>${emptyState("Курс табылмады.")}</section>`);
+	      on("backPremiumCourse", closePremiumCourseDetail);
+	      return;
+	    }
+	    html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backPremiumCourse" type="button">Артқа</button><div class="card skeleton"></div><div class="grid">${skeletonRows(3)}</div></section>`);
+	    on("backPremiumCourse", closePremiumCourseDetail);
+	    let course;
+	    try {
+	      const data = await api(`/api/premium-courses/${courseID}`);
+	      if (state.currentScreen !== "premiumCourseDetail" || state.selectedPremiumCourseId !== courseID) return;
+	      course = data.premium_course;
+	      state.whatsappSalesPhone = compact(data.whatsapp_sales_phone || state.whatsappSalesPhone);
+	      if (course && course.id) {
+	        const courses = state.premiumCourses || [];
+	        const index = courses.findIndex((item) => item.id === course.id);
+	        if (index >= 0) courses[index] = Object.assign({}, courses[index], course);
+	        else courses.push(course);
+	      }
+	    } catch (error) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backPremiumCourse" type="button">Артқа</button>${emptyState(error.message || "Курс табылмады.")}</section>`);
+	      on("backPremiumCourse", closePremiumCourseDetail);
+	      return;
+	    }
+	    if (!course) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backPremiumCourse" type="button">Артқа</button>${emptyState("Курс табылмады.")}</section>`);
+	      on("backPremiumCourse", closePremiumCourseDetail);
+	      return;
+	    }
+	    const image = visiblePremiumCourseImage(course);
+	    const lessons = course.lessons || [];
+	    const previewLessons = lessons.filter((lesson) => lesson.is_preview);
+	    if (!course.access) {
+	      html(`
+	        <section class="screen premium-course-detail-screen">
+	          <div class="section-head">
+	            <button class="ghost-btn mini-back-btn" id="backPremiumCourse" type="button">Артқа</button>
+	          </div>
+	          <article class="premium-course-hero ${image ? "has-image" : ""}">
+	            ${image ? `<img src="${esc(image)}" alt="${esc(course.title)}" loading="lazy" />` : ""}
+	            <div>
+	              <p class="eyebrow">Құлыпталған</p>
+	              <h1>🔒 ${esc(course.title)}</h1>
+	              <div class="price">${money(course.price_kzt)} <small>₸</small></div>
+	            </div>
+	          </article>
+	          <div class="card premium-locked-card">
+	            <p class="muted">Бұл курс бөлек ақылы өнім. Қолжетімділік алу үшін төлем жасаңыз немесе менеджерге жазыңыз.</p>
+	            <div class="grid two tight">
+	              <button class="gold-btn" id="buyPremiumCourse" type="button">Төлем жасау</button>
+	              <button class="ghost-btn" id="contactPremiumManager" type="button">Менеджерге жазу</button>
+	              <button class="ghost-btn" id="backPremiumCourse2" type="button">Артқа</button>
+	            </div>
+	          </div>
+	          ${previewLessons.length ? `<div class="section-head"><h2>Preview video</h2></div><div class="grid">${previewLessons.map(premiumLessonCard).join("")}</div>` : ""}
+	        </section>
+	      `);
+	      on("backPremiumCourse", closePremiumCourseDetail);
+	      on("backPremiumCourse2", closePremiumCourseDetail);
+	      on("buyPremiumCourse", () => setScreen("premiumPayment"));
+	      on("contactPremiumManager", () => openExternalLink(premiumCourseManagerUrl(course)));
+	      bindPremiumLessonCards();
+	      return;
+	    }
+	    html(`
+	      <section class="screen premium-course-detail-screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backPremiumCourse" type="button">Артқа</button>
+	        </div>
+	        <article class="premium-course-hero ${image ? "has-image" : ""}">
+	          ${image ? `<img src="${esc(image)}" alt="${esc(course.title)}" loading="lazy" />` : ""}
+	          <div>
+	            <p class="eyebrow">Ашық</p>
+	            <h1>${esc(course.title)}</h1>
+	            ${course.description ? `<p class="muted">${esc(course.description)}</p>` : ""}
+	          </div>
+	        </article>
+	        ${course.telegram_configured ? `<button class="gold-btn lg block" id="premiumTelegramInvite" type="button">${esc(course.telegram_button_title || "Telegram каналға кіру")}</button>` : ""}
+	        <div class="grid">${lessons.length ? lessons.map(premiumLessonCard).join("") : emptyState("Бұл курсқа сабақтар әлі қосылған жоқ.")}</div>
+	      </section>
+	    `);
+	    on("backPremiumCourse", closePremiumCourseDetail);
+	    on("premiumTelegramInvite", () => openPremiumTelegramInvite(course.id));
+	    bindPremiumLessonCards();
+	  }
+
+	  function premiumLessonCard(lesson) {
+	    const access = Boolean(lesson.access);
+	    return `<article class="lesson-card ${access ? "" : "locked"}">
+	      <div class="card-header">
+	        <div>
+	          <p class="eyebrow">${lesson.is_preview ? "Preview video" : `Lesson ${esc(lesson.position || "")}`}</p>
+	          <h2>${esc(lesson.title)}</h2>
+	        </div>
+	        <span class="status ${access ? "ok" : "bad"}">${access ? "Ашық" : "Құлыпталған"}</span>
+	      </div>
+	      <p class="muted">${esc(lesson.description || "")}</p>
+	      <button class="${access ? "gold-btn" : "ghost-btn"}" data-premium-lesson="${esc(lesson.id)}" ${access ? "" : "disabled"} type="button">${access ? "Ашу" : "Жабық"}</button>
+	    </article>`;
+	  }
+
+	  function bindPremiumLessonCards() {
+	    document.querySelectorAll("[data-premium-lesson]").forEach((button) => {
+	      button.addEventListener("click", () => openPremiumLesson(button.dataset.premiumLesson));
+	    });
+	  }
+
+	  async function openPremiumLesson(lessonID) {
+	    if (!lessonID) return;
+	    try {
+	      const data = await api(`/api/premium-course-lessons/${lessonID}`);
+	      const lesson = data.lesson || {};
+	      await modal({
+	        title: lesson.title || "Сабақ",
+	        body: `
+	          ${lesson.video_url ? `<div class="youtube-frame"><iframe src="${esc(lesson.video_url)}" title="${esc(lesson.title || "Premium lesson")}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="autoplay; encrypted-media; fullscreen"></iframe></div>` : ""}
+	          ${lesson.content_text ? `<div class="book-description">${bookParagraphs(lesson.content_text)}</div>` : `<p class="muted">${esc(lesson.description || "Сабақ ашық.")}</p>`}
+	        `,
+	        actions: [{ label: "Жабу", value: "ok", primary: true }],
+	      });
+	    } catch (error) {
+	      toast(error.message || "Сабақ құлыпталған", "error");
+	    }
+	  }
+
+	  async function openPremiumTelegramInvite(courseID) {
+	    try {
+	      const res = await api(`/api/premium-courses/${courseID}/telegram-invite`, {
+	        method: "POST",
+	        body: "{}",
+	      });
+	      openTelegramLink(res.invite_link);
+	      toast("Telegram шақыру сілтемесі дайын", "success");
+	    } catch (error) {
+	      toast(error.message || "Telegram сілтемесін алу мүмкін болмады", "error");
+	    }
+	  }
+
+	  async function renderPremiumPayment() {
+	    const course = selectedPremiumCourse();
+	    if (!course) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backPremiumPayment" type="button">Артқа</button>${emptyState("Курс табылмады.")}</section>`);
+	      on("backPremiumPayment", () => setScreen("premiumCourses"));
+	      return;
+	    }
+	    const providers = (state.platform && state.platform.providers) || [
+	      { code: "kaspi_qr", title: "Kaspi QR" },
+	      { code: "kaspi_pay", title: "Kaspi Pay" },
+	      { code: "halyk", title: "Halyk" },
+	      { code: "bank_card", title: "Банк картасы" },
+	    ];
+	    html(`
+	      <section class="screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backPremiumPayment" type="button">Артқа</button>
+	        </div>
+	        <div class="card">
+	          <p class="eyebrow">Premium курс төлемі</p>
+	          <h1>${esc(course.title)}</h1>
+	          <div class="price">${money(course.price_kzt)} <small>₸</small></div>
+	          <p class="muted">Бұл төлем жазылымды ұзартпайды. Төлем мақұлданғаннан кейін осы premium курс бөлек ашылады.</p>
+	        </div>
+	        <form id="premiumPaymentForm" class="form">
+	          <label class="field">
+	            <span>Төлем провайдері</span>
+	            <select name="provider">${providers.map((provider) => `<option value="${esc(provider.code)}">${esc(provider.title)}</option>`).join("")}</select>
+	          </label>
+	          <button class="gold-btn lg" type="submit"><span class="btn-label">Төлем жасау</span><span class="btn-spinner"></span></button>
+	        </form>
+	        <div id="premiumPaymentResult"></div>
+	      </section>
+	    `);
+	    on("backPremiumPayment", () => setScreen("premiumCourseDetail"));
+	    document.getElementById("premiumPaymentForm").addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+	      if (buttonIsLoading(submitBtn)) return;
+	      setButtonLoading(submitBtn, true);
+	      try {
+	        const provider = new FormData(event.currentTarget).get("provider");
+	        const res = await api(`/api/premium-courses/${course.id}/payments`, {
+	          method: "POST",
+	          body: JSON.stringify({ provider }),
+	        });
+	        document.getElementById("premiumPaymentResult").innerHTML = `
+	          <div class="card">
+	            <p class="eyebrow">Төлем құрылды</p>
+	            <h2>Төлем #${esc(shortId(res.payment.id))}</h2>
+	            <p class="muted">${esc(res.instructions.text)}</p>
+	            <p>Сома: <strong>${money(res.payment.amount_kzt)} ₸</strong></p>
+	          </div>
+	          ${receiptUploadHtml(res.payment)}
+	        `;
+	        bindReceiptUpload(res.payment.id);
+	        toast("Premium курс төлемі құрылды", "success");
+	      } catch (error) {
+	        toast(error.message || "Төлем жасау мүмкін болмады", "error");
+	      } finally {
+	        setButtonLoading(submitBtn, false);
+	      }
+	    });
+	  }
 
 	  function freeLessonsHomeSection() {
 	    const lessons = state.freeLessons || [];
@@ -2986,6 +3358,7 @@
     ["lessons", "Сабақтар"],
     ["freeLessons", "Тегін сабақтар"],
     ["books", "Кітаптар"],
+    ["premiumCourses", "Premium курстар"],
     ["tests", "Тесттер"],
     ["assignments", "Тапсырмалар"],
 	    ["referrals", "Дос шақыру"],
@@ -3044,6 +3417,7 @@
       if (screen === "lessons") return await renderAdminLessons();
       if (screen === "freeLessons") return await renderAdminFreeLessons();
       if (screen === "books") return await renderAdminBooks();
+      if (screen === "premiumCourses") return await renderAdminPremiumCourses();
       if (screen === "tests") return await renderAdminTests();
       if (screen === "assignments") return await renderAdminItems("/api/admin/assignments/submissions", "Тапсырма жауаптары");
 	      if (screen === "referrals") return await renderAdminItems("/api/admin/referrals", "Дос шақыру");
@@ -3123,18 +3497,134 @@
             <input id="userSearch" placeholder="Аты немесе username бойынша іздеу" />
           </div>
         </div>
-        ${tableHtml(["id", "telegram_id", "username", "first_name", "current_level", "coin_balance", "access_closed"], users)}
+        ${adminUsersTableHtml(users)}
       </div>
     `;
     on("userSearch", debounce(async (event) => {
       const q = event.target.value;
       try {
         const data = await api(`/api/admin/users?q=${encodeURIComponent(q)}`);
-        document.querySelector(".table-wrap")?.replaceWith(htmlToNode(tableHtml(["id", "telegram_id", "username", "first_name", "current_level", "coin_balance", "access_closed"], data.users || [])));
+        document.querySelector(".table-wrap")?.replaceWith(htmlToNode(adminUsersTableHtml(data.users || [])));
       } catch (error) {
         toast(error.message, "error");
       }
     }, 280), "input");
+    delegate(els.adminContent, "[data-user-access]", "click", (event, target) => {
+      const user = users.find((item) => item.id === target.dataset.userAccess) || { id: target.dataset.userAccess };
+      openUserPremiumAccessModal(user);
+    });
+  }
+
+  function adminUsersTableHtml(users) {
+    if (!users.length) return emptyState("Қолданушылар табылмады");
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>Telegram</th><th>Қолданушы</th><th>Деңгей</th><th>Coin</th><th>Қолжетімділік</th><th>Premium</th></tr></thead>
+      <tbody>${users
+        .map((user) => `<tr>
+          <td>${esc(shortId(user.id))}</td>
+          <td>${esc(user.telegram_id || "—")}</td>
+          <td><strong>${esc(user.first_name || "—")}</strong><div class="muted small">${esc(user.username ? `@${user.username}` : "")}</div></td>
+          <td>${esc(user.current_level || 0)}</td>
+          <td>${money(user.coin_balance || 0)}</td>
+          <td>${statusBadge(user.access_closed ? "false" : "true")}</td>
+          <td><button class="ghost-btn" data-user-access="${esc(user.id)}" type="button">Доступ</button></td>
+        </tr>`)
+        .join("")}</tbody>
+    </table></div>`;
+  }
+
+  async function openUserPremiumAccessModal(user) {
+    const shell = openModalShell("Premium course access", `<div class="card skeleton"></div>`);
+    try {
+      const data = await api(`/api/admin/users/${user.id}/premium-course-access`);
+      const items = data.premium_course_access || [];
+      shell.body.innerHTML = `
+        <div class="admin-section-head">
+          <div>
+            <p class="eyebrow">${esc(user.first_name || user.username || shortId(user.id))}</p>
+            <h2>Premium course access</h2>
+          </div>
+        </div>
+        <div class="premium-access-list">
+          ${items.length ? items.map(userPremiumAccessRow).join("") : emptyState("Premium курстар табылмады")}
+        </div>
+      `;
+      bindUserPremiumAccess(shell, user, items);
+    } catch (error) {
+      shell.body.innerHTML = `<div class="error-card"><p>${esc(error.message || "Жүктеу мүмкін болмады")}</p></div>`;
+    }
+  }
+
+  function userPremiumAccessRow(item) {
+    const course = item.course || {};
+    const access = item.access || {};
+    const active = Boolean(item.active);
+    return `<section class="card premium-access-row" data-course-access="${esc(course.id)}">
+      <div class="card-header">
+        <div>
+          <p class="eyebrow">${esc(course.slug || "")}</p>
+          <h2>${esc(course.title || "Premium курс")}</h2>
+          <p class="muted">${money(course.price_kzt)} ₸</p>
+        </div>
+        <span class="status ${active ? "ok" : "bad"}">${active ? "Ашық" : "Жабық"}</span>
+      </div>
+      <div class="grid two tight">
+        <label class="field"><span>Access duration</span><select data-duration>
+          ${["lifetime", "30_days", "90_days", "custom"].map((value) => `<option value="${value}">${esc(statusText[value] || value)}</option>`).join("")}
+        </select></label>
+        <label class="field"><span>Custom date</span><input data-custom-date type="date" /></label>
+      </div>
+      <div class="grid two tight">
+        <button class="gold-btn" data-grant-course="${esc(course.id)}" type="button">Доступ беру</button>
+        <button class="danger-btn" data-revoke-course="${esc(course.id)}" ${active ? "" : "disabled"} type="button">Доступты жабу</button>
+      </div>
+      <p class="muted small">
+        Берілді: ${access.granted_at ? formatDateTime(access.granted_at) : "—"} ·
+        Admin: ${esc(access.granted_by_admin_id || "—")} ·
+        Аяқталуы: ${access.expires_at ? formatDate(access.expires_at) : "Lifetime"} ·
+        Жабылды: ${access.revoked_at ? formatDateTime(access.revoked_at) : "—"}
+      </p>
+    </section>`;
+  }
+
+  function bindUserPremiumAccess(shell, user, items) {
+    shell.body.querySelectorAll("[data-grant-course]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const row = button.closest("[data-course-access]");
+        const duration = row.querySelector("[data-duration]").value;
+        const expiresAt = row.querySelector("[data-custom-date]").value;
+        if (duration === "custom" && !expiresAt) {
+          toast("Custom date таңдаңыз", "error");
+          return;
+        }
+        try {
+          await api(`/api/admin/users/${user.id}/premium-course-access/${button.dataset.grantCourse}`, {
+            method: "POST",
+            body: JSON.stringify({ active: true, duration_type: duration, expires_at: expiresAt }),
+          });
+          toast("Доступ ашылды", "success");
+          shell.close();
+          openUserPremiumAccessModal(user);
+        } catch (error) {
+          toast(error.message || "Доступ ашу мүмкін болмады", "error");
+        }
+      });
+    });
+    shell.body.querySelectorAll("[data-revoke-course]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await api(`/api/admin/users/${user.id}/premium-course-access/${button.dataset.revokeCourse}/revoke`, {
+            method: "POST",
+            body: "{}",
+          });
+          toast("Доступ жабылды", "success");
+          shell.close();
+          openUserPremiumAccessModal(user);
+        } catch (error) {
+          toast(error.message || "Доступ жабу мүмкін болмады", "error");
+        }
+      });
+    });
   }
 
 	  async function renderAdminTable(url, key, columns, title) {
@@ -3447,6 +3937,197 @@
 	        renderAdminBooks();
 	      } catch (error) {
 	        toast(error.message || "Кітапты сақтау мүмкін болмады", "error");
+	      } finally {
+	        setModalBusy(shell, false);
+	        setButtonLoading(btn, false);
+	      }
+	    });
+	  }
+
+	  async function renderAdminPremiumCourses() {
+	    const data = await api("/api/admin/premium-courses");
+	    const courses = data.premium_courses || [];
+	    els.adminContent.innerHTML = `
+	      <div class="card">
+	        <div class="admin-section-head">
+	          <div><p class="eyebrow">Premium курстар</p><h2>Premium курстар</h2></div>
+	          <div class="admin-toolbar"><button class="gold-btn" id="addPremiumCourse" type="button">+ Premium курс қосу</button></div>
+	        </div>
+	        ${premiumCourseAdminTableHtml(courses)}
+	      </div>
+	    `;
+	    on("addPremiumCourse", () => openPremiumCourseModal(null, courses));
+	    delegate(els.adminContent, "[data-edit-premium-course]", "click", (event, target) => {
+	      const course = courses.find((item) => item.id === target.dataset.editPremiumCourse);
+	      if (course) openPremiumCourseModal(course, courses);
+	    });
+	    delegate(els.adminContent, "[data-archive-premium-course]", "click", async (event, target) => {
+	      const course = courses.find((item) => item.id === target.dataset.archivePremiumCourse);
+	      const ok = await confirmAction({
+	        title: "Premium курсты архивтеу",
+	        body: `<p class="muted">${esc(course ? course.title : "Бұл курс")} Mini App-та көрінбейді. Жалғастырасыз ба?</p>`,
+	        confirmLabel: "Архивтеу",
+	        action: () => api(`/api/admin/premium-courses/${target.dataset.archivePremiumCourse}`, { method: "DELETE" }),
+	        successMessage: "Premium курс архивке жіберілді",
+	        errorMessage: "Premium курсты архивтеу мүмкін болмады",
+	      });
+	      if (ok) renderAdminPremiumCourses();
+	    });
+	  }
+
+	  function premiumCourseAdminTableHtml(courses) {
+	    if (!courses.length) return emptyState("Premium курстар табылмады");
+	    return `<div class="table-wrap"><table>
+	      <thead><tr><th>Сурет</th><th>Курс</th><th>Баға</th><th>Telegram</th><th>Доступ</th><th>Төлем</th><th>Статус</th><th>Әрекет</th></tr></thead>
+	      <tbody>${courses
+	        .map((course) => {
+	          const image = visiblePremiumCourseImage(course);
+	          const stats = course.stats || {};
+	          return `<tr>
+	            <td>${image ? `<img class="tariff-admin-thumb" src="${esc(image)}" alt="${esc(course.title)}" loading="lazy" />` : "—"}</td>
+	            <td><strong>${esc(course.title)}</strong><div class="muted small">${esc(course.slug)} · ${esc(shortId(course.id))}</div><div class="muted small">${esc(shortText(course.description, 110))}</div></td>
+	            <td>${money(course.price_kzt)} ₸</td>
+	            <td>${course.telegram_configured ? statusBadge("active") : statusBadge("inactive")}<div class="muted small">${esc(course.invite_link_type || "manual")}</div></td>
+	            <td>${esc(stats.active_access_count || 0)} active<div class="muted small">${esc(stats.revoked_access_count || 0)} revoked</div></td>
+	            <td>${esc(stats.payment_count || 0)}</td>
+	            <td>${statusBadge(course.status || "inactive")}</td>
+	            <td><div class="action-row">
+	              <button class="ghost-btn" data-edit-premium-course="${esc(course.id)}" type="button">Өзгерту</button>
+	              <button class="danger-btn" data-archive-premium-course="${esc(course.id)}" type="button">Архивтеу</button>
+	            </div></td>
+	          </tr>`;
+	        })
+	        .join("")}</tbody></table></div>`;
+	  }
+
+	  function openPremiumCourseModal(course, courses) {
+	    const isEdit = Boolean(course && course.id);
+	    const image = visiblePremiumCourseImage(course);
+	    const nextOrder = Math.max(0, ...courses.map((item) => Number(item.sort_order) || 0)) + 1;
+	    const duration = (course && course.default_access_duration_type) || "lifetime";
+	    const inviteType = (course && course.invite_link_type) || "manual";
+	    const shell = openModalShell(isEdit ? "Premium курсты өзгерту" : "Premium курс қосу", `
+	      <form id="premiumCourseModalForm" class="form">
+	        <div class="grid three">
+	          <label class="field"><span>Slug</span><input name="slug" required placeholder="altyn-formula" value="${esc((course && course.slug) || "")}" /></label>
+	          <label class="field"><span>Курс атауы</span><input name="title" required value="${esc((course && course.title) || "")}" /></label>
+	          <label class="field"><span>Бағасы</span><input name="price_kzt" type="number" min="1" required value="${esc((course && course.price_kzt) || "")}" /></label>
+	        </div>
+	        <label class="field"><span>Сипаттама</span><textarea name="description">${esc((course && course.description) || "")}</textarea></label>
+	        <div class="grid three">
+	          <label class="field"><span>Статус</span><select name="status">
+	            ${["active", "inactive", "archived"].map((item) => `<option value="${item}" ${(course && course.status) === item ? "selected" : ""}>${esc(statusText[item] || item)}</option>`).join("")}
+	          </select></label>
+	          <label class="field"><span>Реті</span><input name="sort_order" type="number" min="1" value="${esc((course && course.sort_order) || nextOrder)}" /></label>
+	          <label class="field"><span>Default access</span><select name="default_access_duration_type">
+	            ${["lifetime", "30_days", "90_days", "custom"].map((item) => `<option value="${item}" ${duration === item ? "selected" : ""}>${esc(statusText[item] || item)}</option>`).join("")}
+	          </select></label>
+	        </div>
+	        <label class="field"><span>Custom default date</span><input name="default_access_expires_at" type="date" value="${esc((course && course.default_access_expires_at || "").slice(0, 10))}" /></label>
+	        <div class="grid two">
+	          <label class="field"><span>Cover URL</span><input name="cover_image_url" placeholder="https://" value="${esc((course && course.cover_image_url) || "")}" /></label>
+	          <label class="field"><span>Telegram канал ID</span><input name="telegram_chat_id" placeholder="2351826422 немесе -100..." value="${esc((course && course.telegram_chat_id) || "")}" /></label>
+	        </div>
+	        <label class="upload-drop premium-course-upload">
+	          <input name="cover_upload" type="file" accept=".jpg,.jpeg,.png,.webp,image/*" />
+	          <span class="upload-title">Cover жүктеу</span>
+	          <small>JPG, PNG немесе WEBP</small>
+	          <strong id="premiumCourseUploadName">Файл таңдалмады</strong>
+	        </label>
+	        <input type="hidden" name="cover_image_path" value="${esc((course && course.cover_image_path) || "")}" />
+	        <input type="hidden" name="cover_image_source" value="${esc((course && course.cover_image_source) || "none")}" />
+	        <div id="premiumCourseCoverPreview" class="admin-media-preview">${image ? `<img src="${esc(image)}" alt="${esc((course && course.title) || "Premium курс")}" />` : `<span class="muted small">Алдын ала көру</span>`}</div>
+	        <div class="grid two">
+	          <label class="field"><span>Invite түрі</span><select name="invite_link_type">
+	            <option value="bot" ${inviteType === "bot" ? "selected" : ""}>Bot арқылы</option>
+	            <option value="manual" ${inviteType === "manual" ? "selected" : ""}>Қолмен сілтеме</option>
+	          </select></label>
+	          <label class="field"><span>Қолмен сілтеме</span><input name="manual_invite_link" placeholder="${esc(DEFAULT_CHANNEL_LINK)}" value="${esc((course && course.manual_invite_link) || "")}" /></label>
+	        </div>
+	        <label class="field"><span>Telegram батырма атауы</span><input name="telegram_button_title" placeholder="Telegram каналға кіру" value="${esc((course && course.telegram_button_title) || "")}" /></label>
+	        <label class="field"><span>Admin notes</span><textarea name="admin_notes">${esc((course && course.admin_notes) || "")}</textarea></label>
+	        <div class="action-row end">
+	          <button class="ghost-btn" data-close-modal type="button">Болдырмау</button>
+	          <button class="gold-btn" type="submit"><span class="btn-label">Сақтау</span><span class="btn-spinner"></span></button>
+	        </div>
+	      </form>
+	    `);
+	    const form = shell.body.querySelector("form");
+	    const upload = form.querySelector("input[name=cover_upload]");
+	    const uploadName = shell.body.querySelector("#premiumCourseUploadName");
+	    const preview = shell.body.querySelector("#premiumCourseCoverPreview");
+	    shell.body.querySelector("[data-close-modal]").addEventListener("click", shell.close);
+	    upload.addEventListener("change", async () => {
+	      const file = upload.files && upload.files[0];
+	      uploadName.textContent = file ? file.name : "Файл таңдалмады";
+	      if (!file) return;
+	      const fd = new FormData();
+	      fd.append("image", file);
+	      try {
+	        const res = await api("/api/admin/premium-courses/upload-cover", { method: "POST", body: fd });
+	        form.elements.cover_image_path.value = res.cover_image_path || "";
+	        form.elements.cover_image_source.value = "uploaded";
+	        form.elements.cover_image_url.value = "";
+	        preview.innerHTML = res.cover_image_path ? `<img src="${esc(res.cover_image_path)}" alt="Premium course cover" />` : "";
+	        toast("Cover жүктелді", "success");
+	      } catch (error) {
+	        toast(error.message || "Cover жүктеу мүмкін болмады", "error");
+	      }
+	    });
+	    form.addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const btn = form.querySelector("button[type=submit]");
+	      const fd = new FormData(form);
+	      const coverURL = compact(fd.get("cover_image_url"));
+	      const coverPath = coverURL ? "" : compact(fd.get("cover_image_path"));
+	      const defaultDate = compact(fd.get("default_access_expires_at"));
+	      const payload = {
+	        slug: compact(fd.get("slug")),
+	        title: compact(fd.get("title")),
+	        description: compact(fd.get("description")),
+	        price_kzt: Number(fd.get("price_kzt") || 0),
+	        status: compact(fd.get("status")) || "active",
+	        sort_order: Number(fd.get("sort_order") || 0),
+	        default_access_duration_type: compact(fd.get("default_access_duration_type")) || "lifetime",
+	        default_access_expires_at: defaultDate ? new Date(defaultDate).toISOString() : null,
+	        cover_image_url: coverURL,
+	        cover_image_path: coverPath,
+	        cover_image_source: coverPath ? "uploaded" : coverURL ? "url" : "none",
+	        telegram_chat_id: compact(fd.get("telegram_chat_id")),
+	        invite_link_type: compact(fd.get("invite_link_type")) || "manual",
+	        manual_invite_link: compact(fd.get("manual_invite_link")),
+	        telegram_button_title: compact(fd.get("telegram_button_title")),
+	        admin_notes: compact(fd.get("admin_notes")),
+	      };
+	      if (!payload.slug || !/^[a-z0-9_-]+$/.test(payload.slug)) {
+	        toast("Slug тек кіші әріп, сан, - немесе _ болуы керек", "error");
+	        return;
+	      }
+	      if (!payload.title || payload.price_kzt <= 0) {
+	        toast("Курс атауы және бағасы міндетті", "error");
+	        return;
+	      }
+	      if (payload.cover_image_url && !isValidHTTPURL(payload.cover_image_url)) {
+	        toast("Cover URL жарамсыз", "error");
+	        return;
+	      }
+	      if (payload.invite_link_type === "manual" && payload.manual_invite_link && !isValidTelegramLink(payload.manual_invite_link)) {
+	        toast("Telegram link https://t.me/... форматында болуы керек", "error");
+	        return;
+	      }
+	      if (buttonIsLoading(btn)) return;
+	      setButtonLoading(btn, true);
+	      setModalBusy(shell, true);
+	      try {
+	        await api(isEdit ? `/api/admin/premium-courses/${course.id}` : "/api/admin/premium-courses", {
+	          method: isEdit ? "PATCH" : "POST",
+	          body: JSON.stringify(payload),
+	        });
+	        shell.close();
+	        toast("Premium курс сақталды", "success");
+	        renderAdminPremiumCourses();
+	      } catch (error) {
+	        toast(error.message || "Premium курсты сақтау мүмкін болмады", "error");
 	      } finally {
 	        setModalBusy(shell, false);
 	        setButtonLoading(btn, false);
@@ -4301,14 +4982,18 @@
     const rows = data.payments || [];
     const paymentRows = rows.length
       ? `<div class="table-wrap"><table>
-          <thead><tr><th>ID</th><th>Қолданушы</th><th>Тариф</th><th>Сома</th><th>Статус</th><th>Чек валидациясы</th><th>Чек</th></tr></thead>
+          <thead><tr><th>ID</th><th>Қолданушы</th><th>Төлем түрі</th><th>Өнім</th><th>Сома</th><th>Статус</th><th>Чек валидациясы</th><th>Чек</th></tr></thead>
           <tbody>${rows
             .map((payment) => {
               const receipt = payment.receipt || {};
+              const product = payment.payment_type === "premium_course"
+                ? payment.premium_course_title || payment.premium_course_slug || shortId(payment.premium_course_id)
+                : payment.tariff_code;
               return `<tr>
                 <td>${esc(shortId(payment.id))}</td>
                 <td>${esc(payment.user ? `${payment.user.first_name || ""} @${payment.user.username || ""}` : shortId(payment.user_id))}</td>
-                <td>${esc(payment.tariff_code)}</td>
+                <td>${esc(payment.payment_type || "subscription")}</td>
+                <td>${esc(product || "—")}</td>
                 <td>${money(payment.amount_kzt)} ₸</td>
                 <td>${statusBadge(payment.status)}</td>
                 <td>${receipt.validation_status ? receiptValidationSummary(receipt, payment) : "—"}</td>

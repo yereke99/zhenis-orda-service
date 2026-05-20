@@ -88,6 +88,16 @@ func (s *Server) runMinuteJobs(ctx context.Context) {
 	} else if n > 0 {
 		s.logger.Info("expired level telegram invites", zap.Int64("count", n))
 	}
+	if n, err := s.store.ExpirePremiumCourseAccesses(ctx); err != nil {
+		s.logger.Warn("expire premium course accesses failed", zap.Error(err))
+	} else if n > 0 {
+		s.logger.Info("expired premium course accesses", zap.Int64("count", n))
+	}
+	if n, err := s.store.ExpirePremiumCourseTelegramInvites(ctx); err != nil {
+		s.logger.Warn("expire premium course telegram invites failed", zap.Error(err))
+	} else if n > 0 {
+		s.logger.Info("expired premium course telegram invites", zap.Int64("count", n))
+	}
 }
 
 func (s *Server) runInactiveReminderJob(ctx context.Context) {

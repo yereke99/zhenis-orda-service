@@ -15,10 +15,31 @@ const (
 	PaymentStatusExpired         = "expired"
 	PaymentStatusCancelled       = "cancelled"
 
+	PaymentTypeSubscription  = "subscription"
+	PaymentTypePremiumCourse = "premium_course"
+
 	SubscriptionStatusActive    = "active"
 	SubscriptionStatusExpired   = "expired"
 	SubscriptionStatusCancelled = "cancelled"
 	SubscriptionStatusPaused    = "paused"
+
+	PremiumCourseStatusActive   = "active"
+	PremiumCourseStatusInactive = "inactive"
+	PremiumCourseStatusArchived = "archived"
+
+	PremiumAccessStatusActive  = "active"
+	PremiumAccessStatusRevoked = "revoked"
+	PremiumAccessStatusExpired = "expired"
+
+	PremiumAccessSourceManual  = "manual"
+	PremiumAccessSourcePayment = "payment"
+	PremiumAccessSourceBonus   = "bonus"
+	PremiumAccessSourceGift    = "gift"
+
+	PremiumAccessDurationLifetime = "lifetime"
+	PremiumAccessDuration30Days   = "30_days"
+	PremiumAccessDuration90Days   = "90_days"
+	PremiumAccessDurationCustom   = "custom"
 
 	RoleSuperAdmin     = "super_admin"
 	RoleContentManager = "content_manager"
@@ -128,23 +149,27 @@ type Subscription struct {
 }
 
 type Payment struct {
-	ID                string     `json:"id"`
-	UserID            string     `json:"user_id"`
-	TariffID          string     `json:"tariff_id"`
-	TariffCode        string     `json:"tariff_code"`
-	SubscriptionID    *string    `json:"subscription_id,omitempty"`
-	AmountKZT         int        `json:"amount_kzt"`
-	Provider          string     `json:"provider"`
-	Status            string     `json:"status"`
-	ReceiptFilePath   string     `json:"receipt_file_path"`
-	AdminComment      string     `json:"admin_comment"`
-	ApprovedByAdminID *int64     `json:"approved_by_admin_id,omitempty"`
-	ApprovedAt        *time.Time `json:"approved_at,omitempty"`
-	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	User              *User      `json:"user,omitempty"`
-	Receipt           *Receipt   `json:"receipt,omitempty"`
+	ID                 string     `json:"id"`
+	UserID             string     `json:"user_id"`
+	TariffID           string     `json:"tariff_id,omitempty"`
+	TariffCode         string     `json:"tariff_code,omitempty"`
+	PaymentType        string     `json:"payment_type"`
+	PremiumCourseID    *string    `json:"premium_course_id,omitempty"`
+	PremiumCourseSlug  string     `json:"premium_course_slug,omitempty"`
+	PremiumCourseTitle string     `json:"premium_course_title,omitempty"`
+	SubscriptionID     *string    `json:"subscription_id,omitempty"`
+	AmountKZT          int        `json:"amount_kzt"`
+	Provider           string     `json:"provider"`
+	Status             string     `json:"status"`
+	ReceiptFilePath    string     `json:"receipt_file_path"`
+	AdminComment       string     `json:"admin_comment"`
+	ApprovedByAdminID  *int64     `json:"approved_by_admin_id,omitempty"`
+	ApprovedAt         *time.Time `json:"approved_at,omitempty"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	User               *User      `json:"user,omitempty"`
+	Receipt            *Receipt   `json:"receipt,omitempty"`
 }
 
 type Receipt struct {
@@ -308,6 +333,82 @@ type Channel struct {
 	LevelRequirement  int    `json:"level_requirement"`
 	IsActive          bool   `json:"is_active"`
 	Access            bool   `json:"access"`
+}
+
+type PremiumCourse struct {
+	ID                        string                `json:"id"`
+	Slug                      string                `json:"slug"`
+	Title                     string                `json:"title"`
+	Description               string                `json:"description"`
+	PriceKZT                  int                   `json:"price_kzt"`
+	Status                    string                `json:"status"`
+	SortOrder                 int                   `json:"sort_order"`
+	DefaultAccessDurationType string                `json:"default_access_duration_type"`
+	DefaultAccessExpiresAt    *time.Time            `json:"default_access_expires_at,omitempty"`
+	TelegramChatID            string                `json:"telegram_chat_id,omitempty"`
+	InviteLinkType            string                `json:"invite_link_type"`
+	ManualInviteLink          string                `json:"manual_invite_link,omitempty"`
+	TelegramButtonTitle       string                `json:"telegram_button_title,omitempty"`
+	AdminNotes                string                `json:"admin_notes,omitempty"`
+	CoverImageURL             string                `json:"cover_image_url,omitempty"`
+	CoverImagePath            string                `json:"cover_image_path,omitempty"`
+	CoverImageSource          string                `json:"cover_image_source"`
+	CreatedAt                 time.Time             `json:"created_at"`
+	UpdatedAt                 time.Time             `json:"updated_at"`
+	Access                    bool                  `json:"access"`
+	TelegramConfigured        bool                  `json:"telegram_configured"`
+	LessonCount               int                   `json:"lesson_count,omitempty"`
+	PreviewLessons            []PremiumCourseLesson `json:"preview_lessons,omitempty"`
+	Lessons                   []PremiumCourseLesson `json:"lessons,omitempty"`
+	Stats                     map[string]int        `json:"stats,omitempty"`
+}
+
+type PremiumCourseLesson struct {
+	ID          string    `json:"id"`
+	CourseID    string    `json:"course_id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	VideoURL    string    `json:"video_url,omitempty"`
+	ContentText string    `json:"content_text,omitempty"`
+	Position    int       `json:"position"`
+	IsPreview   bool      `json:"is_preview"`
+	IsActive    bool      `json:"is_active"`
+	Access      bool      `json:"access"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type UserCourseAccess struct {
+	ID               string     `json:"id"`
+	UserID           string     `json:"user_id"`
+	CourseID         string     `json:"course_id"`
+	AccessStatus     string     `json:"access_status"`
+	AccessSource     string     `json:"access_source"`
+	GrantedByAdminID *int64     `json:"granted_by_admin_id,omitempty"`
+	PaymentID        *string    `json:"payment_id,omitempty"`
+	GrantedAt        time.Time  `json:"granted_at"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+type PremiumCourseAccessView struct {
+	Course PremiumCourse     `json:"course"`
+	Access *UserCourseAccess `json:"access,omitempty"`
+	Active bool              `json:"active"`
+}
+
+type PremiumCourseTelegramInvite struct {
+	ID             string     `json:"id"`
+	UserID         string     `json:"user_id"`
+	CourseID       string     `json:"course_id"`
+	TelegramChatID string     `json:"telegram_chat_id"`
+	InviteLink     string     `json:"invite_link"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	Status         string     `json:"status"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 type UserLevelTelegramInvite struct {

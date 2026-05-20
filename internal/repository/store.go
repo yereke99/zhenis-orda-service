@@ -20,6 +20,7 @@ var (
 	ErrReceiptDuplicate       = errors.New("receipt duplicate")
 	ErrPaymentExpired         = errors.New("payment expired")
 	ErrPaymentCancelled       = errors.New("payment cancelled")
+	ErrAmbiguousPayment       = errors.New("ambiguous payment")
 )
 
 type Store struct {

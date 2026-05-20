@@ -15,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"zhenis-orda-service/internal/i18n"
 	"zhenis-orda-service/internal/repository"
 )
 
@@ -179,10 +178,14 @@ func (s *Server) handleAdminApprovePayment(w http.ResponseWriter, r *http.Reques
 	if mapRepoError(w, err) {
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "payment_approve", "payment", id, req)
+	action := "payment_approve"
+	if payment.PaymentType == repository.PaymentTypePremiumCourse {
+		action = "premium_course_payment_approved"
+	}
+	_ = s.store.Audit(r.Context(), actor, action, "payment", id, req)
 	if s.bot != nil {
 		if user, err := s.store.GetUserByID(r.Context(), payment.UserID); err == nil {
-			_ = s.bot.SendMessage(r.Context(), user.TelegramID, i18n.T(user.Language, "payment_approved"))
+			_ = s.bot.SendMessage(r.Context(), user.TelegramID, formatPaymentApprovedMessage(user.Language, payment))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"payment": payment})
@@ -504,6 +507,235 @@ func (s *Server) handleAdminBookImageUpload(w http.ResponseWriter, r *http.Reque
 		"image_file_path": publicPath,
 		"image_source":    "uploaded",
 	})
+}
+
+func (s *Server) handleAdminPremiumCourses(w http.ResponseWriter, r *http.Request) {
+	courses, err := s.store.ListAdminPremiumCourses(r.Context())
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"premium_courses": courses})
+}
+
+func (s *Server) handleAdminPremiumCourse(w http.ResponseWriter, r *http.Request) {
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad course")
+		return
+	}
+	course, err := s.store.GetPremiumCourse(r.Context(), id, false)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"premium_course": course})
+}
+
+func (s *Server) handleAdminPostPremiumCourse(w http.ResponseWriter, r *http.Request) {
+	actor := adminFromContext(r.Context())
+	var course repository.PremiumCourse
+	if err := decodeJSON(r, &course); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if raw := r.PathValue("id"); raw != "" {
+		if !repository.IsUUID(raw) {
+			writeError(w, http.StatusBadRequest, "bad id")
+			return
+		}
+		course.ID = raw
+	}
+	if strings.TrimSpace(course.ManualInviteLink) != "" && !isTelegramLink(course.ManualInviteLink) {
+		writeError(w, http.StatusBadRequest, "invalid telegram link")
+		return
+	}
+	if strings.TrimSpace(course.CoverImageURL) != "" && !isHTTPURL(course.CoverImageURL) {
+		writeError(w, http.StatusBadRequest, "invalid cover image url")
+		return
+	}
+	out, err := s.store.UpsertPremiumCourse(r.Context(), course)
+	if mapRepoError(w, err) {
+		return
+	}
+	action := "premium_course_create"
+	if r.Method == http.MethodPatch {
+		action = "premium_course_update"
+	}
+	_ = s.store.Audit(r.Context(), actor, action, "premium_course", out.ID, out)
+	writeJSON(w, http.StatusOK, map[string]any{"premium_course": out})
+}
+
+func (s *Server) handleAdminArchivePremiumCourse(w http.ResponseWriter, r *http.Request) {
+	actor := adminFromContext(r.Context())
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad course")
+		return
+	}
+	if err := s.store.ArchivePremiumCourse(r.Context(), id); mapRepoError(w, err) {
+		return
+	}
+	_ = s.store.Audit(r.Context(), actor, "premium_course_archive", "premium_course", id, nil)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleAdminPremiumCourseCoverUpload(w http.ResponseWriter, r *http.Request) {
+	maxBytes := s.cfg.MaxBookImageBytes
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+1024)
+	if err := r.ParseMultipartForm(maxBytes + 1024); err != nil {
+		writeError(w, http.StatusBadRequest, "image file is too large or invalid")
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "image file is required")
+		return
+	}
+	defer file.Close()
+
+	fileName := filepath.Base(header.Filename)
+	if ext := strings.ToLower(filepath.Ext(fileName)); ext != "" && !allowedBookImageExt(ext) {
+		writeError(w, http.StatusBadRequest, "unsupported image file type")
+		return
+	}
+	head := make([]byte, 512)
+	n, readErr := file.Read(head)
+	if readErr != nil && readErr != io.EOF {
+		writeError(w, http.StatusBadRequest, "image file is invalid")
+		return
+	}
+	ext, ok := detectedBookImageExt(head[:n])
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unsupported image file type")
+		return
+	}
+	now := time.Now()
+	dir := filepath.Join(s.cfg.UploadDir, "premium-courses", now.Format("2006"), now.Format("01"))
+	if err := ensureUploadDir(dir); err != nil {
+		writeError(w, http.StatusInternalServerError, "image directory error")
+		return
+	}
+	path := filepath.Join(dir, uuid.NewString()+ext)
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "image save error")
+		return
+	}
+	limited := io.LimitReader(io.MultiReader(bytes.NewReader(head[:n]), file), maxBytes+1)
+	written, copyErr := io.Copy(out, limited)
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		writeError(w, http.StatusInternalServerError, "image save error")
+		return
+	}
+	if written > maxBytes {
+		_ = os.Remove(path)
+		writeError(w, http.StatusBadRequest, "image file is too large")
+		return
+	}
+	publicPath := safePublicUploadPath(s.cfg.UploadDir, path)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"cover_image_path":   publicPath,
+		"cover_image_source": "uploaded",
+	})
+}
+
+func (s *Server) handleAdminUserPremiumCourseAccess(w http.ResponseWriter, r *http.Request) {
+	userID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad user")
+		return
+	}
+	items, err := s.store.ListUserPremiumCourseAccess(r.Context(), userID)
+	if mapRepoError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"premium_course_access": items})
+}
+
+func (s *Server) handleAdminGrantPremiumCourseAccess(w http.ResponseWriter, r *http.Request) {
+	actor := adminFromContext(r.Context())
+	userID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad user")
+		return
+	}
+	courseID, err := parsePathID(r, "course_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad course")
+		return
+	}
+	var req struct {
+		Active       *bool  `json:"active"`
+		DurationType string `json:"duration_type"`
+		ExpiresAt    string `json:"expires_at"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Active != nil && !*req.Active {
+		if err := s.store.RevokePremiumCourseAccess(r.Context(), userID, courseID, actor.ID); mapRepoError(w, err) {
+			return
+		}
+		_ = s.store.Audit(r.Context(), actor, "premium_course_access_revoked", "premium_course", courseID, map[string]any{"user_id": userID})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	duration := strings.TrimSpace(req.DurationType)
+	if duration == "" {
+		duration = repository.PremiumAccessDurationLifetime
+	}
+	expiresAt, err := parseOptionalAdminTime(req.ExpiresAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad expires_at")
+		return
+	}
+	if duration == repository.PremiumAccessDurationCustom && expiresAt == nil {
+		writeError(w, http.StatusBadRequest, "custom date is required")
+		return
+	}
+	access, err := s.store.GrantPremiumCourseAccess(r.Context(), userID, courseID, repository.PremiumAccessSourceManual, actor.ID, nil, duration, expiresAt)
+	if mapRepoError(w, err) {
+		return
+	}
+	_ = s.store.Audit(r.Context(), actor, "premium_course_access_granted", "premium_course", courseID, map[string]any{"user_id": userID, "duration_type": duration, "expires_at": req.ExpiresAt})
+	writeJSON(w, http.StatusOK, map[string]any{"access": access})
+}
+
+func (s *Server) handleAdminRevokePremiumCourseAccess(w http.ResponseWriter, r *http.Request) {
+	actor := adminFromContext(r.Context())
+	userID, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad user")
+		return
+	}
+	courseID, err := parsePathID(r, "course_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad course")
+		return
+	}
+	if err := s.store.RevokePremiumCourseAccess(r.Context(), userID, courseID, actor.ID); mapRepoError(w, err) {
+		return
+	}
+	_ = s.store.Audit(r.Context(), actor, "premium_course_access_revoked", "premium_course", courseID, map[string]any{"user_id": userID})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func parseOptionalAdminTime(raw string) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+		value := parsed.UTC()
+		return &value, nil
+	}
+	if parsed, err := time.Parse("2006-01-02", raw); err == nil {
+		value := parsed.UTC()
+		return &value, nil
+	}
+	return nil, fmt.Errorf("bad time")
 }
 
 func isHTTPURL(value string) bool {

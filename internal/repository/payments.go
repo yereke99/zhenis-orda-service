@@ -32,9 +32,27 @@ func (s *Store) createPaymentForTariff(ctx context.Context, userID string, tarif
 	paymentID := newID()
 	expiresAt := nowUTC().Add(ttl)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO payments(id, user_id, tariff_id, amount_kzt, provider, status, expires_at)
-		VALUES (?, ?, ?, ?, ?, 'pending', ?);
+		INSERT INTO payments(id, user_id, tariff_id, payment_type, amount_kzt, provider, status, expires_at)
+		VALUES (?, ?, ?, 'subscription', ?, ?, 'pending', ?);
 	`, paymentID, userID, tariff.ID, tariff.PriceKZT, provider, expiresAt)
+	if err != nil {
+		return Payment{}, err
+	}
+	return s.GetPayment(ctx, paymentID)
+}
+
+func (s *Store) CreatePremiumCoursePayment(ctx context.Context, userID, courseID, provider string, ttl time.Duration) (Payment, error) {
+	course, err := s.GetPremiumCourse(ctx, courseID, true)
+	if err != nil {
+		return Payment{}, err
+	}
+	provider = normalizeProvider(provider)
+	paymentID := newID()
+	expiresAt := nowUTC().Add(ttl)
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO payments(id, user_id, payment_type, premium_course_id, amount_kzt, provider, status, expires_at)
+		VALUES (?, ?, 'premium_course', ?, ?, ?, 'pending', ?);
+	`, paymentID, userID, course.ID, course.PriceKZT, provider, expiresAt)
 	if err != nil {
 		return Payment{}, err
 	}
@@ -110,6 +128,9 @@ func (s *Store) approvePaymentTx(ctx context.Context, tx *sql.Tx, paymentID stri
 			}
 		}
 	}
+	if found.PaymentType == PaymentTypePremiumCourse {
+		return s.approvePremiumCoursePaymentTx(ctx, tx, found, actor)
+	}
 	now := nowUTC()
 	startsAt := now
 	expiresAt := now.AddDate(0, 0, subscriptionDays)
@@ -166,6 +187,37 @@ func (s *Store) approvePaymentTx(ctx context.Context, tx *sql.Tx, paymentID stri
 		return Payment{}, err
 	}
 	if err := s.applyReferralPaymentRewardsTx(ctx, tx, found.UserID); err != nil {
+		return Payment{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE payment_receipts
+		SET validation_status = 'approved'
+		WHERE payment_id = ? AND id = (
+			SELECT id FROM payment_receipts WHERE payment_id = ? ORDER BY created_at DESC LIMIT 1
+		);
+	`, found.ID, found.ID); err != nil {
+		return Payment{}, err
+	}
+	return scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, found.ID))
+}
+
+func (s *Store) approvePremiumCoursePaymentTx(ctx context.Context, tx *sql.Tx, found Payment, actor AdminActor) (Payment, error) {
+	if found.PremiumCourseID == nil || strings.TrimSpace(*found.PremiumCourseID) == "" {
+		return Payment{}, ErrInvalidState
+	}
+	approvedBy := any(actor.ID)
+	if actor.ID == 0 {
+		approvedBy = nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE payments
+		SET status = 'approved', approved_by_admin_id = ?, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?;
+	`, approvedBy, found.ID); err != nil {
+		return Payment{}, err
+	}
+	paymentID := found.ID
+	if _, err := s.grantPremiumCourseAccessTx(ctx, tx, found.UserID, *found.PremiumCourseID, PremiumAccessSourcePayment, actor.ID, &paymentID, "", nil); err != nil {
 		return Payment{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -344,20 +396,27 @@ func (s *Store) extendSubscriptionTx(ctx context.Context, tx *sql.Tx, userID str
 }
 
 const paymentSelectSQL = `
-	SELECT p.id, p.user_id, p.tariff_id, t.code, p.subscription_id, p.amount_kzt, p.provider, p.status,
+	SELECT p.id, p.user_id, COALESCE(p.tariff_id, ''), COALESCE(t.code, ''), p.payment_type, p.premium_course_id,
+		COALESCE(pc.slug, ''), COALESCE(pc.title, ''), p.subscription_id, p.amount_kzt, p.provider, p.status,
 		COALESCE(p.receipt_file_path, ''), COALESCE(p.admin_comment, ''), p.approved_by_admin_id,
 		p.approved_at, p.expires_at, p.created_at, p.updated_at
 	FROM payments p
-	JOIN tariffs t ON t.id = p.tariff_id`
+	LEFT JOIN tariffs t ON t.id = p.tariff_id
+	LEFT JOIN premium_courses pc ON pc.id = p.premium_course_id`
 
 func scanPaymentRow(row interface{ Scan(dest ...any) error }) (Payment, error) {
 	var payment Payment
 	var subscriptionID sql.NullString
+	var premiumCourseID sql.NullString
 	var approvedBy sql.NullInt64
 	var approvedAt, expiresAt sql.NullTime
-	if err := row.Scan(&payment.ID, &payment.UserID, &payment.TariffID, &payment.TariffCode, &subscriptionID, &payment.AmountKZT, &payment.Provider, &payment.Status, &payment.ReceiptFilePath, &payment.AdminComment, &approvedBy, &approvedAt, &expiresAt, &payment.CreatedAt, &payment.UpdatedAt); err != nil {
+	if err := row.Scan(&payment.ID, &payment.UserID, &payment.TariffID, &payment.TariffCode, &payment.PaymentType, &premiumCourseID, &payment.PremiumCourseSlug, &payment.PremiumCourseTitle, &subscriptionID, &payment.AmountKZT, &payment.Provider, &payment.Status, &payment.ReceiptFilePath, &payment.AdminComment, &approvedBy, &approvedAt, &expiresAt, &payment.CreatedAt, &payment.UpdatedAt); err != nil {
 		return Payment{}, rowErr(err)
 	}
+	if payment.PaymentType == "" {
+		payment.PaymentType = PaymentTypeSubscription
+	}
+	payment.PremiumCourseID = scanStringPtr(premiumCourseID)
 	payment.SubscriptionID = scanStringPtr(subscriptionID)
 	payment.ApprovedByAdminID = scanInt64(approvedBy)
 	payment.ApprovedAt = scanTime(approvedAt)

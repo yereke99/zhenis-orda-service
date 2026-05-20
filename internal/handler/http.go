@@ -100,6 +100,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/streams", s.withMiniAppAuth(http.HandlerFunc(s.handleStreams)))
 	mux.Handle("GET /api/channels", s.withMiniAppAuth(http.HandlerFunc(s.handleChannels)))
 	mux.Handle("POST /api/channels/{id}/invite", s.withMiniAppAuth(http.HandlerFunc(s.handleIssueInvite)))
+	mux.Handle("GET /api/premium-courses", s.withMiniAppAuth(http.HandlerFunc(s.handlePremiumCourses)))
+	mux.Handle("GET /api/premium-courses/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handlePremiumCourse)))
+	mux.Handle("GET /api/premium-courses/{id}/lessons", s.withMiniAppAuth(http.HandlerFunc(s.handlePremiumCourseLessons)))
+	mux.Handle("GET /api/premium-course-lessons/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handlePremiumCourseLesson)))
+	mux.Handle("POST /api/premium-courses/{id}/payments", s.withMiniAppAuth(http.HandlerFunc(s.handleCreatePremiumCoursePayment)))
+	mux.Handle("POST /api/premium-courses/{id}/telegram-invite", s.withMiniAppAuth(http.HandlerFunc(s.handlePremiumCourseTelegramInvite)))
 	mux.Handle("GET /api/books", s.withMiniAppAuth(http.HandlerFunc(s.handleBooks)))
 	mux.Handle("GET /api/books/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handleBook)))
 	mux.Handle("GET /api/free-lessons", s.withMiniAppAuth(http.HandlerFunc(s.handleFreeLessons)))
@@ -145,6 +151,16 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("PATCH /api/admin/books/{id}", admin(s.handleAdminPostBook, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("DELETE /api/admin/books/{id}", admin(s.handleAdminArchiveBook, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("POST /api/admin/books/upload-image", admin(s.handleAdminBookImageUpload, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("GET /api/admin/premium-courses", admin(s.handleAdminPremiumCourses, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("GET /api/admin/premium-courses/{id}", admin(s.handleAdminPremiumCourse, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/premium-courses", admin(s.handleAdminPostPremiumCourse, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("PATCH /api/admin/premium-courses/{id}", admin(s.handleAdminPostPremiumCourse, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("DELETE /api/admin/premium-courses/{id}", admin(s.handleAdminArchivePremiumCourse, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("POST /api/admin/premium-courses/upload-cover", admin(s.handleAdminPremiumCourseCoverUpload, repository.RoleSuperAdmin, repository.RoleContentManager))
+	mux.Handle("GET /api/admin/users/{id}/premium-course-access", admin(s.handleAdminUserPremiumCourseAccess, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
+	mux.Handle("POST /api/admin/users/{id}/premium-course-access/{course_id}", admin(s.handleAdminGrantPremiumCourseAccess, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("PATCH /api/admin/users/{id}/premium-course-access/{course_id}", admin(s.handleAdminGrantPremiumCourseAccess, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("POST /api/admin/users/{id}/premium-course-access/{course_id}/revoke", admin(s.handleAdminRevokePremiumCourseAccess, repository.RoleSuperAdmin, repository.RoleSupport))
 	mux.Handle("GET /api/admin/tests", admin(s.handleAdminTests, repository.RoleSuperAdmin, repository.RoleContentManager, repository.RoleAnalyst))
 	mux.Handle("POST /api/admin/tests", admin(s.handleAdminPostTest, repository.RoleSuperAdmin, repository.RoleContentManager))
 	mux.Handle("PATCH /api/admin/tests/{id}", admin(s.handleAdminPostTest, repository.RoleSuperAdmin, repository.RoleContentManager))
@@ -510,4 +526,15 @@ func formatRejectMessage(language, comment string) string {
 		comment = "чек анық емес"
 	}
 	return fmt.Sprintf(i18n.T(language, "payment_rejected"), comment)
+}
+
+func formatPaymentApprovedMessage(language string, payment repository.Payment) string {
+	if payment.PaymentType == repository.PaymentTypePremiumCourse {
+		title := strings.TrimSpace(payment.PremiumCourseTitle)
+		if title == "" {
+			title = "Premium курс"
+		}
+		return fmt.Sprintf("Premium курс қолжетімділігі ашылды: %s", title)
+	}
+	return i18n.T(language, "payment_approved")
 }

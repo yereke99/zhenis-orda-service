@@ -77,6 +77,12 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := addPaymentReceiptColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := addPremiumCourseTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migratePaymentsForPremiumCourses(ctx, db); err != nil {
+		return err
+	}
 	if err := migrateLessonOwnedTests(ctx, db); err != nil {
 		return err
 	}
@@ -164,6 +170,168 @@ func addPaymentReceiptColumns(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func addPremiumCourseTables(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS premium_courses (
+			id TEXT PRIMARY KEY,
+			slug TEXT NOT NULL UNIQUE,
+			title TEXT NOT NULL,
+			description TEXT,
+			price_kzt INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive','archived')),
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			default_access_duration_type TEXT NOT NULL DEFAULT 'lifetime' CHECK(default_access_duration_type IN ('lifetime','30_days','90_days','custom')),
+			default_access_expires_at DATETIME,
+			telegram_chat_id TEXT,
+			invite_link_type TEXT NOT NULL DEFAULT 'manual' CHECK(invite_link_type IN ('bot','manual')),
+			manual_invite_link TEXT,
+			telegram_button_title TEXT,
+			admin_notes TEXT,
+			cover_image_url TEXT,
+			cover_image_path TEXT,
+			cover_image_source TEXT NOT NULL DEFAULT 'none',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS premium_course_lessons (
+			id TEXT PRIMARY KEY,
+			course_id TEXT NOT NULL REFERENCES premium_courses(id) ON DELETE CASCADE,
+			title TEXT NOT NULL,
+			description TEXT,
+			video_url TEXT,
+			content_text TEXT,
+			position INTEGER NOT NULL DEFAULT 0,
+			is_preview INTEGER NOT NULL DEFAULT 0,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(course_id, position)
+		);
+
+		CREATE TABLE IF NOT EXISTS user_course_access (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			course_id TEXT NOT NULL REFERENCES premium_courses(id) ON DELETE CASCADE,
+			access_status TEXT NOT NULL CHECK(access_status IN ('active', 'revoked', 'expired')),
+			access_source TEXT NOT NULL CHECK(access_source IN ('manual', 'payment', 'bonus', 'gift')),
+			granted_by_admin_id INTEGER,
+			payment_id TEXT REFERENCES payments(id) ON DELETE SET NULL,
+			granted_at DATETIME NOT NULL,
+			expires_at DATETIME,
+			revoked_at DATETIME,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS user_premium_course_telegram_invites (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			course_id TEXT NOT NULL REFERENCES premium_courses(id) ON DELETE CASCADE,
+			telegram_chat_id TEXT NOT NULL,
+			invite_link TEXT NOT NULL,
+			expires_at DATETIME,
+			status TEXT NOT NULL DEFAULT 'issued' CHECK(status IN ('issued','used','expired','revoked')),
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+	`); err != nil {
+		return err
+	}
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"default_access_duration_type", "TEXT NOT NULL DEFAULT 'lifetime'"},
+		{"default_access_expires_at", "DATETIME"},
+		{"telegram_chat_id", "TEXT"},
+		{"invite_link_type", "TEXT NOT NULL DEFAULT 'manual'"},
+		{"manual_invite_link", "TEXT"},
+		{"telegram_button_title", "TEXT"},
+		{"admin_notes", "TEXT"},
+		{"cover_image_url", "TEXT"},
+		{"cover_image_path", "TEXT"},
+		{"cover_image_source", "TEXT NOT NULL DEFAULT 'none'"},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(ctx, db, "premium_courses", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if err := addColumnIfMissing(ctx, db, "premium_course_lessons", "content_text", "TEXT"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migratePaymentsForPremiumCourses(ctx context.Context, db *sql.DB) error {
+	if err := addColumnIfMissing(ctx, db, "payments", "payment_type", "TEXT NOT NULL DEFAULT 'subscription'"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(ctx, db, "payments", "premium_course_id", "TEXT REFERENCES premium_courses(id) ON DELETE SET NULL"); err != nil {
+		return err
+	}
+	notNull, err := columnNotNull(ctx, db, "payments", "tariff_id")
+	if err != nil {
+		return err
+	}
+	if !notNull {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;`); err != nil {
+		return err
+	}
+	defer db.ExecContext(ctx, `PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;`)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE payments RENAME TO payments_legacy_premium;`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TABLE payments (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			tariff_id TEXT REFERENCES tariffs(id),
+			payment_type TEXT NOT NULL DEFAULT 'subscription' CHECK(payment_type IN ('subscription','premium_course')),
+			premium_course_id TEXT REFERENCES premium_courses(id) ON DELETE SET NULL,
+			subscription_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL,
+			amount_kzt INTEGER NOT NULL,
+			provider TEXT NOT NULL CHECK(provider IN ('kaspi_qr','kaspi_pay','halyk','bank_card')),
+			status TEXT NOT NULL CHECK(status IN ('pending','uploaded_receipt','approved','rejected','expired','cancelled')),
+			receipt_file_path TEXT,
+			admin_comment TEXT,
+			approved_by_admin_id INTEGER,
+			approved_at DATETIME,
+			expires_at DATETIME,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+	`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO payments(
+			id, user_id, tariff_id, payment_type, premium_course_id, subscription_id, amount_kzt, provider, status,
+			receipt_file_path, admin_comment, approved_by_admin_id, approved_at, expires_at, created_at, updated_at
+		)
+		SELECT id, user_id, tariff_id, COALESCE(payment_type, 'subscription'), premium_course_id, subscription_id,
+			amount_kzt, provider, status, receipt_file_path, admin_comment, approved_by_admin_id,
+			approved_at, expires_at, created_at, updated_at
+		FROM payments_legacy_premium;
+	`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE payments_legacy_premium;`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func addReceiptUniqueIndexes(ctx context.Context, db *sql.DB) error {
@@ -289,6 +457,25 @@ func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, 
 	return exists > 0, nil
 }
 
+func columnNotNull(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name, "notnull" FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var notNull int
+		if err := rows.Scan(&name, &notNull); err != nil {
+			return false, err
+		}
+		if name == column {
+			return notNull == 1, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, definition string) error {
 	var exists int
 	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&exists)
@@ -322,6 +509,7 @@ func guardLegacyIntegerIDs(ctx context.Context, db *sql.DB) error {
 		"lesson_progress", "lessons", "assignment_submissions", "assignments",
 		"payment_receipts", "payments", "subscriptions", "diagnostics",
 		"referral_rewards", "referrals", "coin_transactions",
+		"user_premium_course_telegram_invites", "user_course_access", "premium_course_lessons", "premium_courses",
 		"channel_invite_links", "channels",
 		"user_level_telegram_invites", "financial_iq_results",
 		"user_stream_attendance", "live_stream_recordings", "live_stream_reminders", "live_streams",
@@ -354,6 +542,9 @@ func Seed(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if err := seedSettings(ctx, tx); err != nil {
+		return err
+	}
+	if err := seedPremiumCourses(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -436,6 +627,86 @@ func seedSettings(ctx context.Context, tx *sql.Tx) error {
 			ON CONFLICT(key) DO NOTHING;
 		`, key, value); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func seedPremiumCourses(ctx context.Context, tx *sql.Tx) error {
+	courses := []struct {
+		Slug        string
+		Title       string
+		Description string
+		Price       int
+		Order       int
+		Lessons     []struct {
+			Title       string
+			Description string
+			Content     string
+			Preview     bool
+		}
+	}{
+		{
+			Slug:        "altyn-formula",
+			Title:       "АЛТЫН ФОРМУЛА",
+			Description: "Қаржы, тәртіп және ақша көбейтуге арналған бөлек premium курс.",
+			Price:       250000,
+			Order:       1,
+			Lessons: []struct {
+				Title       string
+				Description string
+				Content     string
+				Preview     bool
+			}{
+				{"Preview video", "Курсқа қысқаша ашық кіріспе.", "Бұл preview сабақ төлемсіз ашық.", true},
+				{"Lesson 1", "Premium сабақ", "Бұл сабақ premium қолжетімділік ашылғаннан кейін көрінеді.", false},
+				{"Lesson 2", "Premium сабақ", "Бұл сабақ premium қолжетімділік ашылғаннан кейін көрінеді.", false},
+				{"Lesson 3", "Premium сабақ", "Бұл сабақ premium қолжетімділік ашылғаннан кейін көрінеді.", false},
+			},
+		},
+		{
+			Slug:        "biznes-praktikum",
+			Title:       "БИЗНЕС ПРАКТИКУМ",
+			Description: "Бизнес жүйелеуге арналған бөлек premium практикум.",
+			Price:       650000,
+			Order:       2,
+			Lessons: []struct {
+				Title       string
+				Description string
+				Content     string
+				Preview     bool
+			}{
+				{"Preview video", "Курсқа қысқаша ашық кіріспе.", "Бұл preview сабақ төлемсіз ашық.", true},
+				{"Lesson 1", "Premium сабақ", "Бұл сабақ premium қолжетімділік ашылғаннан кейін көрінеді.", false},
+				{"Lesson 2", "Premium сабақ", "Бұл сабақ premium қолжетімділік ашылғаннан кейін көрінеді.", false},
+				{"Lesson 3", "Premium сабақ", "Бұл сабақ premium қолжетімділік ашылғаннан кейін көрінеді.", false},
+			},
+		},
+	}
+	for _, course := range courses {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO premium_courses(id, slug, title, description, price_kzt, status, sort_order, default_access_duration_type, invite_link_type, cover_image_source)
+			VALUES (?, ?, ?, ?, ?, 'active', ?, 'lifetime', 'manual', 'none')
+			ON CONFLICT(slug) DO NOTHING;
+		`, uuid.NewString(), course.Slug, course.Title, course.Description, course.Price, course.Order); err != nil {
+			return err
+		}
+		var courseID string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM premium_courses WHERE slug = ?`, course.Slug).Scan(&courseID); err != nil {
+			return err
+		}
+		for i, lesson := range course.Lessons {
+			preview := 0
+			if lesson.Preview {
+				preview = 1
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO premium_course_lessons(id, course_id, title, description, content_text, position, is_preview, is_active)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+				ON CONFLICT(course_id, position) DO NOTHING;
+			`, uuid.NewString(), courseID, lesson.Title, lesson.Description, lesson.Content, i, preview); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

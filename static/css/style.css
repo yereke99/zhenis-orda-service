@@ -1288,10 +1288,110 @@ body.landing-mode {
 
 .free-lessons-section,
 .free-lessons-screen,
-.free-lesson-detail-screen {
+.free-lesson-detail-screen,
+.premium-courses-section,
+.premium-courses-screen,
+.premium-course-detail-screen {
   display: grid;
   gap: 12px;
   min-width: 0;
+}
+
+.premium-course-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+@media (min-width: 680px) {
+  .premium-course-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .premium-course-grid.large {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.premium-course-card {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  border: 1px solid rgba(200, 162, 74, 0.22);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(155deg, rgba(30, 27, 21, 0.96), rgba(13, 16, 23, 0.97)),
+    radial-gradient(circle at 100% 0%, rgba(232, 206, 140, 0.14), transparent 52%);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.premium-course-card.locked {
+  border-color: rgba(214, 80, 70, 0.28);
+}
+
+.premium-course-image {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-bottom: 1px solid rgba(200, 162, 74, 0.16);
+}
+
+.premium-course-body {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.premium-course-body h3 {
+  margin-bottom: 0;
+  font-size: 20px;
+}
+
+.premium-course-hero {
+  position: relative;
+  min-height: 190px;
+  display: grid;
+  align-content: end;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(145deg, rgba(33, 28, 19, 0.94), rgba(10, 13, 19, 0.98)),
+    radial-gradient(circle at 80% 0%, rgba(232, 206, 140, 0.17), transparent 55%);
+  box-shadow: var(--shadow-dark), var(--shadow-gold);
+}
+
+.premium-course-hero img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.68;
+}
+
+.premium-course-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.78)),
+    linear-gradient(120deg, rgba(200, 162, 74, 0.18), transparent 54%);
+}
+
+.premium-course-hero > div {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 8px;
+  padding: 24px 20px;
+}
+
+.premium-locked-card {
+  display: grid;
+  gap: 12px;
+  border-color: rgba(214, 80, 70, 0.3);
 }
 
 .free-lessons-entry {
@@ -2737,6 +2837,15 @@ tr:hover td {
   min-height: 20px;
   margin-bottom: 15px;
   accent-color: var(--gold);
+}
+
+.premium-access-list {
+  display: grid;
+  gap: 12px;
+}
+
+.premium-access-row {
+  margin: 0;
 }
 
 /* =============================================================

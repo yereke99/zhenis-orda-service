@@ -115,7 +115,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE TABLE IF NOT EXISTS payments (
 	id TEXT PRIMARY KEY,
 	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	tariff_id TEXT NOT NULL REFERENCES tariffs(id),
+	tariff_id TEXT REFERENCES tariffs(id),
+	payment_type TEXT NOT NULL DEFAULT 'subscription' CHECK(payment_type IN ('subscription','premium_course')),
+	premium_course_id TEXT REFERENCES premium_courses(id) ON DELETE SET NULL,
 	subscription_id TEXT REFERENCES subscriptions(id) ON DELETE SET NULL,
 	amount_kzt INTEGER NOT NULL,
 	provider TEXT NOT NULL CHECK(provider IN ('kaspi_qr','kaspi_pay','halyk','bank_card')),
@@ -125,6 +127,70 @@ CREATE TABLE IF NOT EXISTS payments (
 	approved_by_admin_id INTEGER,
 	approved_at DATETIME,
 	expires_at DATETIME,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS premium_courses (
+	id TEXT PRIMARY KEY,
+	slug TEXT NOT NULL UNIQUE,
+	title TEXT NOT NULL,
+	description TEXT,
+	price_kzt INTEGER NOT NULL,
+	status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive','archived')),
+	sort_order INTEGER NOT NULL DEFAULT 0,
+	default_access_duration_type TEXT NOT NULL DEFAULT 'lifetime' CHECK(default_access_duration_type IN ('lifetime','30_days','90_days','custom')),
+	default_access_expires_at DATETIME,
+	telegram_chat_id TEXT,
+	invite_link_type TEXT NOT NULL DEFAULT 'manual' CHECK(invite_link_type IN ('bot','manual')),
+	manual_invite_link TEXT,
+	telegram_button_title TEXT,
+	admin_notes TEXT,
+	cover_image_url TEXT,
+	cover_image_path TEXT,
+	cover_image_source TEXT NOT NULL DEFAULT 'none',
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS premium_course_lessons (
+	id TEXT PRIMARY KEY,
+	course_id TEXT NOT NULL REFERENCES premium_courses(id) ON DELETE CASCADE,
+	title TEXT NOT NULL,
+	description TEXT,
+	video_url TEXT,
+	content_text TEXT,
+	position INTEGER NOT NULL DEFAULT 0,
+	is_preview INTEGER NOT NULL DEFAULT 0,
+	is_active INTEGER NOT NULL DEFAULT 1,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(course_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS user_course_access (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	course_id TEXT NOT NULL REFERENCES premium_courses(id) ON DELETE CASCADE,
+	access_status TEXT NOT NULL CHECK(access_status IN ('active','revoked','expired')),
+	access_source TEXT NOT NULL CHECK(access_source IN ('manual','payment','bonus','gift')),
+	granted_by_admin_id INTEGER,
+	payment_id TEXT REFERENCES payments(id) ON DELETE SET NULL,
+	granted_at DATETIME NOT NULL,
+	expires_at DATETIME,
+	revoked_at DATETIME,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_premium_course_telegram_invites (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	course_id TEXT NOT NULL REFERENCES premium_courses(id) ON DELETE CASCADE,
+	telegram_chat_id TEXT NOT NULL,
+	invite_link TEXT NOT NULL,
+	expires_at DATETIME,
+	status TEXT NOT NULL DEFAULT 'issued' CHECK(status IN ('issued','used','expired','revoked')),
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -462,6 +528,15 @@ CREATE INDEX IF NOT EXISTS idx_free_lessons_active_sort ON free_lessons(is_activ
 CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
 CREATE INDEX IF NOT EXISTS idx_payments_expires ON payments(expires_at);
+CREATE INDEX IF NOT EXISTS idx_payments_type_course ON payments(payment_type, premium_course_id, status);
+CREATE INDEX IF NOT EXISTS idx_premium_courses_slug ON premium_courses(slug);
+CREATE INDEX IF NOT EXISTS idx_premium_courses_status_sort ON premium_courses(status, sort_order, created_at);
+CREATE INDEX IF NOT EXISTS idx_premium_course_lessons_course ON premium_course_lessons(course_id, is_active, position);
+CREATE INDEX IF NOT EXISTS idx_user_course_access_user_course_status ON user_course_access(user_id, course_id, access_status);
+CREATE INDEX IF NOT EXISTS idx_user_course_access_course ON user_course_access(course_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_course_access_one_active ON user_course_access(user_id, course_id) WHERE access_status = 'active';
+CREATE INDEX IF NOT EXISTS idx_premium_course_invites_user_course ON user_premium_course_telegram_invites(user_id, course_id, status);
+CREATE INDEX IF NOT EXISTS idx_premium_course_invites_status_expires ON user_premium_course_telegram_invites(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_receipts_payment ON payment_receipts(payment_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_file_hash ON payment_receipts(file_hash);
 CREATE INDEX IF NOT EXISTS idx_receipts_qr_hash ON payment_receipts(qr_payload_hash);

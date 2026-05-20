@@ -227,6 +227,14 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 		if paymentID != "" {
 			query += ` AND p.id = ?`
 			args = append(args, paymentID)
+		} else {
+			ambiguous, err := hasAmbiguousPendingPaymentTypes(ctx, tx, userID)
+			if err != nil {
+				return err
+			}
+			if ambiguous {
+				return ErrAmbiguousPayment
+			}
 		}
 		query += ` ORDER BY p.created_at DESC LIMIT 1;`
 		found, err := scanPaymentRow(tx.QueryRowContext(ctx, query, args...))
@@ -314,6 +322,19 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 		return payment, receipt, finalErr
 	}
 	return payment, receipt, err
+}
+
+func hasAmbiguousPendingPaymentTypes(ctx context.Context, q queryer, userID string) (bool, error) {
+	var count int
+	if err := q.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT payment_type)
+		FROM payments
+		WHERE user_id = ? AND status IN ('pending','uploaded_receipt')
+			AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP);
+	`, userID).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 1, nil
 }
 
 func (s *Store) receiptNoActivePaymentError(ctx context.Context, tx *sql.Tx, userID, paymentID, filePath string) (Payment, Receipt, error) {
