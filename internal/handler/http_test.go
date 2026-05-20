@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,15 @@ func newTestHTTPServer(t *testing.T, env string) *handler.Server {
 }
 
 func newTestHTTPServerWithConfig(t *testing.T, env string, configure func(*config.Config)) *handler.Server {
+	srv, _ := newTestHTTPServerWithStoreAndConfig(t, env, configure)
+	return srv
+}
+
+func newTestHTTPServerWithStore(t *testing.T, env string) (*handler.Server, *repository.Store) {
+	return newTestHTTPServerWithStoreAndConfig(t, env, nil)
+}
+
+func newTestHTTPServerWithStoreAndConfig(t *testing.T, env string, configure func(*config.Config)) (*handler.Server, *repository.Store) {
 	t.Helper()
 	ctx := context.Background()
 	db, err := database.Open(ctx, ":memory:")
@@ -67,7 +77,40 @@ func newTestHTTPServerWithConfig(t *testing.T, env string, configure func(*confi
 	if configure != nil {
 		configure(&cfg)
 	}
-	return handler.NewServer(cfg, repository.New(db), handler.NewMemoryKV(), zap.NewNop())
+	store := repository.New(db)
+	return handler.NewServer(cfg, store, handler.NewMemoryKV(), zap.NewNop()), store
+}
+
+func acceptLatestLegalAgreement(t *testing.T, srv *handler.Server, telegramID int64) {
+	t.Helper()
+	query := "?miniapp_dev=1"
+	if telegramID != 0 {
+		query += "&telegram_id=" + strconv.FormatInt(telegramID, 10)
+	}
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/legal/agreement-status"+query, nil)
+	statusRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("legal status expected 200, got %d: %s", statusRec.Code, statusRec.Body.String())
+	}
+	var status struct {
+		DocumentType    string `json:"document_type"`
+		DocumentVersion string `json:"document_version"`
+	}
+	if err := json.NewDecoder(statusRec.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{
+		"language":         "kk",
+		"document_type":    status.DocumentType,
+		"document_version": status.DocumentVersion,
+	})
+	acceptReq := httptest.NewRequest(http.MethodPost, "/api/legal/accept"+query, bytes.NewReader(body))
+	acceptRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(acceptRec, acceptReq)
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("legal accept expected 200, got %d: %s", acceptRec.Code, acceptRec.Body.String())
+	}
 }
 
 type sentBotMessage struct {
@@ -122,6 +165,272 @@ func TestMiniAppDevAuth(t *testing.T) {
 	}
 	if body["user"] == nil {
 		t.Fatal("expected user payload")
+	}
+}
+
+func TestPaymentRequiresLegalAgreement(t *testing.T) {
+	srv, store := newTestHTTPServerWithStore(t, "development")
+	req := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9101", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected legal conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error           string `json:"error"`
+		DocumentType    string `json:"document_type"`
+		DocumentVersion string `json:"document_version"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error != "LEGAL_AGREEMENT_REQUIRED" || body.DocumentType == "" || body.DocumentVersion == "" {
+		t.Fatalf("unexpected legal requirement response: %#v", body)
+	}
+
+	var courseID string
+	if err := store.DB().QueryRowContext(context.Background(), `SELECT id FROM premium_courses WHERE status = 'active' ORDER BY sort_order ASC LIMIT 1`).Scan(&courseID); err != nil {
+		t.Fatal(err)
+	}
+	courseReq := httptest.NewRequest(http.MethodPost, "/api/premium-courses/"+courseID+"/payments?miniapp_dev=1&telegram_id=9101", bytes.NewBufferString(`{"provider":"kaspi_qr"}`))
+	courseRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(courseRec, courseReq)
+	if courseRec.Code != http.StatusConflict || !strings.Contains(courseRec.Body.String(), "LEGAL_AGREEMENT_REQUIRED") {
+		t.Fatalf("premium course payment expected legal conflict, got %d: %s", courseRec.Code, courseRec.Body.String())
+	}
+}
+
+func TestLegalDocumentEndpointsAndAcceptance(t *testing.T) {
+	srv, store := newTestHTTPServerWithStore(t, "development")
+	for _, language := range []string{"kk", "ru"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/legal/document?miniapp_dev=1&telegram_id=9102&lang="+language, nil)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s document expected 200, got %d: %s", language, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Language        string `json:"language"`
+			DocumentVersion string `json:"document_version"`
+			ContentHTML     string `json:"content_html"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Language != language || body.DocumentVersion == "" || !strings.Contains(body.ContentHTML, "<") {
+			t.Fatalf("unexpected %s document response: %#v", language, body)
+		}
+		lower := strings.ToLower(body.ContentHTML)
+		if strings.Contains(lower, "privacy_policy") || strings.Contains(lower, ".docx") || strings.Contains(lower, "http://") || strings.Contains(lower, "https://") || strings.Contains(lower, "t.me/") {
+			t.Fatalf("document response exposed unsafe link/path: %s", body.ContentHTML)
+		}
+	}
+
+	acceptLatestLegalAgreement(t, srv, 9102)
+	user, err := store.GetUserByTelegramID(context.Background(), 9102)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/legal/agreement-status?miniapp_dev=1&telegram_id=9102", nil)
+	statusRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("legal status after accept expected 200, got %d: %s", statusRec.Code, statusRec.Body.String())
+	}
+	var status struct {
+		Accepted        bool   `json:"accepted"`
+		DocumentType    string `json:"document_type"`
+		DocumentVersion string `json:"document_version"`
+	}
+	if err := json.NewDecoder(statusRec.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Accepted {
+		t.Fatal("expected accepted legal status")
+	}
+	agreement, err := store.GetUserLegalAgreement(context.Background(), user.ID, status.DocumentType, status.DocumentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agreement == nil || agreement.UserID != user.ID || agreement.TelegramID != 9102 {
+		t.Fatalf("agreement was not stored for authenticated user: %#v", agreement)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9102", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr","contact_phone":"+7 700 100 20 30"}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("accepted user payment expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOldLegalAgreementVersionDoesNotUnlockPayment(t *testing.T) {
+	srv, store := newTestHTTPServerWithStore(t, "development")
+	ctx := context.Background()
+	user, _, err := store.RegisterOrUpdateTelegramUser(ctx, repository.TelegramUserInput{
+		TelegramID: 9103,
+		Username:   "oldlegal",
+		FirstName:  "Old",
+		Language:   "kk",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcceptUserLegalAgreement(ctx, repository.UserLegalAgreement{
+		UserID:           user.ID,
+		TelegramID:       user.TelegramID,
+		DocumentType:     "privacy_policy_offer",
+		DocumentVersion:  "old-version",
+		DocumentLanguage: "kk",
+		DocumentHash:     "old-hash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9103", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "LEGAL_AGREEMENT_REQUIRED") {
+		t.Fatalf("old agreement should not permit payment, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaymentRequiresContactPhoneAfterLegalAgreement(t *testing.T) {
+	srv := newTestHTTPServer(t, "development")
+	acceptLatestLegalAgreement(t, srv, 9120)
+	req := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9120", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty contact phone expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaymentContactPhoneSavedAndPendingReused(t *testing.T) {
+	srv, store := newTestHTTPServerWithStore(t, "development")
+	ctx := context.Background()
+	acceptLatestLegalAgreement(t, srv, 9121)
+
+	createPayment := func(phone string) repository.Payment {
+		t.Helper()
+		body := fmt.Sprintf(`{"tariff_code":"BASIC","provider":"kaspi_qr","contact_phone":%q}`, phone)
+		req := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9121", bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create payment expected 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var out struct {
+			Payment repository.Payment `json:"payment"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Payment
+	}
+
+	first := createPayment("87001002030")
+	if first.ContactPhone != "+77001002030" {
+		t.Fatalf("first payment phone = %q", first.ContactPhone)
+	}
+	updated := createPayment("+7 701 200 30 40")
+	if updated.ID != first.ID {
+		t.Fatalf("expected pending payment reuse, got first=%s second=%s", first.ID, updated.ID)
+	}
+	if updated.ContactPhone != "+77012003040" {
+		t.Fatalf("updated payment phone = %q", updated.ContactPhone)
+	}
+	user, err := store.GetUserByTelegramID(ctx, 9121)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Phone != "+77012003040" {
+		t.Fatalf("user phone = %q", user.Phone)
+	}
+	var pendingCount int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM payments WHERE user_id = ? AND status = 'pending'`, user.ID).Scan(&pendingCount); err != nil {
+		t.Fatal(err)
+	}
+	if pendingCount != 1 {
+		t.Fatalf("pending payment count = %d", pendingCount)
+	}
+	if _, err := store.ApprovePayment(ctx, updated.ID, 1, 30); err != nil {
+		t.Fatal(err)
+	}
+	next := createPayment("+7 702 300 40 50")
+	if next.ID == updated.ID {
+		t.Fatal("expected new payment after approved payment")
+	}
+	approvedSnapshot, err := store.GetPayment(ctx, updated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approvedSnapshot.ContactPhone != "+77012003040" {
+		t.Fatalf("approved payment phone snapshot changed: %q", approvedSnapshot.ContactPhone)
+	}
+	if next.ContactPhone != "+77023004050" {
+		t.Fatalf("next payment phone = %q", next.ContactPhone)
+	}
+}
+
+func TestStudentTestResponseDoesNotExposeCorrectAnswers(t *testing.T) {
+	srv, store := newTestHTTPServerWithStore(t, "development")
+	ctx := context.Background()
+	user, _, err := store.RegisterOrUpdateTelegramUser(ctx, repository.TelegramUserInput{
+		TelegramID: 9301,
+		Username:   "student",
+		FirstName:  "Student",
+		Language:   "kk",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var levelID string
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM levels WHERE number = 1`).Scan(&levelID); err != nil {
+		t.Fatal(err)
+	}
+	lesson, err := store.UpsertLesson(ctx, repository.Lesson{
+		LevelID:   levelID,
+		TitleKK:   "Тест сабағы",
+		TitleRU:   "Тестовый урок",
+		VideoURL:  "https://t.me/content/1",
+		SortOrder: 1,
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertTest(ctx, repository.Test{
+		LessonID:    lesson.ID,
+		Title:       "Жасырын жауап тесті",
+		PassPercent: 50,
+		IsActive:    true,
+		Questions: []repository.TestQuestion{{
+			QuestionTextKK: "Дұрыс жауап қайсы?",
+			QuestionTextRU: "Какой ответ правильный?",
+			Options: []repository.TestOption{
+				{OptionTextKK: "Дұрыс", OptionTextRU: "Верно", IsCorrect: true, SortOrder: 1},
+				{OptionTextKK: "Қате", OptionTextRU: "Неверно", SortOrder: 2},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payment, err := store.CreatePayment(ctx, user.ID, "BASIC", "kaspi_qr", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApprovePayment(ctx, payment.ID, 1, 30); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tests/1?miniapp_dev=1&telegram_id=9301", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "is_correct") {
+		t.Fatalf("student response exposed correct answer flag: %s", rec.Body.String())
 	}
 }
 
@@ -659,7 +968,8 @@ func TestUUIDRouteRejectsBadPaymentID(t *testing.T) {
 
 func TestMiniAppReceiptUpload(t *testing.T) {
 	srv := newTestHTTPServer(t, "development")
-	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	acceptLatestLegalAgreement(t, srv, 0)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr","contact_phone":"+7 700 100 20 30"}`))
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, createReq)
 	if rec.Code != http.StatusCreated {
@@ -704,7 +1014,8 @@ func TestMiniAppReceiptUpload(t *testing.T) {
 
 func TestMiniAppReceiptUploadRejectsNonPDF(t *testing.T) {
 	srv := newTestHTTPServer(t, "development")
-	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	acceptLatestLegalAgreement(t, srv, 0)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr","contact_phone":"+7 700 100 20 30"}`))
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, createReq)
 	if rec.Code != http.StatusCreated {
@@ -808,7 +1119,8 @@ func TestLevelTelegramInviteCreatesAndReusesLink(t *testing.T) {
 	bot := &testInviteBot{links: []string{"https://t.me/+level-one"}}
 	srv.SetBot(bot)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9002", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	acceptLatestLegalAgreement(t, srv, 9002)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9002", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr","contact_phone":"+7 700 200 30 40"}`))
 	createRec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusCreated {
@@ -862,7 +1174,8 @@ func TestLevelTelegramInviteFailureIsSafe(t *testing.T) {
 	setLevelTelegramChat(t, srv, cookie, 1, "-1002351826422")
 	srv.SetBot(failingInviteBot{})
 
-	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9003", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr"}`))
+	acceptLatestLegalAgreement(t, srv, 9003)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9003", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr","contact_phone":"+7 700 300 40 50"}`))
 	createRec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusCreated {

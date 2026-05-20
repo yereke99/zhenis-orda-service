@@ -52,6 +52,19 @@ CREATE TABLE IF NOT EXISTS diagnostics (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS user_legal_agreements (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	telegram_id INTEGER NOT NULL,
+	document_type TEXT NOT NULL,
+	document_version TEXT NOT NULL,
+	document_language TEXT NOT NULL,
+	document_hash TEXT NOT NULL,
+	accepted_at DATETIME NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS tariffs (
 	id TEXT PRIMARY KEY,
 	code TEXT NOT NULL UNIQUE,
@@ -122,6 +135,7 @@ CREATE TABLE IF NOT EXISTS payments (
 	amount_kzt INTEGER NOT NULL,
 	provider TEXT NOT NULL CHECK(provider IN ('kaspi_qr','kaspi_pay','halyk','bank_card')),
 	status TEXT NOT NULL CHECK(status IN ('pending','uploaded_receipt','approved','rejected','expired','cancelled')),
+	contact_phone TEXT,
 	receipt_file_path TEXT,
 	admin_comment TEXT,
 	approved_by_admin_id INTEGER,
@@ -521,6 +535,8 @@ CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
 CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code);
 CREATE INDEX IF NOT EXISTS idx_users_invited_by ON users(invited_by_user_id);
 CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_user_legal_agreements_telegram ON user_legal_agreements(telegram_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_legal_agreements_unique ON user_legal_agreements(user_id, document_type, document_version);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_status_expires ON subscriptions(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_books_active_sort ON books(is_active, sort_order, created_at);

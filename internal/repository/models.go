@@ -153,6 +153,7 @@ type Payment struct {
 	UserID             string     `json:"user_id"`
 	TariffID           string     `json:"tariff_id,omitempty"`
 	TariffCode         string     `json:"tariff_code,omitempty"`
+	TariffTitle        string     `json:"tariff_title,omitempty"`
 	PaymentType        string     `json:"payment_type"`
 	PremiumCourseID    *string    `json:"premium_course_id,omitempty"`
 	PremiumCourseSlug  string     `json:"premium_course_slug,omitempty"`
@@ -161,6 +162,7 @@ type Payment struct {
 	AmountKZT          int        `json:"amount_kzt"`
 	Provider           string     `json:"provider"`
 	Status             string     `json:"status"`
+	ContactPhone       string     `json:"contact_phone,omitempty"`
 	ReceiptFilePath    string     `json:"receipt_file_path"`
 	AdminComment       string     `json:"admin_comment"`
 	ApprovedByAdminID  *int64     `json:"approved_by_admin_id,omitempty"`

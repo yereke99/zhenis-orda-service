@@ -77,23 +77,41 @@ func (s *Server) handleTariffs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreatePayment(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	var req struct {
-		TariffID   string `json:"tariff_id"`
-		TariffCode string `json:"tariff_code"`
-		Provider   string `json:"provider"`
+		TariffID     string `json:"tariff_id"`
+		TariffCode   string `json:"tariff_code"`
+		Provider     string `json:"provider"`
+		ContactPhone string `json:"contact_phone"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	meta, accepted, err := s.hasAcceptedLatestLegalAgreement(r, user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "legal document unavailable")
+		return
+	}
+	if !accepted {
+		writeLegalAgreementRequired(w, meta)
+		return
+	}
+	contactPhone := repository.NormalizeContactPhone(firstNonEmpty(req.ContactPhone, user.Phone))
+	if contactPhone == "" {
+		writeError(w, http.StatusBadRequest, "contact phone is required")
+		return
+	}
 	var payment repository.Payment
-	var err error
+	var created bool
 	if strings.TrimSpace(req.TariffID) != "" {
-		payment, err = s.store.CreatePaymentByTariffID(r.Context(), user.ID, req.TariffID, req.Provider, s.cfg.PaymentPendingTTL)
+		payment, created, err = s.store.CreatePaymentByTariffIDWithContactPhone(r.Context(), user.ID, req.TariffID, req.Provider, s.cfg.PaymentPendingTTL, contactPhone)
 	} else {
-		payment, err = s.store.CreatePayment(r.Context(), user.ID, strings.ToUpper(req.TariffCode), req.Provider, s.cfg.PaymentPendingTTL)
+		payment, created, err = s.store.CreatePaymentWithContactPhone(r.Context(), user.ID, strings.ToUpper(req.TariffCode), req.Provider, s.cfg.PaymentPendingTTL, contactPhone)
 	}
 	if mapRepoError(w, err) {
 		return
+	}
+	if created {
+		s.notifyPaymentCreated(r.Context(), user, payment)
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"payment": payment,
@@ -131,6 +149,22 @@ func (s *Server) receiptValidationOptions() repository.ReceiptValidationOptions 
 		AmountToleranceKZT:   s.cfg.PaymentAmountToleranceKZT,
 		SubscriptionDays:     s.cfg.SubscriptionDefaultDays,
 	}
+}
+
+func (s *Server) notifyPaymentCreated(ctx context.Context, user repository.User, payment repository.Payment) {
+	if s.bot == nil || user.TelegramID == 0 {
+		return
+	}
+	_ = s.bot.SendMessage(ctx, user.TelegramID, formatPaymentCreatedMessage(payment))
+}
+
+func formatPaymentCreatedMessage(payment repository.Payment) string {
+	title := paymentDisplayTitle(payment)
+	product := "тарифін"
+	if payment.PaymentType == repository.PaymentTypePremiumCourse {
+		product = "курсын"
+	}
+	return fmt.Sprintf("Сіз «%s» %s таңдадыңыз ✅\n\nТөлем сомасы: %d ₸\n\nKaspi арқылы төлем жасағаннан кейін PDF-чекті Telegram ботқа жіберіңіз.\nKaspi қосымшасында чекті ашып, «Бөлісу» батырмасы арқылы PDF ретінде осы ботқа жіберіңіз.\n\nТөлем тексерілгеннен кейін доступ автоматты түрде ашылады.", title, product, payment.AmountKZT)
 }
 
 func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Request) {
@@ -217,8 +251,7 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 		if errors.Is(err, repository.ErrReceiptDuplicate) {
 			if s.bot != nil {
 				for _, adminID := range s.cfg.AdminIDs {
-					text := fmt.Sprintf("Қайталанған түбіртек әрекеті\nТөлем: %s\nҚолданушы: %s @%s\nТүбіртек: %s", updated.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, receipt.ID)
-					_ = s.bot.SendMessage(r.Context(), adminID, text)
+					_ = s.bot.SendMessage(r.Context(), adminID, formatReceiptAdminMessage("Қайталанған чек әрекеті", user, updated, receipt))
 				}
 			}
 			writeError(w, http.StatusConflict, "duplicate receipt")
@@ -242,8 +275,7 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 			_ = s.bot.SendMessage(r.Context(), user.TelegramID, formatPaymentApprovedMessage(user.Language, updated))
 		}
 		for _, adminID := range s.cfg.AdminIDs {
-			text := fmt.Sprintf("Төлем түбіртегі өңделді\nТөлем: %s\nҚолданушы: %s @%s\nСома: %d KZT\nТөлем статусы: %s\nТүбіртек: %s\nСебеп: %s", updated.ID, strings.TrimSpace(user.FirstName+" "+user.LastName), user.Username, updated.AmountKZT, updated.Status, receipt.ValidationStatus, strings.Join(receipt.ValidationErrors, ", "))
-			_ = s.bot.SendMessage(r.Context(), adminID, text)
+			_ = s.bot.SendMessage(r.Context(), adminID, formatReceiptAdminMessage("Төлем чегі өңделді", user, updated, receipt))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"payment": updated, "receipt": receipt})
@@ -607,15 +639,33 @@ func (s *Server) handleCreatePremiumCoursePayment(w http.ResponseWriter, r *http
 		return
 	}
 	var req struct {
-		Provider string `json:"provider"`
+		Provider     string `json:"provider"`
+		ContactPhone string `json:"contact_phone"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	payment, err := s.store.CreatePremiumCoursePayment(r.Context(), user.ID, courseID, req.Provider, s.cfg.PaymentPendingTTL)
+	meta, accepted, err := s.hasAcceptedLatestLegalAgreement(r, user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "legal document unavailable")
+		return
+	}
+	if !accepted {
+		writeLegalAgreementRequired(w, meta)
+		return
+	}
+	contactPhone := repository.NormalizeContactPhone(firstNonEmpty(req.ContactPhone, user.Phone))
+	if contactPhone == "" {
+		writeError(w, http.StatusBadRequest, "contact phone is required")
+		return
+	}
+	payment, created, err := s.store.CreatePremiumCoursePaymentWithContactPhone(r.Context(), user.ID, courseID, req.Provider, s.cfg.PaymentPendingTTL, contactPhone)
 	if mapRepoError(w, err) {
 		return
+	}
+	if created {
+		s.notifyPaymentCreated(r.Context(), user, payment)
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"payment": payment,

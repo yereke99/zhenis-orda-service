@@ -79,6 +79,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/platform", s.withMiniAppAuth(http.HandlerFunc(s.handlePlatform)))
 	mux.Handle("POST /api/diagnostics", s.withMiniAppAuth(http.HandlerFunc(s.handleDiagnostics)))
 	mux.Handle("GET /api/tariffs", s.withMiniAppAuth(http.HandlerFunc(s.handleTariffs)))
+	mux.Handle("GET /api/legal/agreement-status", s.withMiniAppAuth(http.HandlerFunc(s.handleLegalAgreementStatus)))
+	mux.Handle("GET /api/legal/document", s.withMiniAppAuth(http.HandlerFunc(s.handleLegalDocument)))
+	mux.Handle("POST /api/legal/accept", s.withMiniAppAuth(http.HandlerFunc(s.handleAcceptLegalAgreement)))
 	mux.Handle("POST /api/payments", s.withMiniAppAuth(http.HandlerFunc(s.handleCreatePayment)))
 	mux.Handle("GET /api/payments/{id}", s.withMiniAppAuth(http.HandlerFunc(s.handlePayment)))
 	mux.Handle("POST /api/payments/{id}/receipt", s.withMiniAppAuth(http.HandlerFunc(s.handlePaymentReceiptUpload)))
@@ -530,11 +533,79 @@ func formatRejectMessage(language, comment string) string {
 
 func formatPaymentApprovedMessage(language string, payment repository.Payment) string {
 	if payment.PaymentType == repository.PaymentTypePremiumCourse {
-		title := strings.TrimSpace(payment.PremiumCourseTitle)
-		if title == "" {
-			title = "Premium курс"
-		}
-		return fmt.Sprintf("Premium курс қолжетімділігі ашылды: %s", title)
+		return fmt.Sprintf("Төлеміңіз сәтті тексерілді ✅\n\n«%s» курсы ашылды.\nЕнді Mini App ішінен сабақтарды бастай аласыз.", paymentDisplayTitle(payment))
 	}
-	return i18n.T(language, "payment_approved")
+	return fmt.Sprintf("Төлеміңіз сәтті тексерілді ✅\n\n«%s» тарифі ашылды.\nЕнді Mini App ішінен сабақтарды бастай аласыз.", paymentDisplayTitle(payment))
+}
+
+func paymentDisplayTitle(payment repository.Payment) string {
+	if payment.PaymentType == repository.PaymentTypePremiumCourse {
+		if title := strings.TrimSpace(payment.PremiumCourseTitle); title != "" {
+			return title
+		}
+		if slug := strings.TrimSpace(payment.PremiumCourseSlug); slug != "" {
+			return slug
+		}
+		return "Premium курс"
+	}
+	if title := strings.TrimSpace(payment.TariffTitle); title != "" {
+		return title
+	}
+	if code := strings.TrimSpace(payment.TariffCode); code != "" {
+		return code
+	}
+	return "Тариф"
+}
+
+func formatReceiptAdminMessage(title string, user repository.User, payment repository.Payment, receipt repository.Receipt) string {
+	fullName := strings.TrimSpace(user.FirstName + " " + user.LastName)
+	if fullName == "" {
+		fullName = "—"
+	}
+	username := strings.TrimSpace(user.Username)
+	if username == "" {
+		username = "—"
+	} else if !strings.HasPrefix(username, "@") {
+		username = "@" + username
+	}
+	contactPhone := strings.TrimSpace(payment.ContactPhone)
+	if contactPhone == "" {
+		contactPhone = strings.TrimSpace(user.Phone)
+	}
+	if contactPhone == "" {
+		contactPhone = "—"
+	}
+	reasons := strings.Join(receipt.ValidationErrors, ", ")
+	if reasons == "" {
+		reasons = "—"
+	}
+	identity := firstNonEmpty(receipt.ReceiptTransactionKey, receipt.ParsedTransactionID, receipt.ParsedCheckID, receipt.QRPayloadHash, receipt.FileHash)
+	if identity == "" {
+		identity = "—"
+	}
+	return fmt.Sprintf("%s\nPayment ID: %s\nUser: %s %s\nTelegram ID: %d\nContact phone: %s\nProduct: %s\nExpected amount: %d KZT\nDetected amount: %s\nDetected BIN/IIN: %s\nReceipt identity/hash: %s\nValidation: %s\nReason: %s\nReceipt ID: %s\nPayment status: %s\nTimestamp: %s",
+		title,
+		payment.ID,
+		fullName,
+		username,
+		user.TelegramID,
+		contactPhone,
+		paymentDisplayTitle(payment),
+		payment.AmountKZT,
+		receiptAmountText(receipt),
+		firstNonEmpty(receipt.ParsedRecipientBIN, "—"),
+		identity,
+		firstNonEmpty(receipt.ValidationStatus, "not_stored"),
+		reasons,
+		firstNonEmpty(receipt.ID, "—"),
+		payment.Status,
+		time.Now().UTC().Format(time.RFC3339),
+	)
+}
+
+func receiptAmountText(receipt repository.Receipt) string {
+	if receipt.ParsedAmountKZT == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%d KZT", *receipt.ParsedAmountKZT)
 }

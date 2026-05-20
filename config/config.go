@@ -54,6 +54,10 @@ var defaultAdminIDs = []int64{800703982}
 
 func Load() (Config, error) {
 	uploadDir := getEnv("UPLOAD_DIR", "uploads")
+	recipientBIN := strings.TrimSpace(os.Getenv("PAYMENT_RECIPIENT_BIN"))
+	if recipientBIN == "" {
+		recipientBIN = getEnv("PAYMENT_COMPANY_BIN", "830520499025")
+	}
 	cfg := Config{
 		Token:                     "8146044709:AAGljvxX5uoj1TkYcAA05XKkhgmOffHadtY",
 		Port:                      getEnv("PORT", "8088"),
@@ -75,8 +79,8 @@ func Load() (Config, error) {
 		KaspiQRImageURL:           os.Getenv("KASPI_QR_IMAGE_URL"),
 		HalykPaymentURL:           os.Getenv("HALYK_PAYMENT_URL"),
 		BankCardPaymentURL:        os.Getenv("BANK_CARD_PAYMENT_URL"),
-		PaymentRecipientBIN:       digitsOnly(getEnv("PAYMENT_RECIPIENT_BIN", "830520499025")),
-		PaymentAmountToleranceKZT: getEnvInt("PAYMENT_AMOUNT_TOLERANCE_KZT", 0),
+		PaymentRecipientBIN:       digitsOnly(recipientBIN),
+		PaymentAmountToleranceKZT: getEnvInt("PAYMENT_AMOUNT_TOLERANCE_KZT", 500),
 		SubscriptionDefaultDays:   getEnvInt("SUBSCRIPTION_DEFAULT_DAYS", 30),
 		DisableTelegramBot:        getEnvBool("DISABLE_TELEGRAM_BOT", false),
 		MaxReceiptBytes:           int64(getEnvInt("MAX_RECEIPT_BYTES", 10*1024*1024)),

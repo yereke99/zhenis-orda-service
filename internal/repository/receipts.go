@@ -227,14 +227,6 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 		if paymentID != "" {
 			query += ` AND p.id = ?`
 			args = append(args, paymentID)
-		} else {
-			ambiguous, err := hasAmbiguousPendingPaymentTypes(ctx, tx, userID)
-			if err != nil {
-				return err
-			}
-			if ambiguous {
-				return ErrAmbiguousPayment
-			}
 		}
 		query += ` ORDER BY p.created_at DESC LIMIT 1;`
 		found, err := scanPaymentRow(tx.QueryRowContext(ctx, query, args...))

@@ -611,21 +611,7 @@ func receiptHasValidationError(receipt repository.Receipt, code string) bool {
 
 func (b *TelegramBot) notifyReceiptAdmins(ctx context.Context, user repository.User, payment repository.Payment, receipt repository.Receipt, title string) {
 	for _, adminID := range b.adminIDs {
-		status := receipt.ValidationStatus
-		if status == "" {
-			status = "not_stored"
-		}
-		text := fmt.Sprintf("%s\nPayment #%s\nUser: %s @%s\nAmount: %d KZT\nProvider: %s\nReceipt status: %s\nReason: %s",
-			title,
-			payment.ID,
-			strings.TrimSpace(user.FirstName+" "+user.LastName),
-			user.Username,
-			payment.AmountKZT,
-			payment.Provider,
-			status,
-			strings.Join(receipt.ValidationErrors, ", "),
-		)
-		_ = b.SendMessage(ctx, adminID, text)
+		_ = b.SendMessage(ctx, adminID, formatReceiptAdminMessage(title, user, payment, receipt))
 	}
 }
 

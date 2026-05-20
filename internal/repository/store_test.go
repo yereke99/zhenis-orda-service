@@ -2,6 +2,7 @@ package repository_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,6 +53,22 @@ func approveBasic(t *testing.T, ctx context.Context, store *repository.Store, us
 		t.Fatal(err)
 	}
 	return approved
+}
+
+func firstLessonIDForLevel(t *testing.T, ctx context.Context, store *repository.Store, levelNumber int) string {
+	t.Helper()
+	var lessonID string
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT l.id
+		FROM lessons l
+		JOIN levels lv ON lv.id = l.level_id
+		WHERE lv.number = ?
+		ORDER BY l.sort_order ASC
+		LIMIT 1
+	`, levelNumber).Scan(&lessonID); err != nil {
+		t.Fatal(err)
+	}
+	return lessonID
 }
 
 func TestReferralRegistration(t *testing.T) {
@@ -175,6 +192,46 @@ func TestTestPassFailAndRetry(t *testing.T) {
 	}
 	if !attempt.Passed {
 		t.Fatal("retry with correct answers should pass")
+	}
+}
+
+func TestTestPassCoinsAreIdempotent(t *testing.T) {
+	store, ctx := newTestStore(t)
+	user := registerUser(t, ctx, store, 4101, "")
+	approveBasic(t, ctx, store, user.ID)
+
+	test, err := store.GetTestByLevel(ctx, user.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers := map[string]string{}
+	for _, question := range test.Questions {
+		answers[question.ID] = question.Options[0].ID
+	}
+	for i := 0; i < 2; i++ {
+		attempt, _, err := store.SubmitTest(ctx, user.ID, 1, answers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !attempt.Passed {
+			t.Fatalf("attempt %d should pass: %#v", i+1, attempt)
+		}
+	}
+	balance, err := store.CoinBalance(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if balance != 20 {
+		t.Fatalf("expected one test coin grant, got %d", balance)
+	}
+}
+
+func TestSubmitTestRequiresActiveSubscription(t *testing.T) {
+	store, ctx := newTestStore(t)
+	user := registerUser(t, ctx, store, 4201, "")
+
+	if _, _, err := store.SubmitTest(ctx, user.ID, 1, map[string]string{}); !errors.Is(err, repository.ErrForbidden) {
+		t.Fatalf("expected forbidden without active subscription, got %v", err)
 	}
 }
 
@@ -337,19 +394,124 @@ func TestFinancialIQResultPersists(t *testing.T) {
 	}
 }
 
-func TestAdminTestCRUDWithQuestions(t *testing.T) {
+func TestAdminTestValidationRequiresExactlyOneCorrectAnswer(t *testing.T) {
 	store, ctx := newTestStore(t)
-	var lessonID string
-	if err := store.DB().QueryRowContext(ctx, `
-		SELECT l.id
-		FROM lessons l
-		JOIN levels lv ON lv.id = l.level_id
-		WHERE lv.number = 2
-		ORDER BY l.sort_order ASC
-		LIMIT 1
-	`).Scan(&lessonID); err != nil {
+	lessonID := firstLessonIDForLevel(t, ctx, store, 2)
+
+	base := func(options []repository.TestOption) repository.Test {
+		return repository.Test{
+			LessonID:    lessonID,
+			Title:       "Дұрыс жауап валидациясы",
+			PassPercent: 70,
+			IsActive:    true,
+			Questions: []repository.TestQuestion{{
+				QuestionTextKK: "Қай жауап дұрыс?",
+				QuestionTextRU: "Какой ответ правильный?",
+				Options:        options,
+			}},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		options []repository.TestOption
+	}{
+		{
+			name: "zero correct answers",
+			options: []repository.TestOption{
+				{OptionTextKK: "Бірінші", OptionTextRU: "Первый"},
+				{OptionTextKK: "Екінші", OptionTextRU: "Второй"},
+			},
+		},
+		{
+			name: "two correct answers",
+			options: []repository.TestOption{
+				{OptionTextKK: "Бірінші", OptionTextRU: "Первый", IsCorrect: true},
+				{OptionTextKK: "Екінші", OptionTextRU: "Второй", IsCorrect: true},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.UpsertTest(ctx, base(tc.options)); !errors.Is(err, repository.ErrInvalidState) {
+				t.Fatalf("expected invalid state, got %v", err)
+			}
+		})
+	}
+}
+
+func TestAdminTestCorrectAnswerPersistsOnEditAndReorder(t *testing.T) {
+	store, ctx := newTestStore(t)
+	lessonID := firstLessonIDForLevel(t, ctx, store, 2)
+
+	test, err := store.UpsertTest(ctx, repository.Test{
+		LessonID:    lessonID,
+		Title:       "Реттеу тесті",
+		PassPercent: 80,
+		IsActive:    true,
+		Questions: []repository.TestQuestion{{
+			QuestionTextKK: "Қайсысы дұрыс?",
+			QuestionTextRU: "Что верно?",
+			Options: []repository.TestOption{
+				{OptionTextKK: "Қате", OptionTextRU: "Неверно", SortOrder: 1},
+				{OptionTextKK: "Дұрыс", OptionTextRU: "Верно", IsCorrect: true, SortOrder: 2},
+			},
+		}},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+
+	tests, err := store.ListAdminTests(ctx, repository.AdminTestFilter{Lesson: lessonID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tests) != 1 || correctOptionText(tests[0]) != "Дұрыс" {
+		t.Fatalf("expected saved correct answer, got %#v", tests)
+	}
+
+	if _, err := store.UpsertTest(ctx, repository.Test{
+		ID:          test.ID,
+		LessonID:    lessonID,
+		Title:       "Реттелген тест",
+		PassPercent: 80,
+		IsActive:    true,
+		Questions: []repository.TestQuestion{{
+			QuestionTextKK: "Қайсысы дұрыс?",
+			QuestionTextRU: "Что верно?",
+			Options: []repository.TestOption{
+				{OptionTextKK: "Дұрыс", OptionTextRU: "Верно", IsCorrect: true, SortOrder: 1},
+				{OptionTextKK: "Қате", OptionTextRU: "Неверно", SortOrder: 2},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests, err = store.ListAdminTests(ctx, repository.AdminTestFilter{Lesson: lessonID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tests) != 1 || correctOptionText(tests[0]) != "Дұрыс" || tests[0].Questions[0].Options[0].OptionTextKK != "Дұрыс" {
+		t.Fatalf("expected reordered correct answer to stay on same row, got %#v", tests)
+	}
+}
+
+func correctOptionText(test repository.Test) string {
+	for _, question := range test.Questions {
+		for _, option := range question.Options {
+			if option.IsCorrect {
+				return option.OptionTextKK
+			}
+		}
+	}
+	return ""
+}
+
+func TestAdminTestCRUDWithQuestions(t *testing.T) {
+	store, ctx := newTestStore(t)
+	lessonID := firstLessonIDForLevel(t, ctx, store, 2)
 	test, err := store.UpsertTest(ctx, repository.Test{
 		LessonID:    lessonID,
 		Title:       "Қаржы тесті",

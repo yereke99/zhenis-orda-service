@@ -13,7 +13,16 @@ func (s *Store) CreatePayment(ctx context.Context, userID string, tariffCode, pr
 	if err != nil {
 		return Payment{}, err
 	}
-	return s.createPaymentForTariff(ctx, userID, tariff, provider, ttl)
+	payment, _, err := s.createPaymentForTariff(ctx, userID, tariff, provider, ttl, "")
+	return payment, err
+}
+
+func (s *Store) CreatePaymentWithContactPhone(ctx context.Context, userID string, tariffCode, provider string, ttl time.Duration, contactPhone string) (Payment, bool, error) {
+	tariff, err := s.GetTariffByCode(ctx, tariffCode)
+	if err != nil {
+		return Payment{}, false, err
+	}
+	return s.createPaymentForTariff(ctx, userID, tariff, provider, ttl, contactPhone)
 }
 
 func (s *Store) CreatePaymentByTariffID(ctx context.Context, userID string, tariffID, provider string, ttl time.Duration) (Payment, error) {
@@ -21,42 +30,160 @@ func (s *Store) CreatePaymentByTariffID(ctx context.Context, userID string, tari
 	if err != nil {
 		return Payment{}, err
 	}
-	return s.createPaymentForTariff(ctx, userID, tariff, provider, ttl)
+	payment, _, err := s.createPaymentForTariff(ctx, userID, tariff, provider, ttl, "")
+	return payment, err
 }
 
-func (s *Store) createPaymentForTariff(ctx context.Context, userID string, tariff Tariff, provider string, ttl time.Duration) (Payment, error) {
+func (s *Store) CreatePaymentByTariffIDWithContactPhone(ctx context.Context, userID string, tariffID, provider string, ttl time.Duration, contactPhone string) (Payment, bool, error) {
+	tariff, err := s.GetTariffByID(ctx, tariffID)
+	if err != nil {
+		return Payment{}, false, err
+	}
+	return s.createPaymentForTariff(ctx, userID, tariff, provider, ttl, contactPhone)
+}
+
+func (s *Store) createPaymentForTariff(ctx context.Context, userID string, tariff Tariff, provider string, ttl time.Duration, contactPhone string) (Payment, bool, error) {
 	if !tariff.IsActive {
-		return Payment{}, ErrInvalidState
+		return Payment{}, false, ErrInvalidState
 	}
 	provider = normalizeProvider(provider)
-	paymentID := newID()
-	expiresAt := nowUTC().Add(ttl)
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO payments(id, user_id, tariff_id, payment_type, amount_kzt, provider, status, expires_at)
-		VALUES (?, ?, ?, 'subscription', ?, ?, 'pending', ?);
-	`, paymentID, userID, tariff.ID, tariff.PriceKZT, provider, expiresAt)
-	if err != nil {
-		return Payment{}, err
+	contactPhone = NormalizeContactPhone(contactPhone)
+	if ttl <= 0 {
+		ttl = time.Hour
 	}
-	return s.GetPayment(ctx, paymentID)
+	expiresAt := nowUTC().Add(ttl)
+	created := false
+	var payment Payment
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		if contactPhone != "" {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE users
+				SET phone = ?, updated_at = CURRENT_TIMESTAMP
+				WHERE id = ?;
+			`, contactPhone, userID); err != nil {
+				return err
+			}
+		}
+		var existingID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT id
+			FROM payments
+			WHERE user_id = ? AND payment_type = 'subscription' AND tariff_id = ?
+				AND status = 'pending' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+			ORDER BY created_at DESC
+			LIMIT 1;
+		`, userID, tariff.ID).Scan(&existingID)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if err == nil {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE payments
+				SET amount_kzt = ?, provider = ?, contact_phone = COALESCE(NULLIF(?, ''), contact_phone),
+					expires_at = ?, updated_at = CURRENT_TIMESTAMP
+				WHERE id = ?;
+			`, tariff.PriceKZT, provider, contactPhone, expiresAt, existingID); err != nil {
+				return err
+			}
+			found, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, existingID))
+			if err != nil {
+				return err
+			}
+			payment = found
+			return nil
+		}
+		paymentID := newID()
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO payments(id, user_id, tariff_id, payment_type, amount_kzt, provider, status, contact_phone, expires_at)
+			VALUES (?, ?, ?, 'subscription', ?, ?, 'pending', ?, ?);
+		`, paymentID, userID, tariff.ID, tariff.PriceKZT, provider, nullableString(contactPhone), expiresAt)
+		if err != nil {
+			return err
+		}
+		created = true
+		found, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, paymentID))
+		if err != nil {
+			return err
+		}
+		payment = found
+		return nil
+	})
+	return payment, created, err
 }
 
 func (s *Store) CreatePremiumCoursePayment(ctx context.Context, userID, courseID, provider string, ttl time.Duration) (Payment, error) {
+	payment, _, err := s.CreatePremiumCoursePaymentWithContactPhone(ctx, userID, courseID, provider, ttl, "")
+	return payment, err
+}
+
+func (s *Store) CreatePremiumCoursePaymentWithContactPhone(ctx context.Context, userID, courseID, provider string, ttl time.Duration, contactPhone string) (Payment, bool, error) {
 	course, err := s.GetPremiumCourse(ctx, courseID, true)
 	if err != nil {
-		return Payment{}, err
+		return Payment{}, false, err
 	}
 	provider = normalizeProvider(provider)
-	paymentID := newID()
-	expiresAt := nowUTC().Add(ttl)
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO payments(id, user_id, payment_type, premium_course_id, amount_kzt, provider, status, expires_at)
-		VALUES (?, ?, 'premium_course', ?, ?, ?, 'pending', ?);
-	`, paymentID, userID, course.ID, course.PriceKZT, provider, expiresAt)
-	if err != nil {
-		return Payment{}, err
+	contactPhone = NormalizeContactPhone(contactPhone)
+	if ttl <= 0 {
+		ttl = time.Hour
 	}
-	return s.GetPayment(ctx, paymentID)
+	expiresAt := nowUTC().Add(ttl)
+	created := false
+	var payment Payment
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		if contactPhone != "" {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE users
+				SET phone = ?, updated_at = CURRENT_TIMESTAMP
+				WHERE id = ?;
+			`, contactPhone, userID); err != nil {
+				return err
+			}
+		}
+		var existingID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT id
+			FROM payments
+			WHERE user_id = ? AND payment_type = 'premium_course' AND premium_course_id = ?
+				AND status = 'pending' AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+			ORDER BY created_at DESC
+			LIMIT 1;
+		`, userID, course.ID).Scan(&existingID)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if err == nil {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE payments
+				SET amount_kzt = ?, provider = ?, contact_phone = COALESCE(NULLIF(?, ''), contact_phone),
+					expires_at = ?, updated_at = CURRENT_TIMESTAMP
+				WHERE id = ?;
+			`, course.PriceKZT, provider, contactPhone, expiresAt, existingID); err != nil {
+				return err
+			}
+			found, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, existingID))
+			if err != nil {
+				return err
+			}
+			payment = found
+			return nil
+		}
+		paymentID := newID()
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO payments(id, user_id, payment_type, premium_course_id, amount_kzt, provider, status, contact_phone, expires_at)
+			VALUES (?, ?, 'premium_course', ?, ?, ?, 'pending', ?, ?);
+		`, paymentID, userID, course.ID, course.PriceKZT, provider, nullableString(contactPhone), expiresAt)
+		if err != nil {
+			return err
+		}
+		created = true
+		found, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, paymentID))
+		if err != nil {
+			return err
+		}
+		payment = found
+		return nil
+	})
+	return payment, created, err
 }
 
 func (s *Store) LatestPendingPayment(ctx context.Context, userID string) (Payment, error) {
@@ -396,9 +523,10 @@ func (s *Store) extendSubscriptionTx(ctx context.Context, tx *sql.Tx, userID str
 }
 
 const paymentSelectSQL = `
-	SELECT p.id, p.user_id, COALESCE(p.tariff_id, ''), COALESCE(t.code, ''), p.payment_type, p.premium_course_id,
+	SELECT p.id, p.user_id, COALESCE(p.tariff_id, ''), COALESCE(t.code, ''), COALESCE(t.title, ''),
+		p.payment_type, p.premium_course_id,
 		COALESCE(pc.slug, ''), COALESCE(pc.title, ''), p.subscription_id, p.amount_kzt, p.provider, p.status,
-		COALESCE(p.receipt_file_path, ''), COALESCE(p.admin_comment, ''), p.approved_by_admin_id,
+		COALESCE(p.contact_phone, ''), COALESCE(p.receipt_file_path, ''), COALESCE(p.admin_comment, ''), p.approved_by_admin_id,
 		p.approved_at, p.expires_at, p.created_at, p.updated_at
 	FROM payments p
 	LEFT JOIN tariffs t ON t.id = p.tariff_id
@@ -410,7 +538,7 @@ func scanPaymentRow(row interface{ Scan(dest ...any) error }) (Payment, error) {
 	var premiumCourseID sql.NullString
 	var approvedBy sql.NullInt64
 	var approvedAt, expiresAt sql.NullTime
-	if err := row.Scan(&payment.ID, &payment.UserID, &payment.TariffID, &payment.TariffCode, &payment.PaymentType, &premiumCourseID, &payment.PremiumCourseSlug, &payment.PremiumCourseTitle, &subscriptionID, &payment.AmountKZT, &payment.Provider, &payment.Status, &payment.ReceiptFilePath, &payment.AdminComment, &approvedBy, &approvedAt, &expiresAt, &payment.CreatedAt, &payment.UpdatedAt); err != nil {
+	if err := row.Scan(&payment.ID, &payment.UserID, &payment.TariffID, &payment.TariffCode, &payment.TariffTitle, &payment.PaymentType, &premiumCourseID, &payment.PremiumCourseSlug, &payment.PremiumCourseTitle, &subscriptionID, &payment.AmountKZT, &payment.Provider, &payment.Status, &payment.ContactPhone, &payment.ReceiptFilePath, &payment.AdminComment, &approvedBy, &approvedAt, &expiresAt, &payment.CreatedAt, &payment.UpdatedAt); err != nil {
 		return Payment{}, rowErr(err)
 	}
 	if payment.PaymentType == "" {
@@ -422,6 +550,33 @@ func scanPaymentRow(row interface{ Scan(dest ...any) error }) (Payment, error) {
 	payment.ApprovedAt = scanTime(approvedAt)
 	payment.ExpiresAt = scanTime(expiresAt)
 	return payment, nil
+}
+
+func NormalizeContactPhone(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var digits strings.Builder
+	for _, r := range raw {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	value := digits.String()
+	if value == "" {
+		return ""
+	}
+	if len(value) < 6 {
+		return ""
+	}
+	if strings.HasPrefix(value, "8") && len(value) == 11 {
+		value = "7" + value[1:]
+	}
+	if len(value) >= 10 && len(value) <= 15 {
+		return "+" + value
+	}
+	return value
 }
 
 func (s *Store) ManualAddSubscriptionDays(ctx context.Context, userID string, days int, tariffCode string) error {

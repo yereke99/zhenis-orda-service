@@ -68,6 +68,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := addTariffColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := addContactPhoneColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := addLevelTelegramColumns(ctx, db); err != nil {
 		return err
 	}
@@ -84,6 +87,12 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if err := migrateLessonOwnedTests(ctx, db); err != nil {
+		return err
+	}
+	if err := addTestCorrectnessColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := addLegalAgreementTables(ctx, db); err != nil {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, indexesV1); err != nil {
@@ -115,6 +124,13 @@ func addTariffColumns(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func addContactPhoneColumns(ctx context.Context, db *sql.DB) error {
+	if err := addColumnIfMissing(ctx, db, "users", "phone", "TEXT"); err != nil {
+		return err
+	}
+	return addColumnIfMissing(ctx, db, "payments", "contact_phone", "TEXT")
 }
 
 func addLevelTelegramColumns(ctx context.Context, db *sql.DB) error {
@@ -305,6 +321,7 @@ func migratePaymentsForPremiumCourses(ctx context.Context, db *sql.DB) error {
 			amount_kzt INTEGER NOT NULL,
 			provider TEXT NOT NULL CHECK(provider IN ('kaspi_qr','kaspi_pay','halyk','bank_card')),
 			status TEXT NOT NULL CHECK(status IN ('pending','uploaded_receipt','approved','rejected','expired','cancelled')),
+			contact_phone TEXT,
 			receipt_file_path TEXT,
 			admin_comment TEXT,
 			approved_by_admin_id INTEGER,
@@ -319,10 +336,10 @@ func migratePaymentsForPremiumCourses(ctx context.Context, db *sql.DB) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO payments(
 			id, user_id, tariff_id, payment_type, premium_course_id, subscription_id, amount_kzt, provider, status,
-			receipt_file_path, admin_comment, approved_by_admin_id, approved_at, expires_at, created_at, updated_at
+			contact_phone, receipt_file_path, admin_comment, approved_by_admin_id, approved_at, expires_at, created_at, updated_at
 		)
 		SELECT id, user_id, tariff_id, COALESCE(payment_type, 'subscription'), premium_course_id, subscription_id,
-			amount_kzt, provider, status, receipt_file_path, admin_comment, approved_by_admin_id,
+			amount_kzt, provider, status, contact_phone, receipt_file_path, admin_comment, approved_by_admin_id,
 			approved_at, expires_at, created_at, updated_at
 		FROM payments_legacy_premium;
 	`); err != nil {
@@ -446,6 +463,36 @@ func migrateLessonOwnedTests(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func addTestCorrectnessColumns(ctx context.Context, db *sql.DB) error {
+	if err := addColumnIfMissing(ctx, db, "test_options", "is_correct", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return addColumnIfMissing(ctx, db, "test_answers", "is_correct", "INTEGER NOT NULL DEFAULT 0")
+}
+
+func addLegalAgreementTables(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS user_legal_agreements (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			telegram_id INTEGER NOT NULL,
+			document_type TEXT NOT NULL,
+			document_version TEXT NOT NULL,
+			document_language TEXT NOT NULL,
+			document_hash TEXT NOT NULL,
+			accepted_at DATETIME NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_user_legal_agreements_telegram ON user_legal_agreements(telegram_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_user_legal_agreements_unique ON user_legal_agreements(user_id, document_type, document_version);
+		INSERT OR IGNORE INTO schema_migrations(version, name) VALUES (2, 'user_legal_agreements');
+	`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {

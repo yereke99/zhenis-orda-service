@@ -118,6 +118,46 @@ func TestReceiptAmountFormatsParseAsKZT(t *testing.T) {
 	}
 }
 
+func TestReceiptAmountToleranceAllowsSmallDifference(t *testing.T) {
+	store, ctx := newTestStore(t)
+	user := registerUser(t, ctx, store, 7110, "")
+	payment := createPayment(t, ctx, store, user.ID, "BASIC")
+	path, size := writeReceiptPDF(t, validReceiptText("TX-TOLERANCE-1", "9 500", testRecipientBIN))
+	opts := receiptOpts()
+	opts.AmountToleranceKZT = 500
+
+	updated, receipt, err := store.AttachReceiptToPaymentWithValidation(ctx, user.ID, payment.ID, path, "kaspi.pdf", "application/pdf", size, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != repository.PaymentStatusApproved {
+		t.Fatalf("payment status = %s, receipt errors=%v", updated.Status, receipt.ValidationErrors)
+	}
+	if receipt.AmountDifferenceKZT == nil || *receipt.AmountDifferenceKZT != -400 {
+		t.Fatalf("amount diff = %#v", receipt.AmountDifferenceKZT)
+	}
+}
+
+func TestReceiptAmountOutsideToleranceNeedsManualReview(t *testing.T) {
+	store, ctx := newTestStore(t)
+	user := registerUser(t, ctx, store, 7111, "")
+	payment := createPayment(t, ctx, store, user.ID, "BASIC")
+	path, size := writeReceiptPDF(t, validReceiptText("TX-TOLERANCE-2", "8 900", testRecipientBIN))
+	opts := receiptOpts()
+	opts.AmountToleranceKZT = 500
+
+	updated, receipt, err := store.AttachReceiptToPaymentWithValidation(ctx, user.ID, payment.ID, path, "kaspi.pdf", "application/pdf", size, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != repository.PaymentStatusUploadedReceipt {
+		t.Fatalf("payment status = %s", updated.Status)
+	}
+	if receipt.ValidationStatus != repository.ReceiptStatusSuspicious || !hasValidationError(receipt, "amount_mismatch") {
+		t.Fatalf("expected manual review amount mismatch, status=%s errors=%v", receipt.ValidationStatus, receipt.ValidationErrors)
+	}
+}
+
 func TestReceiptValidationBlocksWrongAmountAndRecipient(t *testing.T) {
 	cases := []struct {
 		name      string

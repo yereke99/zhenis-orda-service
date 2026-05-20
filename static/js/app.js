@@ -28,6 +28,7 @@
     selectedPremiumCourseId: null,
     premiumCourseReturnScreen: "dashboard",
     whatsappSalesPhone: "",
+    legalAgreementStatus: null,
     financialIqAnswers: {},
     financialIqResult: null,
     financialIqReturnScreen: "dashboard",
@@ -693,9 +694,9 @@
 	    return `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(message)}`;
 	  }
 
-	  function openExternalLink(url) {
+	  function openExternalLink(url, emptyMessage) {
 	    if (!url) {
-	      toast("WhatsApp нөмірі бапталмаған", "error");
+	      toast(emptyMessage || "Сілтеме бапталмаған", "error");
 	      return;
 	    }
 	    const tg = getTelegram();
@@ -704,6 +705,137 @@
 	      return;
 	    }
 	    window.open(url, "_blank", "noopener");
+	  }
+
+	  function currentUserPhone() {
+	    return compact(state.me && state.me.user && state.me.user.phone);
+	  }
+
+	  function normalizePhoneInput(value) {
+	    return compact(value).replace(/\s+/g, " ");
+	  }
+
+	  function paymentProviderURL(instructions, provider) {
+	    const data = instructions || {};
+	    switch (provider) {
+	      case "kaspi_pay":
+	        return compact(data.kaspi_pay_url);
+	      case "kaspi_qr":
+	        return compact(data.kaspi_pay_url) || compact(data.kaspi_qr_image_url);
+	      case "halyk":
+	        return compact(data.halyk_payment_url);
+	      case "bank_card":
+	        return compact(data.bank_card_url);
+	      default:
+	        return compact(data.kaspi_pay_url);
+	    }
+	  }
+
+	  function openPurchasePhoneSheet(product) {
+	    return new Promise((resolve) => {
+	      const backdrop = document.createElement("div");
+	      backdrop.className = "sheet-backdrop";
+	      const sheet = document.createElement("div");
+	      sheet.className = "purchase-sheet";
+	      const initialPhone = currentUserPhone();
+	      sheet.innerHTML = `
+	        <div class="sheet-handle" aria-hidden="true"></div>
+	        <div class="sheet-head">
+	          <div>
+	            <p class="eyebrow">Төлемге дайындық</p>
+	            <h2>Төлемге дайындық</h2>
+	          </div>
+	          <button class="sheet-close" type="button" aria-label="Жабу">×</button>
+	        </div>
+	        <p class="muted">Тарифті рәсімдеу үшін байланыс нөміріңізді растаңыз.</p>
+	        <p class="sheet-product">${esc(product && product.title ? product.title : "Тариф")} · ${money(product && product.amount)} ₸</p>
+	        <form class="form purchase-phone-form">
+	          <label class="field">
+	            <span>Байланыс нөмірі</span>
+	            <input name="contact_phone" inputmode="tel" autocomplete="tel" placeholder="+7 700 000 00 00" value="${esc(initialPhone)}" required />
+	          </label>
+	          <p class="muted small">Егер бұл нөмір өзекті болмаса, өзгерте аласыз.</p>
+	          <div class="sheet-error" role="alert"></div>
+	          <div class="action-row sheet-actions">
+	            <button class="ghost-btn" data-close-sheet type="button">Жабу</button>
+	            <button class="gold-btn" type="submit">Жалғастыру</button>
+	          </div>
+	        </form>
+	      `;
+	      const close = (value) => {
+	        backdrop.remove();
+	        resolve(value);
+	      };
+	      const input = sheet.querySelector("input[name=contact_phone]");
+	      const errorNode = sheet.querySelector(".sheet-error");
+	      sheet.querySelector(".sheet-close").addEventListener("click", () => close(null));
+	      sheet.querySelector("[data-close-sheet]").addEventListener("click", () => close(null));
+	      sheet.querySelector("form").addEventListener("submit", (event) => {
+	        event.preventDefault();
+	        const phone = normalizePhoneInput(input.value);
+	        const digitCount = (phone.match(/\d/g) || []).length;
+	        if (!phone || digitCount < 6) {
+	          errorNode.textContent = "Байланыс нөмірін жазыңыз.";
+	          input.focus();
+	          return;
+	        }
+	        close(phone);
+	      });
+	      backdrop.addEventListener("click", (event) => {
+	        if (event.target === backdrop) close(null);
+	      });
+	      backdrop.appendChild(sheet);
+	      els.modalRoot.appendChild(backdrop);
+	      setTimeout(() => input.focus(), 80);
+	    });
+	  }
+
+	  function openPaymentInstructionSheet(payment, instructions, provider) {
+	    return new Promise((resolve) => {
+	      const backdrop = document.createElement("div");
+	      backdrop.className = "sheet-backdrop";
+	      const sheet = document.createElement("div");
+	      sheet.className = "purchase-sheet instruction-sheet";
+	      sheet.innerHTML = `
+	        <div class="sheet-handle" aria-hidden="true"></div>
+	        <div class="sheet-head">
+	          <div>
+	            <p class="eyebrow">Төлем нұсқаулығы</p>
+	            <h2>Төлем нұсқаулығы</h2>
+	          </div>
+	          <button class="sheet-close" type="button" aria-label="Жабу">×</button>
+	        </div>
+	        <ol class="instruction-list">
+	          <li>Kaspi арқылы төлем жасаңыз.</li>
+	          <li>Төлемнен кейін PDF-чекті ашыңыз.</li>
+	          <li>«Бөлісу» батырмасын басып, PDF-чекті Telegram ботқа жіберіңіз.</li>
+	          <li>Чек тексерілгеннен кейін курсқа қолжетімділік ашылады.</li>
+	        </ol>
+	        <p class="sheet-note">Маңызды: чек сомасы тариф бағасына сәйкес болуы керек.</p>
+	        <p class="sheet-product">Сома: ${money(payment && payment.amount_kzt)} ₸</p>
+	        <div class="action-row sheet-actions">
+	          <button class="ghost-btn" data-close-sheet type="button">Жабу</button>
+	          <button class="gold-btn" data-pay-kaspi type="button">Kaspi арқылы төлеу</button>
+	        </div>
+	      `;
+	      const close = (value) => {
+	        backdrop.remove();
+	        resolve(value);
+	      };
+	      sheet.querySelector(".sheet-close").addEventListener("click", () => close(false));
+	      sheet.querySelector("[data-close-sheet]").addEventListener("click", () => close(false));
+	      sheet.querySelector("[data-pay-kaspi]").addEventListener("click", () => close(true));
+	      backdrop.addEventListener("click", (event) => {
+	        if (event.target === backdrop) close(false);
+	      });
+	      backdrop.appendChild(sheet);
+	      els.modalRoot.appendChild(backdrop);
+	    }).then((shouldOpen) => {
+	      if (shouldOpen) {
+	        openExternalLink(paymentProviderURL(instructions, provider), "Төлем сілтемесі бапталмаған");
+	      }
+	      return shouldOpen;
+	    });
 	  }
 
 	  function selectedTariff() {
@@ -793,7 +925,8 @@
 		    youtube_url: "YouTube сілтемесі",
 		    youtube_video_id: "YouTube video ID",
 		    youtube_embed_url: "YouTube embed",
-	    amount_kzt: "Сома",
+    amount_kzt: "Сома",
+    contact_phone: "Байланыс нөмірі",
     provider: "Провайдер",
     status: "Статус",
     receipt_file_path: "Түбіртек",
@@ -997,6 +1130,149 @@
       body: container.querySelector(".modal-body"),
       close: () => backdrop.remove(),
     };
+  }
+
+  function isLegalAgreementRequired(error) {
+    return Boolean(error && error.body && error.body.error === "LEGAL_AGREEMENT_REQUIRED");
+  }
+
+  async function runAfterLegalAgreement(action) {
+    const accepted = await ensureLegalAgreementAccepted();
+    if (!accepted) return null;
+    try {
+      return await action();
+    } catch (error) {
+      if (!isLegalAgreementRequired(error)) throw error;
+      const acceptedAfterRetry = await openLegalAgreementModal(error.body || {});
+      if (!acceptedAfterRetry) return null;
+      return action();
+    }
+  }
+
+  async function ensureLegalAgreementAccepted() {
+    const status = await api("/api/legal/agreement-status");
+    state.legalAgreementStatus = status;
+    if (status && status.accepted) return true;
+    return openLegalAgreementModal(status || {});
+  }
+
+  function openLegalAgreementModal(meta) {
+    return new Promise((resolve) => {
+      let currentLanguage = (state.me && state.me.user && state.me.user.language) === "ru" ? "ru" : "kk";
+      let currentDocument = null;
+      let closed = false;
+
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop legal-backdrop";
+      const container = document.createElement("div");
+      container.className = "modal modal-wide legal-modal";
+      container.innerHTML = `
+        <div class="modal-head legal-modal-head">
+          <div>
+            <p class="eyebrow">Келісім</p>
+            <h2>Құпиялық саясаты және оферта / Политика конфиденциальности и оферта</h2>
+          </div>
+          <button class="ghost-btn legal-close-btn" data-legal-close type="button" aria-label="Жабу / Закрыть">×</button>
+        </div>
+        <div class="modal-body legal-modal-body">
+          <div class="legal-language-tabs" role="tablist" aria-label="Document language">
+            <button class="legal-tab" data-legal-lang="kk" type="button">Қазақша</button>
+            <button class="legal-tab" data-legal-lang="ru" type="button">Русский</button>
+          </div>
+          <div class="legal-doc-shell" data-legal-doc>
+            <div class="legal-loading">Құжат жүктелуде...</div>
+          </div>
+        </div>
+        <div class="modal-foot legal-modal-foot">
+          <p class="legal-confirm-text" data-legal-confirm-text>Құжатты оқып, шарттармен келісемін</p>
+          <button class="ghost-btn" data-legal-close type="button">Жабу / Закрыть</button>
+          <button class="gold-btn" data-legal-accept type="button"><span class="btn-label">Келісемін</span><span class="btn-spinner"></span></button>
+        </div>
+      `;
+      backdrop.appendChild(container);
+      els.modalRoot.appendChild(backdrop);
+
+      const docNode = container.querySelector("[data-legal-doc]");
+      const acceptBtn = container.querySelector("[data-legal-accept]");
+      const confirmText = container.querySelector("[data-legal-confirm-text]");
+      const close = (value) => {
+        if (closed) return;
+        closed = true;
+        backdrop.remove();
+        resolve(value);
+      };
+      const setBusy = (busy) => {
+        backdrop.dataset.busy = busy ? "1" : "";
+        acceptBtn.disabled = Boolean(busy);
+        container.querySelectorAll("[data-legal-close], [data-legal-lang]").forEach((button) => {
+          button.disabled = Boolean(busy);
+        });
+      };
+      const updateCopy = () => {
+        acceptBtn.querySelector(".btn-label").textContent = currentLanguage === "ru" ? "Согласен" : "Келісемін";
+        confirmText.textContent = currentLanguage === "ru" ? "Я прочитал документ и принимаю условия" : "Құжатты оқып, шарттармен келісемін";
+      };
+      const updateTabs = () => {
+        container.querySelectorAll("[data-legal-lang]").forEach((button) => {
+          button.classList.toggle("active", button.dataset.legalLang === currentLanguage);
+        });
+      };
+      const loadDocument = async () => {
+        currentDocument = null;
+        updateTabs();
+        updateCopy();
+        acceptBtn.disabled = true;
+        docNode.innerHTML = `<div class="legal-loading">${currentLanguage === "ru" ? "Документ загружается..." : "Құжат жүктелуде..."}</div>`;
+        try {
+          const document = await api(`/api/legal/document?lang=${currentLanguage}`);
+          currentDocument = document;
+          docNode.innerHTML = `
+            <article class="legal-doc-content">
+              <h3>${esc(document.title || "")}</h3>
+              ${document.content_html || ""}
+            </article>
+          `;
+          acceptBtn.disabled = false;
+        } catch (error) {
+          docNode.innerHTML = `<div class="form-error">${esc(error.message || "Құжатты жүктеу мүмкін болмады")}</div>`;
+        }
+      };
+
+      container.querySelectorAll("[data-legal-close]").forEach((button) => button.addEventListener("click", () => close(false)));
+      container.querySelectorAll("[data-legal-lang]").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (button.dataset.legalLang === currentLanguage || backdrop.dataset.busy === "1") return;
+          currentLanguage = button.dataset.legalLang;
+          loadDocument();
+        });
+      });
+      acceptBtn.addEventListener("click", async () => {
+        if (!currentDocument || buttonIsLoading(acceptBtn)) return;
+        setButtonLoading(acceptBtn, true);
+        setBusy(true);
+        try {
+          const accepted = await api("/api/legal/accept", {
+            method: "POST",
+            body: JSON.stringify({
+              language: currentLanguage,
+              document_type: currentDocument.document_type || meta.document_type || "privacy_policy_offer",
+              document_version: currentDocument.document_version || meta.document_version,
+            }),
+          });
+          state.legalAgreementStatus = accepted;
+          toast(currentLanguage === "ru" ? "Согласие сохранено" : "Келісім сақталды", "success");
+          close(true);
+        } catch (error) {
+          toast(error.message || (currentLanguage === "ru" ? "Не удалось сохранить согласие" : "Келісімді сақтау мүмкін болмады"), "error");
+          setBusy(false);
+          setButtonLoading(acceptBtn, false);
+        }
+      });
+      backdrop.addEventListener("click", (event) => {
+        if (event.target === backdrop && backdrop.dataset.busy !== "1") close(false);
+      });
+      loadDocument();
+    });
   }
 
   /* ===========================================================
@@ -1945,7 +2221,7 @@
 	          <div class="card premium-locked-card">
 	            <p class="muted">Бұл курс бөлек ақылы өнім. Қолжетімділік алу үшін төлем жасаңыз немесе менеджерге жазыңыз.</p>
 	            <div class="grid two tight">
-	              <button class="gold-btn" id="buyPremiumCourse" type="button">Төлем жасау</button>
+	              <button class="gold-btn" id="buyPremiumCourse" type="button">Курсты сатып алу</button>
 	              <button class="ghost-btn" id="contactPremiumManager" type="button">Менеджерге жазу</button>
 	              <button class="ghost-btn" id="backPremiumCourse2" type="button">Артқа</button>
 	            </div>
@@ -2056,14 +2332,14 @@
 	          <p class="eyebrow">Premium курс төлемі</p>
 	          <h1>${esc(course.title)}</h1>
 	          <div class="price">${money(course.price_kzt)} <small>₸</small></div>
-	          <p class="muted">Бұл төлем жазылымды ұзартпайды. Төлем мақұлданғаннан кейін осы premium курс бөлек ашылады.</p>
+	          <p class="muted">Бұл төлем жазылымды ұзартпайды. Kaspi арқылы төлем жасағаннан кейін PDF-чекті Telegram ботқа жіберіңіз.</p>
 	        </div>
 	        <form id="premiumPaymentForm" class="form">
 	          <label class="field">
 	            <span>Төлем провайдері</span>
 	            <select name="provider">${providers.map((provider) => `<option value="${esc(provider.code)}">${esc(provider.title)}</option>`).join("")}</select>
 	          </label>
-	          <button class="gold-btn lg" type="submit"><span class="btn-label">Төлем жасау</span><span class="btn-spinner"></span></button>
+	          <button class="gold-btn lg" type="submit"><span class="btn-label">Курсты сатып алу</span><span class="btn-spinner"></span></button>
 	        </form>
 	        <div id="premiumPaymentResult"></div>
 	      </section>
@@ -2076,20 +2352,32 @@
 	      setButtonLoading(submitBtn, true);
 	      try {
 	        const provider = new FormData(event.currentTarget).get("provider");
-	        const res = await api(`/api/premium-courses/${course.id}/payments`, {
-	          method: "POST",
-	          body: JSON.stringify({ provider }),
+	        const contactPhone = await openPurchasePhoneSheet({
+	          title: course.title,
+	          amount: course.price_kzt,
 	        });
+	        if (!contactPhone) return;
+	        const res = await runAfterLegalAgreement(() =>
+	          api(`/api/premium-courses/${course.id}/payments`, {
+	            method: "POST",
+	            body: JSON.stringify({ provider, contact_phone: contactPhone }),
+	          }),
+	        );
+	        if (!res) return;
+	        if (state.me && state.me.user && res.payment && res.payment.contact_phone) {
+	          state.me.user.phone = res.payment.contact_phone;
+	        }
 	        document.getElementById("premiumPaymentResult").innerHTML = `
 	          <div class="card">
 	            <p class="eyebrow">Төлем құрылды</p>
-	            <h2>Төлем #${esc(shortId(res.payment.id))}</h2>
-	            <p class="muted">${esc(res.instructions.text)}</p>
+	            <h2>Төлем күтіліп тұр</h2>
+	            <p class="muted">Kaspi арқылы төлем жасап, PDF-чекті Telegram ботқа жіберіңіз.</p>
 	            <p>Сома: <strong>${money(res.payment.amount_kzt)} ₸</strong></p>
 	          </div>
 	          ${receiptUploadHtml(res.payment)}
 	        `;
 	        bindReceiptUpload(res.payment.id);
+	        await openPaymentInstructionSheet(res.payment, res.instructions, provider);
 	        toast("Premium курс төлемі құрылды", "success");
 	      } catch (error) {
 	        toast(error.message || "Төлем жасау мүмкін болмады", "error");
@@ -2871,7 +3159,7 @@
 	      </header>
 	      ${tariff.short_description_kk ? `<p class="muted">${esc(tariff.short_description_kk)}</p>` : ""}
 	      ${tariffBenefitsHtml(tariff.features, 5)}
-	      <button class="gold-btn block" data-tariff="${esc(tariff.id || tariff.code)}" type="button">Таңдау</button>
+	      <button class="gold-btn block" data-tariff="${esc(tariff.id || tariff.code)}" type="button">Тариф сатып алу</button>
 	    </article>`;
 	  }
 
@@ -2907,14 +3195,14 @@
 	          <div class="price">${money(tariff.price_kzt)} <small>₸ / ай</small></div>
 	          ${tariff.full_description_kk ? `<p class="muted">${esc(tariff.full_description_kk)}</p>` : tariff.short_description_kk ? `<p class="muted">${esc(tariff.short_description_kk)}</p>` : ""}
 	          ${tariffBenefitsHtml(tariff.features)}
-	          <p class="muted">Kaspi QR / Kaspi Pay арқылы төлем жасап, түбіртекті Telegram ботқа PDF құжат ретінде жіберіңіз.</p>
+	          <p class="muted">Kaspi арқылы төлем жасағаннан кейін PDF-чекті Telegram ботқа жіберіңіз.</p>
 	        </div>
 	        <form id="paymentForm" class="form">
 	          <label class="field">
 	            <span>Төлем провайдері</span>
 	            <select name="provider">${providers.map((provider) => `<option value="${esc(provider.code)}">${esc(provider.title)}</option>`).join("")}</select>
 	          </label>
-	          <button class="gold-btn lg" type="submit"><span class="btn-label">Төлем жасау</span><span class="btn-spinner"></span></button>
+	          <button class="gold-btn lg" type="submit"><span class="btn-label">Тариф сатып алу</span><span class="btn-spinner"></span></button>
 	        </form>
 	        <div id="paymentResult"></div>
 	      </section>
@@ -2927,20 +3215,32 @@
 	      setButtonLoading(submitBtn, true);
 	      try {
 	        const provider = new FormData(event.currentTarget).get("provider");
-	        const res = await api("/api/payments", {
-	          method: "POST",
-	          body: JSON.stringify({ tariff_id: tariff.id, tariff_code: tariff.code, provider }),
+	        const contactPhone = await openPurchasePhoneSheet({
+	          title: tariff.title || tariff.code,
+	          amount: tariff.price_kzt,
 	        });
+	        if (!contactPhone) return;
+	        const res = await runAfterLegalAgreement(() =>
+	          api("/api/payments", {
+	            method: "POST",
+	            body: JSON.stringify({ tariff_id: tariff.id, tariff_code: tariff.code, provider, contact_phone: contactPhone }),
+	          }),
+	        );
+	        if (!res) return;
+	        if (state.me && state.me.user && res.payment && res.payment.contact_phone) {
+	          state.me.user.phone = res.payment.contact_phone;
+	        }
 	        document.getElementById("paymentResult").innerHTML = `
 	          <div class="card">
 	            <p class="eyebrow">Төлем құрылды</p>
-	            <h2>Төлем #${esc(shortId(res.payment.id))}</h2>
-            <p class="muted">${esc(res.instructions.text)}</p>
+	            <h2>Төлем күтіліп тұр</h2>
+            <p class="muted">Kaspi арқылы төлем жасап, PDF-чекті Telegram ботқа жіберіңіз.</p>
             <p>Сома: <strong>${money(res.payment.amount_kzt)} ₸</strong></p>
           </div>
           ${receiptUploadHtml(res.payment)}
         `;
 	        bindReceiptUpload(res.payment.id);
+	        await openPaymentInstructionSheet(res.payment, res.instructions, provider);
 	        toast("Төлем құрылды", "success");
 	      } catch (error) {
 	        toast(error.message || "Төлем жасау мүмкін болмады", "error");
@@ -2956,14 +3256,14 @@
         <div class="card-header">
           <div>
             <p class="eyebrow">Түбіртек жүктеу</p>
-            <h2>PDF түбіртек жүктеңіз</h2>
+            <h2>PDF-чекті жіберіңіз</h2>
           </div>
           <span class="status warn">Тексеріледі</span>
         </div>
         <form id="receiptUploadForm" class="form">
           <label class="upload-drop">
             <input name="receipt" type="file" accept=".pdf,application/pdf" required />
-            <span class="upload-title">Түбіртек жүктеу</span>
+            <span class="upload-title">PDF-чекті жүктеу</span>
             <small>PDF құжат</small>
             <strong id="receiptFileName">Файл таңдалмады</strong>
           </label>
@@ -2971,7 +3271,7 @@
             <span class="btn-label">Тексеруге жіберу</span><span class="btn-spinner"></span>
           </button>
         </form>
-        <div id="receiptUploadState" class="muted small">PDF түбіртек тексерілгеннен кейін қолжетімділік ашылады.</div>
+        <div id="receiptUploadState" class="muted small">PDF-чекті Telegram ботқа жіберіңіз. Қажет болса осы жерден де жүктей аласыз.</div>
       </div>
     `;
   }
@@ -4936,10 +5236,6 @@
         radio.name = `correct_${qi}`;
         radio.value = String(oi);
       });
-      if (!question.querySelector("[data-correct]:checked")) {
-        const first = question.querySelector("[data-correct]");
-        if (first) first.checked = true;
-      }
     });
   }
 
@@ -4982,7 +5278,7 @@
     const rows = data.payments || [];
     const paymentRows = rows.length
       ? `<div class="table-wrap"><table>
-          <thead><tr><th>ID</th><th>Қолданушы</th><th>Төлем түрі</th><th>Өнім</th><th>Сома</th><th>Статус</th><th>Чек валидациясы</th><th>Чек</th></tr></thead>
+          <thead><tr><th>ID</th><th>Қолданушы</th><th>Байланыс</th><th>Төлем түрі</th><th>Өнім</th><th>Сома</th><th>Статус</th><th>Чек валидациясы</th><th>Чек</th></tr></thead>
           <tbody>${rows
             .map((payment) => {
               const receipt = payment.receipt || {};
@@ -4992,6 +5288,7 @@
               return `<tr>
                 <td>${esc(shortId(payment.id))}</td>
                 <td>${esc(payment.user ? `${payment.user.first_name || ""} @${payment.user.username || ""}` : shortId(payment.user_id))}</td>
+                <td>${esc(payment.contact_phone || (payment.user && payment.user.phone) || "—")}</td>
                 <td>${esc(payment.payment_type || "subscription")}</td>
                 <td>${esc(product || "—")}</td>
                 <td>${money(payment.amount_kzt)} ₸</td>
@@ -5059,6 +5356,7 @@
         : null;
     return `<div class="receipt-validation">
       ${statusBadge(receipt.validation_status)}
+      <span>Байланыс: ${esc(payment.contact_phone || "—")}</span>
       <span>Төлем сомасы: ${money(payment.amount_kzt)} ₸</span>
       <span>Чектегі сома: ${receipt.parsed_amount_kzt ? `${money(receipt.parsed_amount_kzt)} ₸` : "—"}</span>
       <span>Айырма: ${diff === null ? "—" : `${money(diff)} ₸`}</span>
