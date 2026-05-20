@@ -287,14 +287,23 @@ type TestOption struct {
 }
 
 type TestAttempt struct {
-	ID           string    `json:"id"`
-	UserID       string    `json:"user_id"`
-	TestID       string    `json:"test_id"`
-	ScorePercent int       `json:"score_percent"`
-	CorrectCount int       `json:"correct_count"`
-	TotalCount   int       `json:"total_count"`
-	Passed       bool      `json:"passed"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string             `json:"id"`
+	UserID       string             `json:"user_id"`
+	TestID       string             `json:"test_id"`
+	ScorePercent int                `json:"score_percent"`
+	CorrectCount int                `json:"correct_count"`
+	TotalCount   int                `json:"total_count"`
+	PassPercent  int                `json:"pass_percent,omitempty"`
+	Passed       bool               `json:"passed"`
+	Results      []TestAnswerResult `json:"results,omitempty"`
+	CreatedAt    time.Time          `json:"created_at"`
+}
+
+type TestAnswerResult struct {
+	QuestionID       string `json:"question_id"`
+	SelectedOptionID string `json:"selected_option_id,omitempty"`
+	CorrectOptionID  string `json:"correct_option_id"`
+	IsCorrect        bool   `json:"is_correct"`
 }
 
 type Assignment struct {

@@ -27,6 +27,10 @@ type InviteIssuer interface {
 	SendMessage(ctx context.Context, chatID int64, text string) error
 }
 
+type ReceiptAdminNotifier interface {
+	NotifyReceiptAdmins(ctx context.Context, user repository.User, payment repository.Payment, receipt repository.Receipt)
+}
+
 type Server struct {
 	cfg       config.Config
 	store     *repository.Store
@@ -557,14 +561,12 @@ func paymentDisplayTitle(payment repository.Payment) string {
 	return "Тариф"
 }
 
-func formatReceiptAdminMessage(title string, user repository.User, payment repository.Payment, receipt repository.Receipt) string {
+func formatReceiptAdminMessage(user repository.User, payment repository.Payment, receipt repository.Receipt) string {
 	fullName := strings.TrimSpace(user.FirstName + " " + user.LastName)
-	if fullName == "" {
-		fullName = "—"
-	}
+	fullName = cleanCaptionValue(fullName, "Көрсетілмеген")
 	username := strings.TrimSpace(user.Username)
 	if username == "" {
-		username = "—"
+		username = "Жоқ"
 	} else if !strings.HasPrefix(username, "@") {
 		username = "@" + username
 	}
@@ -572,40 +574,221 @@ func formatReceiptAdminMessage(title string, user repository.User, payment repos
 	if contactPhone == "" {
 		contactPhone = strings.TrimSpace(user.Phone)
 	}
-	if contactPhone == "" {
-		contactPhone = "—"
+	contactPhone = cleanCaptionValue(contactPhone, "Көрсетілмеген")
+	telegramID := "Жоқ"
+	if user.TelegramID != 0 {
+		telegramID = strconv.FormatInt(user.TelegramID, 10)
 	}
-	reasons := strings.Join(receipt.ValidationErrors, ", ")
-	if reasons == "" {
-		reasons = "—"
-	}
-	identity := firstNonEmpty(receipt.ReceiptTransactionKey, receipt.ParsedTransactionID, receipt.ParsedCheckID, receipt.QRPayloadHash, receipt.FileHash)
-	if identity == "" {
-		identity = "—"
-	}
-	return fmt.Sprintf("%s\nPayment ID: %s\nUser: %s %s\nTelegram ID: %d\nContact phone: %s\nProduct: %s\nExpected amount: %d KZT\nDetected amount: %s\nDetected BIN/IIN: %s\nReceipt identity/hash: %s\nValidation: %s\nReason: %s\nReceipt ID: %s\nPayment status: %s\nTimestamp: %s",
-		title,
-		payment.ID,
+	return fmt.Sprintf("🧾 Жаңа төлем чегі келді\n\n👤 Қолданушы: %s\n🔗 Telegram: %s\n🆔 Telegram ID: %s\n📞 Байланыс нөмірі: %s\n\n🎓 Тариф/курс: %s\n💰 Төлем сомасы: %s\n📌 Статус: %s\n🧾 Төлем ID: %s\n\n📄 Чек ақпараты:\n• Анықталған сома: %s\n• БИН/ИИН: %s\n• Бірегейлік: %s\n• Тексеру нәтижесі: %s\n• Себеп: %s\n\n🕒 Төлем құрылған уақыт: %s\n🕒 Чек жіберілген уақыт: %s\n\n%s",
 		fullName,
 		username,
-		user.TelegramID,
+		telegramID,
 		contactPhone,
-		paymentDisplayTitle(payment),
-		payment.AmountKZT,
+		cleanCaptionValue(paymentDisplayTitle(payment), "Көрсетілмеген"),
+		optionalKZTAmount(payment.AmountKZT),
+		adminPaymentStatusText(payment, receipt),
+		cleanCaptionValue(payment.ID, "Жоқ"),
 		receiptAmountText(receipt),
-		firstNonEmpty(receipt.ParsedRecipientBIN, "—"),
-		identity,
-		firstNonEmpty(receipt.ValidationStatus, "not_stored"),
-		reasons,
-		firstNonEmpty(receipt.ID, "—"),
-		payment.Status,
-		time.Now().UTC().Format(time.RFC3339),
+		cleanCaptionValue(receipt.ParsedRecipientBIN, "Анықталмады"),
+		receiptUniquenessText(receipt),
+		receiptValidationResultText(receipt),
+		receiptValidationReasonText(receipt),
+		captionTime(payment.CreatedAt),
+		captionTime(receipt.CreatedAt),
+		receiptAdminInstruction(payment, receipt),
 	)
 }
 
 func receiptAmountText(receipt repository.Receipt) string {
 	if receipt.ParsedAmountKZT == nil {
-		return "—"
+		return "Анықталмады"
 	}
-	return fmt.Sprintf("%d KZT", *receipt.ParsedAmountKZT)
+	return formatKZTAmount(*receipt.ParsedAmountKZT) + " ₸"
+}
+
+func optionalKZTAmount(amount int) string {
+	if amount <= 0 {
+		return "Анықталмады"
+	}
+	return formatKZTAmount(amount) + " ₸"
+}
+
+func formatKZTAmount(amount int) string {
+	sign := ""
+	if amount < 0 {
+		sign = "-"
+		amount = -amount
+	}
+	value := strconv.Itoa(amount)
+	var parts []string
+	for len(value) > 3 {
+		parts = append([]string{value[len(value)-3:]}, parts...)
+		value = value[:len(value)-3]
+	}
+	parts = append([]string{value}, parts...)
+	return sign + strings.Join(parts, " ")
+}
+
+func cleanCaptionValue(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	switch strings.ToLower(value) {
+	case "", "null", "undefined", "<nil>":
+		return fallback
+	default:
+		return value
+	}
+}
+
+func captionTime(value time.Time) string {
+	if value.IsZero() {
+		return "Анықталмады"
+	}
+	return value.Local().Format("2006-01-02 15:04")
+}
+
+func adminPaymentStatusText(payment repository.Payment, receipt repository.Receipt) string {
+	if receiptNeedsManualReview(payment, receipt) {
+		return "қолмен тексеру қажет"
+	}
+	if payment.Status == repository.PaymentStatusApproved {
+		if payment.ApprovedByAdminID == nil {
+			return "автоматты түрде расталды"
+		}
+		return "расталды"
+	}
+	switch payment.Status {
+	case repository.PaymentStatusPending:
+		return "күтілуде"
+	case repository.PaymentStatusRejected:
+		return "қабылданбады"
+	case repository.PaymentStatusExpired:
+		return "уақыты аяқталды"
+	case repository.PaymentStatusCancelled:
+		return "тоқтатылды"
+	default:
+		return cleanCaptionValue(payment.Status, "Анықталмады")
+	}
+}
+
+func receiptNeedsManualReview(payment repository.Payment, receipt repository.Receipt) bool {
+	if payment.Status == repository.PaymentStatusUploadedReceipt {
+		return true
+	}
+	switch receipt.ValidationStatus {
+	case repository.ReceiptStatusDuplicate, repository.ReceiptStatusSuspicious, repository.ReceiptStatusParseFailed, repository.ReceiptStatusParsePartial, repository.ReceiptStatusRejected:
+		return true
+	}
+	for _, code := range receipt.ValidationErrors {
+		switch code {
+		case "duplicate_identity_found", "amount_mismatch", "recipient_bin_mismatch", "recipient_bin_missing":
+			return true
+		}
+	}
+	return false
+}
+
+func receiptUniquenessText(receipt repository.Receipt) string {
+	if receipt.DuplicateOfReceiptID != nil || receipt.ValidationStatus == repository.ReceiptStatusDuplicate || receiptHasCode(receipt.ValidationErrors, "duplicate_identity_found") {
+		return "қайталанған чек"
+	}
+	if receipt.FileHash == "" && receipt.RawTextHash == "" && receipt.QRPayloadHash == "" && receipt.ReceiptTransactionKey == "" {
+		return "Анықталмады"
+	}
+	return "бірегей"
+}
+
+func receiptValidationResultText(receipt repository.Receipt) string {
+	switch receipt.ValidationStatus {
+	case repository.ReceiptStatusApproved:
+		return "расталды"
+	case repository.ReceiptStatusValidCandidate:
+		return "тексеруден өтті"
+	case repository.ReceiptStatusDuplicate:
+		return "қайталанған чек"
+	case repository.ReceiptStatusSuspicious:
+		return "қолмен тексеру қажет"
+	case repository.ReceiptStatusParseFailed:
+		return "оқу мүмкін болмады"
+	case repository.ReceiptStatusParsePartial:
+		return "толық анықталмады"
+	case repository.ReceiptStatusRejected:
+		return "қабылданбады"
+	case repository.ReceiptStatusUploaded:
+		return "жүктелді"
+	default:
+		return cleanCaptionValue(receipt.ValidationStatus, "Анықталмады")
+	}
+}
+
+func receiptValidationReasonText(receipt repository.Receipt) string {
+	if len(receipt.ValidationErrors) == 0 {
+		switch receipt.ValidationStatus {
+		case repository.ReceiptStatusApproved, repository.ReceiptStatusValidCandidate:
+			return "Қате табылмады"
+		default:
+			return "Көрсетілмеген"
+		}
+	}
+	reasons := make([]string, 0, len(receipt.ValidationErrors))
+	for _, code := range receipt.ValidationErrors {
+		reasons = append(reasons, receiptValidationReason(code))
+	}
+	return strings.Join(reasons, "; ")
+}
+
+func receiptValidationReason(code string) string {
+	switch code {
+	case "amount_not_found":
+		return "сома анықталмады"
+	case "amount_mismatch":
+		return "сома сәйкес емес"
+	case "recipient_bin_not_configured":
+		return "күтілетін БИН/ИИН бапталмаған"
+	case "recipient_bin_missing":
+		return "БИН/ИИН анықталмады"
+	case "recipient_bin_mismatch":
+		return "БИН/ИИН сәйкес емес"
+	case "provider_marker_missing":
+		return "төлем провайдері анықталмады"
+	case "payment_date_too_early":
+		return "чек уақыты төлемнен бұрын"
+	case "strong_identity_not_found":
+		return "чектің бірегей нөмірі анықталмады"
+	case "duplicate_identity_found":
+		return "чек бұрын қолданылған"
+	case "pdf_text_unreadable":
+		return "PDF мәтіні оқылмады"
+	case "file_read_failed":
+		return "файл оқылмады"
+	default:
+		return cleanCaptionValue(code, "Көрсетілмеген")
+	}
+}
+
+func receiptHasCode(values []string, code string) bool {
+	for _, value := range values {
+		if value == code {
+			return true
+		}
+	}
+	return false
+}
+
+func duplicateReceiptAttempt(receipt repository.Receipt) repository.Receipt {
+	receipt.ValidationStatus = repository.ReceiptStatusDuplicate
+	if !receiptHasCode(receipt.ValidationErrors, "duplicate_identity_found") {
+		receipt.ValidationErrors = append(receipt.ValidationErrors, "duplicate_identity_found")
+	}
+	receipt.CreatedAt = time.Now()
+	return receipt
+}
+
+func receiptAdminInstruction(payment repository.Payment, receipt repository.Receipt) string {
+	if receiptNeedsManualReview(payment, receipt) {
+		return "Әкімші панелінен тексеріп, төлемді растаңыз немесе қабылдамаңыз."
+	}
+	if payment.Status == repository.PaymentStatusApproved && payment.ApprovedByAdminID == nil {
+		return "Төлем автоматты түрде расталды. Қажет болса әкімші панелінен қайта тексеріңіз."
+	}
+	return "Әкімші панелінен төлем мәліметтерін тексеріңіз."
 }

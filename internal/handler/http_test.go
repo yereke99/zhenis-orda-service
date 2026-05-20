@@ -434,6 +434,139 @@ func TestStudentTestResponseDoesNotExposeCorrectAnswers(t *testing.T) {
 	}
 }
 
+func TestSubmitTestReturnsAnswerReviewData(t *testing.T) {
+	srv, store := newTestHTTPServerWithStore(t, "development")
+	ctx := context.Background()
+	user, _, err := store.RegisterOrUpdateTelegramUser(ctx, repository.TelegramUserInput{
+		TelegramID: 9302,
+		Username:   "reviewer",
+		FirstName:  "Reviewer",
+		Language:   "kk",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var levelID string
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM levels WHERE number = 1`).Scan(&levelID); err != nil {
+		t.Fatal(err)
+	}
+	lesson, err := store.UpsertLesson(ctx, repository.Lesson{
+		LevelID:   levelID,
+		TitleKK:   "Нәтиже сабағы",
+		TitleRU:   "Урок результата",
+		SortOrder: 1,
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertTest(ctx, repository.Test{
+		LessonID:    lesson.ID,
+		Title:       "Нәтиже тесті",
+		PassPercent: 70,
+		IsActive:    true,
+		Questions: []repository.TestQuestion{{
+			QuestionTextKK: "Дұрыс жауап қайсы?",
+			QuestionTextRU: "Какой ответ правильный?",
+			SortOrder:      1,
+			Options: []repository.TestOption{
+				{OptionTextKK: "Дұрыс", OptionTextRU: "Верно", IsCorrect: true, SortOrder: 1},
+				{OptionTextKK: "Қате", OptionTextRU: "Неверно", SortOrder: 2},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payment, err := store.CreatePayment(ctx, user.ID, "BASIC", "kaspi_qr", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApprovePayment(ctx, payment.ID, 1, 30); err != nil {
+		t.Fatal(err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/tests/1?miniapp_dev=1&telegram_id=9302", nil)
+	getRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("test get expected 200, got %d: %s", getRec.Code, getRec.Body.String())
+	}
+	var getBody struct {
+		Test repository.Test `json:"test"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&getBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(getBody.Test.Questions) == 0 || len(getBody.Test.Questions[0].Options) < 2 {
+		t.Fatalf("seed test is incomplete: %#v", getBody.Test)
+	}
+	if strings.Contains(getRec.Body.String(), "is_correct") {
+		t.Fatalf("get test exposed correct answer flag: %s", getRec.Body.String())
+	}
+
+	wrongAnswers := map[string]string{}
+	rightAnswers := map[string]string{}
+	for _, question := range getBody.Test.Questions {
+		rightAnswers[question.ID] = question.Options[0].ID
+		wrongAnswers[question.ID] = question.Options[1].ID
+	}
+	wrongBody, _ := json.Marshal(map[string]any{"answers": wrongAnswers})
+	wrongReq := httptest.NewRequest(http.MethodPost, "/api/tests/1/submit?miniapp_dev=1&telegram_id=9302", bytes.NewReader(wrongBody))
+	wrongRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(wrongRec, wrongReq)
+	if wrongRec.Code != http.StatusOK {
+		t.Fatalf("wrong submit expected 200, got %d: %s", wrongRec.Code, wrongRec.Body.String())
+	}
+	var wrongResult struct {
+		Attempt      repository.TestAttempt        `json:"attempt"`
+		Passed       bool                          `json:"passed"`
+		ScorePercent int                           `json:"score_percent"`
+		CorrectCount int                           `json:"correct_count"`
+		TotalCount   int                           `json:"total_count"`
+		PassPercent  int                           `json:"pass_percent"`
+		AttemptID    string                        `json:"attempt_id"`
+		Results      []repository.TestAnswerResult `json:"results"`
+	}
+	if err := json.NewDecoder(wrongRec.Body).Decode(&wrongResult); err != nil {
+		t.Fatal(err)
+	}
+	if wrongResult.Passed || wrongResult.Attempt.Passed || wrongResult.ScorePercent != 0 || wrongResult.CorrectCount != 0 {
+		t.Fatalf("wrong answers should fail with zero score: %#v", wrongResult)
+	}
+	if wrongResult.TotalCount != len(getBody.Test.Questions) || wrongResult.PassPercent != getBody.Test.PassPercent || wrongResult.AttemptID == "" {
+		t.Fatalf("missing submit summary data: %#v", wrongResult)
+	}
+	if len(wrongResult.Results) != len(getBody.Test.Questions) {
+		t.Fatalf("expected per-question results, got %#v", wrongResult.Results)
+	}
+	firstWrong := wrongResult.Results[0]
+	if firstWrong.IsCorrect || firstWrong.SelectedOptionID != wrongAnswers[firstWrong.QuestionID] || firstWrong.CorrectOptionID == "" || firstWrong.CorrectOptionID == firstWrong.SelectedOptionID {
+		t.Fatalf("wrong answer review data is not useful: %#v", firstWrong)
+	}
+
+	rightBody, _ := json.Marshal(map[string]any{"answers": rightAnswers})
+	rightReq := httptest.NewRequest(http.MethodPost, "/api/tests/1/submit?miniapp_dev=1&telegram_id=9302", bytes.NewReader(rightBody))
+	rightRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rightRec, rightReq)
+	if rightRec.Code != http.StatusOK {
+		t.Fatalf("right submit expected 200, got %d: %s", rightRec.Code, rightRec.Body.String())
+	}
+	var rightResult struct {
+		Passed  bool                          `json:"passed"`
+		Results []repository.TestAnswerResult `json:"results"`
+	}
+	if err := json.NewDecoder(rightRec.Body).Decode(&rightResult); err != nil {
+		t.Fatal(err)
+	}
+	if !rightResult.Passed || len(rightResult.Results) == 0 {
+		t.Fatalf("correct answers should pass with review data: %#v", rightResult)
+	}
+	firstRight := rightResult.Results[0]
+	if !firstRight.IsCorrect || firstRight.SelectedOptionID == "" || firstRight.SelectedOptionID != firstRight.CorrectOptionID {
+		t.Fatalf("correct answer review data is not useful: %#v", firstRight)
+	}
+}
+
 func TestMiniAppRequiresInitDataWithoutExplicitDev(t *testing.T) {
 	srv := newTestHTTPServer(t, "development")
 	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)

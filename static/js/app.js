@@ -23,10 +23,16 @@
     selectedTariff: null,
     selectedBookId: null,
     bookReturnScreen: "dashboard",
-    selectedFreeLessonId: null,
-    freeLessonReturnScreen: "dashboard",
-    selectedPremiumCourseId: null,
-    premiumCourseReturnScreen: "dashboard",
+	    selectedFreeLessonId: null,
+	    freeLessonReturnScreen: "dashboard",
+	    selectedLessonId: null,
+	    lessonReturnScreen: "lessons",
+	    selectedPremiumCourseId: null,
+	    premiumCourseReturnScreen: "dashboard",
+	    testReturnScreen: "lessons",
+	    testResult: null,
+	    testSelectedAnswers: {},
+	    testResultLevel: 0,
     whatsappSalesPhone: "",
     legalAgreementStatus: null,
     financialIqAnswers: {},
@@ -1485,10 +1491,11 @@
       premiumCourseDetail: renderPremiumCourseDetail,
       premiumPayment: renderPremiumPayment,
       financialIq: renderFinancialIq,
-      financialIqResult: renderFinancialIqResult,
-      levels: renderLevels,
-      lessons: renderLessons,
-      test: renderTest,
+	      financialIqResult: renderFinancialIqResult,
+	      levels: renderLevels,
+	      lessons: renderLessons,
+	      lessonDetail: renderLessonDetail,
+	      test: renderTest,
       assignment: renderAssignment,
       referral: renderReferral,
       coins: renderCoins,
@@ -1531,20 +1538,32 @@
 	      closeFreeLessonDetail();
 	      return;
 	    }
-	    if (state.currentScreen === "freeLessons") {
-	      closeFreeLessons();
-	      return;
-	    }
-	    if (state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult") {
-	      returnFromFinancialIq();
-	    }
-	  }
+		    if (state.currentScreen === "freeLessons") {
+		      closeFreeLessons();
+		      return;
+		    }
+		    if (state.currentScreen === "lessonDetail") {
+		      closeLessonDetail();
+		      return;
+		    }
+		    if (state.currentScreen === "test") {
+		      returnFromTest();
+		      return;
+		    }
+		    if (state.currentScreen === "lessons") {
+		      setScreen("dashboard");
+		      return;
+		    }
+		    if (state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult") {
+		      returnFromFinancialIq();
+		    }
+		  }
 
 	  function syncTelegramBackButton() {
 	    const tg = getTelegram();
 	    if (!tg || !tg.BackButton || !telegramVersionAtLeast(tg, "6.1")) return;
 	    try {
-	      const hasBack = state.currentScreen === "payment" || state.currentScreen === "premiumPayment" || state.currentScreen === "premiumCourses" || state.currentScreen === "premiumCourseDetail" || state.currentScreen === "bookDetail" || state.currentScreen === "freeLessons" || state.currentScreen === "freeLessonDetail" || state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult";
+		      const hasBack = state.currentScreen === "payment" || state.currentScreen === "premiumPayment" || state.currentScreen === "premiumCourses" || state.currentScreen === "premiumCourseDetail" || state.currentScreen === "bookDetail" || state.currentScreen === "freeLessons" || state.currentScreen === "freeLessonDetail" || state.currentScreen === "lessons" || state.currentScreen === "lessonDetail" || state.currentScreen === "test" || state.currentScreen === "financialIq" || state.currentScreen === "financialIqResult";
 	      if (hasBack) {
 	        if (!state.telegramBackHandlerBound && typeof tg.BackButton.onClick === "function") {
 	          tg.BackButton.onClick(handleMiniAppBack);
@@ -2730,9 +2749,9 @@
     bindLevelInviteButtons();
   }
 
-  function levelCard(level) {
-    const progress = level.progress || {};
-    const percent = Math.max(0, Math.min(100, num(progress.percent)));
+	  function levelCard(level) {
+	    const progress = level.progress || {};
+	    const percent = Math.max(0, Math.min(100, num(progress.percent)));
     return `<article class="card">
       <div class="card-header">
         <div>
@@ -2744,27 +2763,64 @@
       <div class="progress-track thin"><div class="progress-fill" style="--progress:${percent}%"></div></div>
       <div class="progress-row"><span>${progress.watched_lessons || 0}/${progress.total_lessons || 0} сабақ</span><strong>${percent}%</strong></div>
       <p class="muted">${esc(progress.next_requirement || "")}</p>
-      ${level.access && level.telegram_configured ? `<button class="gold-btn block" data-level-invite="${esc(level.number)}" type="button">Жабық каналға кіру</button>` : ""}
-    </article>`;
-  }
+	      ${level.access && level.telegram_configured ? `<button class="gold-btn block" data-level-invite="${esc(level.number)}" type="button">Жабық каналға кіру</button>` : ""}
+	    </article>`;
+	  }
 
-  async function renderLessons() {
-    const level = (state.me && state.me.user && state.me.user.current_level) || 1;
-    html(`<section class="screen">
-      <div class="section-head">
-	        <div><p class="eyebrow">Деңгей ${esc(level)}</p><h1>Сабақтар</h1></div>
-        <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
-      </div>
-      <div class="grid">${skeletonRows(3)}</div>
-    </section>`);
+	  function openLessonDetail(lessonID) {
+	    if (!lessonID) return;
+	    state.selectedLessonId = lessonID;
+	    if (state.currentScreen !== "lessonDetail") {
+	      state.lessonReturnScreen = state.currentScreen || "lessons";
+	    }
+	    setScreen("lessonDetail");
+	  }
 
-    let data;
-    try {
-      data = await api(`/api/lessons?level=${level}`);
-    } catch (error) {
-      html(`<section class="screen"><h1>Сабақтарым</h1>${emptyState(error.message)}</section>`);
-      return;
-    }
+	  function closeLessonDetail() {
+	    const target = state.lessonReturnScreen || "lessons";
+	    setScreen(target === "lessonDetail" || target === "test" ? "lessons" : target);
+	  }
+
+	  function openTest() {
+	    if (state.currentScreen !== "test") {
+	      state.testReturnScreen = state.currentScreen || "lessons";
+	    }
+	    if (state.currentScreen !== "lessonDetail") {
+	      state.selectedLessonId = null;
+	    }
+	    state.testResult = null;
+	    state.testSelectedAnswers = {};
+	    state.testResultLevel = 0;
+	    setScreen("test");
+	  }
+
+	  function returnFromTest() {
+	    const target = state.testReturnScreen || "lessons";
+	    setScreen(target === "test" ? "lessons" : target);
+	  }
+
+	  async function renderLessons() {
+	    const level = (state.me && state.me.user && state.me.user.current_level) || 1;
+	    html(`<section class="screen">
+	      <div class="section-head">
+		        <div><p class="eyebrow">Деңгей ${esc(level)}</p><h1>Сабақтар</h1></div>
+	        <div class="action-row compact">
+	          <button class="ghost-btn mini-back-btn" id="backLessons" type="button">Артқа</button>
+	          <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
+	        </div>
+	      </div>
+	      <div class="grid">${skeletonRows(3)}</div>
+	    </section>`);
+	    on("backLessons", () => setScreen("dashboard"));
+
+	    let data;
+	    try {
+	      data = await api(`/api/lessons?level=${level}`);
+	    } catch (error) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backLessons" type="button">Артқа</button><h1>Сабақтарым</h1>${emptyState(error.message)}</section>`);
+	      on("backLessons", () => setScreen("dashboard"));
+	      return;
+	    }
     state.lessons = data.lessons || [];
 
     const currentLevelMeta = state.levels.find((item) => Number(item.number) === Number(level));
@@ -2783,26 +2839,33 @@
       ? state.lessons.map(lessonCard).join("")
       : emptyState("Бұл деңгейге сабақтар әлі қосылған жоқ.");
 
-    html(`
-      <section class="screen">
-        <div class="section-head">
-	          <div><p class="eyebrow">Деңгей ${esc(level)}</p><h1>Сабақтар</h1></div>
-          <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
-        </div>
-        ${telegramCard}
-        <div class="grid">${cards}</div>
-      </section>
-    `);
-    on("refreshLessons", renderLessons);
-    bindLevelInviteButtons();
-    document
-      .querySelectorAll("[data-watch]")
-      .forEach((btn) => btn.addEventListener("click", () => markWatched(btn.dataset.watch)));
-  }
+	    html(`
+	      <section class="screen">
+	        <div class="section-head">
+		          <div><p class="eyebrow">Деңгей ${esc(level)}</p><h1>Сабақтар</h1></div>
+	          <div class="action-row compact">
+	            <button class="ghost-btn mini-back-btn" id="backLessons" type="button">Артқа</button>
+	            <button class="ghost-btn" id="refreshLessons" type="button">Жаңарту</button>
+	          </div>
+	        </div>
+	        ${telegramCard}
+	        <div class="grid">${cards}</div>
+	      </section>
+	    `);
+	    on("backLessons", () => setScreen("dashboard"));
+	    on("refreshLessons", renderLessons);
+	    bindLevelInviteButtons();
+	    document
+	      .querySelectorAll("[data-watch]")
+	      .forEach((btn) => btn.addEventListener("click", () => markWatched(btn.dataset.watch)));
+	    document
+	      .querySelectorAll("[data-open-lesson]")
+	      .forEach((btn) => btn.addEventListener("click", () => openLessonDetail(btn.dataset.openLesson)));
+	  }
 
-  function lessonCard(lesson) {
-    const watched = Boolean(lesson.watched);
-    const access = Boolean(lesson.access);
+	  function lessonCard(lesson) {
+	    const watched = Boolean(lesson.watched);
+	    const access = Boolean(lesson.access);
     return `<article class="lesson-card ${access ? "" : "locked"}">
       <div class="card-header">
         <div>
@@ -2811,26 +2874,100 @@
         </div>
         <span class="status ${watched ? "ok" : access ? "" : "bad"}">${watched ? "Көрілді" : access ? "Ашық" : "Жабық"}</span>
       </div>
-	      <p class="muted">${esc(lesson.description_kk || "ZHENIS ORDA UNIVERSE")}</p>
-      <div class="lesson-actions">
-        <button class="${watched ? "ghost-btn" : "gold-btn"}" data-watch="${lesson.id}" ${access ? "" : "disabled"} type="button">
-          ${watched ? "Қайта белгілеу" : "Сабақты өттім"}
-        </button>
-      </div>
-    </article>`;
-  }
+		      <p class="muted">${esc(lesson.description_kk || "ZHENIS ORDA UNIVERSE")}</p>
+	      <div class="lesson-actions">
+	        <button class="gold-btn" data-open-lesson="${esc(lesson.id)}" ${access ? "" : "disabled"} type="button">
+	          ${watched ? "Сабақты ашу" : "Сабақты бастау"}
+	        </button>
+	        <button class="${watched ? "ghost-btn" : "gold-btn"}" data-watch="${esc(lesson.id)}" ${access ? "" : "disabled"} type="button">
+	          ${watched ? "Қайта белгілеу" : "Сабақты өттім"}
+	        </button>
+	      </div>
+	    </article>`;
+	  }
 
-  async function markWatched(id) {
-    try {
-      await api(`/api/lessons/${id}/watched`, { method: "POST", body: "{}" });
+	  async function renderLessonDetail() {
+	    const lessonID = state.selectedLessonId;
+	    if (!lessonID) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backLessonDetail" type="button">Артқа</button>${emptyState("Сабақ табылмады.")}</section>`);
+	      on("backLessonDetail", closeLessonDetail);
+	      return;
+	    }
+	    html(`
+	      <section class="screen lesson-detail-screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backLessonDetail" type="button">Артқа</button>
+	        </div>
+	        <div class="card">
+	          <div class="skeleton-row w-50"></div>
+	          <div class="skeleton-row w-90"></div>
+	          <div class="skeleton-row w-70"></div>
+	        </div>
+	      </section>
+	    `);
+	    on("backLessonDetail", closeLessonDetail);
+	    let lesson;
+	    try {
+	      const data = await api(`/api/lessons/${lessonID}`);
+	      if (state.currentScreen !== "lessonDetail" || state.selectedLessonId !== lessonID) return;
+	      lesson = data.lesson;
+	      if (lesson && lesson.id) {
+	        const lessons = state.lessons || [];
+	        const index = lessons.findIndex((item) => item.id === lesson.id);
+	        if (index >= 0) lessons[index] = Object.assign({}, lessons[index], lesson);
+	      }
+	    } catch (error) {
+	      if (state.currentScreen !== "lessonDetail" || state.selectedLessonId !== lessonID) return;
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backLessonDetail" type="button">Артқа</button>${emptyState(error.message || "Сабақ табылмады.")}</section>`);
+	      on("backLessonDetail", closeLessonDetail);
+	      return;
+	    }
+	    if (!lesson) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backLessonDetail" type="button">Артқа</button>${emptyState("Сабақ табылмады.")}</section>`);
+	      on("backLessonDetail", closeLessonDetail);
+	      return;
+	    }
+	    const watched = Boolean(lesson.watched);
+	    html(`
+	      <section class="screen lesson-detail-screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backLessonDetail" type="button">Артқа</button>
+	        </div>
+	        <article class="card lesson-detail-card">
+	          <div class="card-header">
+	            <div>
+	              <p class="eyebrow">Деңгей ${esc(lesson.level_number)} · Сабақ ${esc(lesson.sort_order)}</p>
+	              <h1>${esc(lesson.title_kk || "Сабақ")}</h1>
+	            </div>
+	            <span class="status ${watched ? "ok" : ""}">${watched ? "Көрілді" : "Ашық"}</span>
+	          </div>
+	          <p class="muted">${esc(lesson.description_kk || "ZHENIS ORDA UNIVERSE")}</p>
+	          <div class="lesson-detail-actions">
+	            ${lesson.video_url ? `<button class="ghost-btn block" id="openLessonMaterial" type="button">Материалды ашу</button>` : ""}
+	            <button class="${watched ? "ghost-btn" : "gold-btn"} block" id="markLessonWatched" type="button">${watched ? "Қайта белгілеу" : "Сабақты өттім"}</button>
+	            <button class="gold-btn block" id="openLessonTest" type="button">Тестке өту</button>
+	          </div>
+	        </article>
+	      </section>
+	    `);
+	    on("backLessonDetail", closeLessonDetail);
+	    on("openLessonMaterial", () => openExternalLink(lesson.video_url));
+	    on("markLessonWatched", () => markWatched(lesson.id));
+	    on("openLessonTest", openTest);
+	  }
+
+	  async function markWatched(id) {
+	    try {
+	      await api(`/api/lessons/${id}/watched`, { method: "POST", body: "{}" });
       const me = await api("/api/me");
-      state.me = me;
-      await refreshLevels();
-      toast("Сабақ белгіленді", "success");
-      renderLessons();
-    } catch (error) {
-      toast(error.message || "Жаңарту мүмкін болмады", "error");
-    }
+	      state.me = me;
+	      await refreshLevels();
+	      toast("Сабақ белгіленді", "success");
+	      if (state.currentScreen === "lessonDetail") renderLessonDetail();
+	      else renderLessons();
+	    } catch (error) {
+	      toast(error.message || "Жаңарту мүмкін болмады", "error");
+	    }
   }
 
   function bindLevelInviteButtons() {
@@ -2875,71 +3012,197 @@
     window.open(link, "_blank", "noopener");
   }
 
-  async function renderTest() {
-    const level = (state.me && state.me.user && state.me.user.current_level) || 1;
-    let data;
-    try {
-      data = await api(`/api/tests/${level}`);
-    } catch (error) {
-      html(`<section class="screen"><div class="section-head"><h1>Тест</h1></div>${emptyState(error.message || "Тест әлі ашылмаған")}</section>`);
-      return;
-    }
-    const test = data.test;
-    if (!test) {
-      html(`<section class="screen"><h1>Тест</h1>${emptyState("Бұл деңгейге тест әлі қосылған жоқ.")}</section>`);
-      return;
-    }
-    html(`
-      <section class="screen">
-        <div class="card">
-	          <p class="eyebrow">${test.lesson_title_kk ? `Сабақ: ${esc(test.lesson_title_kk)}` : `Деңгей ${esc(level)}`}</p>
-          <h1>${esc(test.title)}</h1>
-          <p class="muted">Өту шегі: ${esc(test.pass_percent)}%</p>
-        </div>
+	  async function renderTest() {
+	    const level = state.testResultLevel || (state.me && state.me.user && state.me.user.current_level) || 1;
+	    let data;
+	    try {
+	      data = await api(`/api/tests/${level}`);
+	    } catch (error) {
+	      html(`<section class="screen"><div class="section-head"><button class="ghost-btn mini-back-btn" id="backTest" type="button">Артқа</button></div>${emptyState(error.message || "Тест әлі ашылмаған")}</section>`);
+	      on("backTest", returnFromTest);
+	      return;
+	    }
+	    const test = data.test;
+	    if (!test) {
+	      html(`<section class="screen"><button class="ghost-btn mini-back-btn" id="backTest" type="button">Артқа</button><h1>Тест</h1>${emptyState("Бұл деңгейге тест әлі қосылған жоқ.")}</section>`);
+	      on("backTest", returnFromTest);
+	      return;
+	    }
+	    if (state.testResult && Number(state.testResultLevel) === Number(level) && resultAttempt(state.testResult).test_id === test.id) {
+	      renderTestResult(test, state.testResult, state.testSelectedAnswers);
+	      return;
+	    }
+	    html(`
+	      <section class="screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backTest" type="button">Артқа</button>
+	        </div>
+	        <div class="card">
+		          <p class="eyebrow">${test.lesson_title_kk ? `Сабақ: ${esc(test.lesson_title_kk)}` : `Деңгей ${esc(level)}`}</p>
+	          <h1>${esc(test.title)}</h1>
+	          <p class="muted">Өту шегі: ${esc(test.pass_percent)}%</p>
+	        </div>
         <form id="testForm" class="form">
           ${(test.questions || []).map(questionBlock).join("")}
           <button class="gold-btn lg" type="submit"><span class="btn-label">Тест тапсыру</span><span class="btn-spinner"></span></button>
-        </form>
-      </section>
-    `);
-    document.getElementById("testForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
-      if (buttonIsLoading(submitBtn)) return;
-      setButtonLoading(submitBtn, true);
+	        </form>
+	      </section>
+	    `);
+	    on("backTest", returnFromTest);
+	    document.getElementById("testForm").addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+	      if (buttonIsLoading(submitBtn)) return;
+	      setButtonLoading(submitBtn, true);
       const answers = {};
       new FormData(event.currentTarget).forEach((value, key) => (answers[key] = String(value)));
       try {
         const result = await api(`/api/tests/${level}/submit`, {
-          method: "POST",
-          body: JSON.stringify({ answers }),
-        });
-        const me = await api("/api/me");
-        state.me = me;
-        await refreshLevels();
-        toast(`Балл: ${result.attempt.score_percent}% — ${result.attempt.passed ? "Сәтті" : "Қайталау"}`, result.attempt.passed ? "success" : "error");
-        setScreen("dashboard");
-      } catch (error) {
-        toast(error.message || "Тест жіберу мүмкін болмады", "error");
-      } finally {
-        setButtonLoading(submitBtn, false);
-      }
-    });
-  }
+	          method: "POST",
+	          body: JSON.stringify({ answers }),
+	        });
+	        state.testResult = result;
+	        state.testSelectedAnswers = answers;
+	        state.testResultLevel = test.level_number || level;
+	        renderTestResult(test, result, answers);
+	        refreshStudentProgressAfterTest();
+	        const attempt = resultAttempt(result);
+	        toast(`Нәтиже: ${attempt.score_percent}% — ${attempt.passed ? "Сәтті" : "Қайталау"}`, attempt.passed ? "success" : "error");
+	      } catch (error) {
+	        toast(error.message || "Тест жіберу мүмкін болмады", "error");
+	      } finally {
+	        setButtonLoading(submitBtn, false);
+	      }
+	    });
+	  }
 
-  function questionBlock(question) {
-    return `<fieldset class="card">
-      <h3>${esc(question.question_text_kk)}</h3>
-      ${(question.options || [])
-        .map(
-          (option) => `<label class="test-option">
-            <input name="${esc(question.id)}" value="${esc(option.id)}" type="radio" required />
+	  function questionBlock(question) {
+	    return `<fieldset class="card test-question-card">
+	      <h3>${esc(question.question_text_kk)}</h3>
+	      ${(question.options || [])
+	        .map(
+	          (option) => `<label class="test-option">
+	            <input name="${esc(question.id)}" value="${esc(option.id)}" type="radio" required />
             <span>${esc(option.option_text_kk)}</span>
           </label>`,
         )
-        .join("")}
-    </fieldset>`;
-  }
+	        .join("")}
+	    </fieldset>`;
+	  }
+
+	  function renderTestResult(test, submitResult, selectedAnswers) {
+	    const attempt = resultAttempt(submitResult);
+	    const results = resultMap(submitResult);
+	    const passed = Boolean(attempt.passed);
+	    const score = num(attempt.score_percent);
+	    const correct = num(attempt.correct_count);
+	    const total = num(attempt.total_count || (test.questions || []).length);
+	    const passPercent = num(attempt.pass_percent || submitResult.pass_percent || test.pass_percent);
+	    const progress = submitResult.progress || {};
+	    const unlockedNext = passed && Number(progress.level_number || 0) > Number(test.level_number || 0);
+	    html(`
+	      <section class="screen test-result-screen">
+	        <div class="section-head">
+	          <button class="ghost-btn mini-back-btn" id="backTest" type="button">Артқа</button>
+	        </div>
+	        <article id="testResultSummary" class="card test-result-card ${passed ? "passed" : "failed"}">
+	          <div class="card-header">
+	            <div>
+	              <p class="eyebrow">${test.lesson_title_kk ? `Сабақ: ${esc(test.lesson_title_kk)}` : `Деңгей ${esc(test.level_number || state.testResultLevel || "")}`}</p>
+	              <h1>${passed ? "Тест сәтті өтті ✅" : "Тесттен өтпедіңіз"}</h1>
+	            </div>
+	            <span class="status ${passed ? "ok" : "bad"}">${passed ? "Өтті" : "Қайталау қажет"}</span>
+	          </div>
+	          <p class="muted">${passed ? "Жарайсыз! Нәтижеңіз сақталды." : "Ештеңе етпейді. Дұрыс жауаптарды қарап, қайта тапсырып көріңіз."}</p>
+	          ${unlockedNext ? `<p class="test-unlock-note">Келесі деңгей ашылды.</p>` : ""}
+	          <div class="test-result-stats">
+	            <div><span>Нәтиже</span><strong>${esc(score)}%</strong></div>
+	            <div><span>Дұрыс жауаптар</span><strong>${esc(correct)}/${esc(total)}</strong></div>
+	            <div><span>Өту балы</span><strong>${esc(passPercent)}%</strong></div>
+	          </div>
+	        </article>
+	        <div class="test-answer-review">
+	          ${(test.questions || []).map((question) => resultQuestionBlock(question, results[question.id], selectedAnswers)).join("")}
+	        </div>
+	        <div class="test-result-actions">
+	          <button class="ghost-btn" id="backToLesson" type="button">Сабаққа қайту</button>
+	          <button class="ghost-btn" id="backToLevels" type="button">Деңгейлерге қайту</button>
+	          <button class="gold-btn" id="retryTest" type="button">Қайта тапсыру</button>
+	        </div>
+	      </section>
+	    `);
+	    on("backTest", returnFromTest);
+	    on("backToLesson", () => {
+	      if (state.selectedLessonId) setScreen("lessonDetail");
+	      else setScreen("lessons");
+	    });
+	    on("backToLevels", () => setScreen("levels"));
+	    on("retryTest", () => {
+	      state.testResult = null;
+	      state.testSelectedAnswers = {};
+	      renderTest();
+	    });
+	    const summary = document.getElementById("testResultSummary");
+	    if (summary && typeof summary.scrollIntoView === "function") {
+	      summary.scrollIntoView({ behavior: "smooth", block: "start" });
+	    }
+	  }
+
+	  function resultQuestionBlock(question, result, selectedAnswers) {
+	    const selectedID = (result && result.selected_option_id) || (selectedAnswers && selectedAnswers[question.id]) || "";
+	    const correctID = (result && result.correct_option_id) || "";
+	    return `<fieldset class="card test-question-card reviewed">
+	      <h3>${esc(question.question_text_kk)}</h3>
+	      ${(question.options || [])
+	        .map((option) => resultOptionHtml(option, selectedID, correctID))
+	        .join("")}
+	    </fieldset>`;
+	  }
+
+	  function resultOptionHtml(option, selectedID, correctID) {
+	    const selected = option.id === selectedID;
+	    const correct = option.id === correctID;
+	    const wrong = selected && !correct;
+	    const cls = ["test-option", "reviewed", selected ? "selected" : "", correct ? "correct" : "", wrong ? "wrong" : ""]
+	      .filter(Boolean)
+	      .join(" ");
+	    const badges = [
+	      selected ? `<span class="answer-badge yours">Сіздің жауабыңыз</span>` : "",
+	      correct ? `<span class="answer-badge correct">Дұрыс жауап</span>` : "",
+	    ].join("");
+	    return `<label class="${cls}">
+	      <input value="${esc(option.id)}" type="radio" ${selected ? "checked" : ""} disabled />
+	      <span>${esc(option.option_text_kk)}${badges ? `<em>${badges}</em>` : ""}</span>
+	    </label>`;
+	  }
+
+	  function resultAttempt(result) {
+	    const attempt = (result && result.attempt) || {};
+	    return Object.assign({}, attempt, {
+	      score_percent: attempt.score_percent != null ? attempt.score_percent : result && result.score_percent ? result.score_percent : 0,
+	      correct_count: attempt.correct_count != null ? attempt.correct_count : result && result.correct_count ? result.correct_count : 0,
+	      total_count: attempt.total_count != null ? attempt.total_count : result && result.total_count ? result.total_count : 0,
+	      pass_percent: attempt.pass_percent != null ? attempt.pass_percent : result && result.pass_percent ? result.pass_percent : 0,
+	      passed: attempt.passed != null ? attempt.passed : Boolean(result && result.passed),
+	      test_id: attempt.test_id || (result && result.test_id) || "",
+	    });
+	  }
+
+	  function resultMap(result) {
+	    const list = (result && result.results) || (result && result.attempt && result.attempt.results) || [];
+	    return list.reduce((acc, item) => {
+	      if (item && item.question_id) acc[item.question_id] = item;
+	      return acc;
+	    }, {});
+	  }
+
+	  async function refreshStudentProgressAfterTest() {
+	    try {
+	      const me = await api("/api/me");
+	      state.me = me;
+	    } catch (_) {}
+	    await refreshLevels();
+	  }
 
   async function renderAssignment() {
     const level = (state.me && state.me.user && state.me.user.current_level) || 1;
@@ -3532,11 +3795,17 @@
     });
   }
 
-  function bindNext() {
-    document.querySelectorAll("[data-next]").forEach((button) => {
-      button.addEventListener("click", () => setScreen(button.dataset.next));
-    });
-  }
+	  function bindNext() {
+	    document.querySelectorAll("[data-next]").forEach((button) => {
+	      button.addEventListener("click", () => {
+	        if (button.dataset.next === "test") {
+	          openTest();
+	          return;
+	        }
+	        setScreen(button.dataset.next);
+	      });
+	    });
+	  }
 
   async function refreshLevels() {
     try {

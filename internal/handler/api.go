@@ -249,11 +249,7 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if errors.Is(err, repository.ErrReceiptDuplicate) {
-			if s.bot != nil {
-				for _, adminID := range s.cfg.AdminIDs {
-					_ = s.bot.SendMessage(r.Context(), adminID, formatReceiptAdminMessage("Қайталанған чек әрекеті", user, updated, receipt))
-				}
-			}
+			s.notifyReceiptAdmins(r.Context(), user, updated, duplicateReceiptAttempt(receipt))
 			writeError(w, http.StatusConflict, "duplicate receipt")
 			return
 		}
@@ -274,11 +270,23 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 		if updated.Status == repository.PaymentStatusApproved {
 			_ = s.bot.SendMessage(r.Context(), user.TelegramID, formatPaymentApprovedMessage(user.Language, updated))
 		}
-		for _, adminID := range s.cfg.AdminIDs {
-			_ = s.bot.SendMessage(r.Context(), adminID, formatReceiptAdminMessage("Төлем чегі өңделді", user, updated, receipt))
-		}
+		s.notifyReceiptAdmins(r.Context(), user, updated, receipt)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"payment": updated, "receipt": receipt})
+}
+
+func (s *Server) notifyReceiptAdmins(ctx context.Context, user repository.User, payment repository.Payment, receipt repository.Receipt) {
+	if s.bot == nil {
+		return
+	}
+	notifier, ok := s.bot.(ReceiptAdminNotifier)
+	if !ok {
+		if s.logger != nil {
+			s.logger.Warn("receipt admin notification skipped because bot cannot send documents", zap.String("payment_id", payment.ID), zap.String("receipt_id", receipt.ID))
+		}
+		return
+	}
+	notifier.NotifyReceiptAdmins(ctx, user, payment, receipt)
 }
 
 func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
@@ -443,7 +451,17 @@ func (s *Server) handleSubmitTest(w http.ResponseWriter, r *http.Request) {
 	if mapRepoError(w, err) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"attempt": attempt, "progress": progress})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"attempt":       attempt,
+		"progress":      progress,
+		"passed":        attempt.Passed,
+		"score_percent": attempt.ScorePercent,
+		"correct_count": attempt.CorrectCount,
+		"total_count":   attempt.TotalCount,
+		"pass_percent":  attempt.PassPercent,
+		"attempt_id":    attempt.ID,
+		"results":       attempt.Results,
+	})
 }
 
 func (s *Server) handleFinancialIQResult(w http.ResponseWriter, r *http.Request) {

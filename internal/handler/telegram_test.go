@@ -3,8 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -234,5 +237,197 @@ func TestTelegramTemporaryTestCommandHandlesInviteError(t *testing.T) {
 	}
 	if got := sent[0]["text"]; got != "Сілтеме жасау мүмкін болмады. Бот канал/топта админ екенін тексеріңіз." {
 		t.Fatalf("unexpected friendly error message: %#v", got)
+	}
+}
+
+func TestTelegramNotifyReceiptAdminsSendsDocumentWithKazakhCaptionToEveryAdmin(t *testing.T) {
+	ctx := context.Background()
+	receiptPath := filepath.Join(t.TempDir(), "receipt.pdf")
+	if err := os.WriteFile(receiptPath, []byte("pdf body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bot := NewTelegramBot("test-token", nil, NewMemoryKV(), t.TempDir(), "https://mini.example/app", []int64{111, 222}, 1024*1024, zap.NewNop())
+	type sentDocument struct {
+		chatID   string
+		caption  string
+		fileName string
+		body     string
+	}
+	var documents []sentDocument
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sendDocument" {
+			t.Errorf("unexpected telegram method %q", r.URL.Path)
+			http.Error(w, "unexpected method", http.StatusNotFound)
+			return
+		}
+		if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+			t.Errorf("parse multipart: %v", err)
+			http.Error(w, "bad multipart", http.StatusBadRequest)
+			return
+		}
+		file, header, err := r.FormFile("document")
+		if err != nil {
+			t.Errorf("document file missing: %v", err)
+			http.Error(w, "missing document", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		raw, _ := io.ReadAll(file)
+		chatID := r.FormValue("chat_id")
+		documents = append(documents, sentDocument{
+			chatID:   chatID,
+			caption:  r.FormValue("caption"),
+			fileName: header.Filename,
+			body:     string(raw),
+		})
+		w.Header().Set("Content-Type", "application/json")
+		if chatID == "111" {
+			_, _ = w.Write([]byte(`{"ok":false,"description":"admin blocked bot"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+	}))
+	t.Cleanup(api.Close)
+	bot.apiBase = api.URL
+
+	parsedAmount := 8900
+	payment := repository.Payment{
+		ID:           "payment-1",
+		PaymentType:  repository.PaymentTypeSubscription,
+		TariffTitle:  "BASIC",
+		AmountKZT:    9900,
+		Status:       repository.PaymentStatusUploadedReceipt,
+		ContactPhone: "+77001002030",
+		CreatedAt:    time.Date(2026, 5, 20, 9, 30, 0, 0, time.UTC),
+	}
+	receipt := repository.Receipt{
+		ID:                 "receipt-1",
+		FilePath:           receiptPath,
+		FileName:           "../../bad receipt.pdf",
+		FileHash:           "hash",
+		ParsedAmountKZT:    &parsedAmount,
+		ParsedRecipientBIN: "111111111111",
+		ValidationStatus:   repository.ReceiptStatusSuspicious,
+		ValidationErrors:   []string{"amount_mismatch", "recipient_bin_mismatch"},
+		CreatedAt:          time.Date(2026, 5, 20, 9, 45, 0, 0, time.UTC),
+	}
+	user := repository.User{
+		TelegramID: 777,
+		Username:   "aliya",
+		FirstName:  "Әлия",
+		LastName:   "Нұр",
+	}
+
+	bot.NotifyReceiptAdmins(ctx, user, payment, receipt)
+
+	if len(documents) != 2 {
+		t.Fatalf("expected sendDocument for both admins, got %d", len(documents))
+	}
+	if documents[0].chatID != "111" || documents[1].chatID != "222" {
+		t.Fatalf("unexpected admin chat ids: %#v", documents)
+	}
+	for _, doc := range documents {
+		if doc.fileName != "bad_receipt.pdf" {
+			t.Fatalf("expected safe receipt filename, got %q", doc.fileName)
+		}
+		if doc.body != "pdf body" {
+			t.Fatalf("document body = %q", doc.body)
+		}
+		if doc.caption == "" {
+			t.Fatal("document caption is empty")
+		}
+		if strings.Contains(doc.caption, receiptPath) || strings.Contains(doc.caption, api.URL) {
+			t.Fatalf("caption exposed path or URL: %s", doc.caption)
+		}
+	}
+	caption := documents[1].caption
+	for _, fragment := range []string{
+		"🧾 Жаңа төлем чегі келді",
+		"Қолданушы: Әлия Нұр",
+		"Telegram: @aliya",
+		"Telegram ID: 777",
+		"Байланыс нөмірі: +77001002030",
+		"Тариф/курс: BASIC",
+		"Төлем сомасы: 9 900 ₸",
+		"Статус: қолмен тексеру қажет",
+		"Төлем ID: payment-1",
+		"Анықталған сома: 8 900 ₸",
+		"БИН/ИИН: 111111111111",
+		"Бірегейлік: бірегей",
+		"Тексеру нәтижесі: қолмен тексеру қажет",
+		"Себеп: сома сәйкес емес; БИН/ИИН сәйкес емес",
+		"Әкімші панелінен тексеріп, төлемді растаңыз немесе қабылдамаңыз.",
+	} {
+		if !strings.Contains(caption, fragment) {
+			t.Fatalf("caption missing %q in:\n%s", fragment, caption)
+		}
+	}
+}
+
+func TestReceiptAdminCaptionUsesFallbacksAndAutoApprovedStatus(t *testing.T) {
+	payment := repository.Payment{
+		ID:          "payment-2",
+		PaymentType: repository.PaymentTypePremiumCourse,
+		Status:      repository.PaymentStatusApproved,
+		CreatedAt:   time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+	}
+	receipt := repository.Receipt{
+		ValidationStatus: repository.ReceiptStatusApproved,
+		CreatedAt:        time.Date(2026, 5, 20, 10, 5, 0, 0, time.UTC),
+	}
+
+	caption := formatReceiptAdminMessage(repository.User{}, payment, receipt)
+	for _, fragment := range []string{
+		"Қолданушы: Көрсетілмеген",
+		"Telegram: Жоқ",
+		"Telegram ID: Жоқ",
+		"Байланыс нөмірі: Көрсетілмеген",
+		"Тариф/курс: Premium курс",
+		"Төлем сомасы: Анықталмады",
+		"Статус: автоматты түрде расталды",
+		"Анықталған сома: Анықталмады",
+		"БИН/ИИН: Анықталмады",
+		"Бірегейлік: Анықталмады",
+		"Себеп: Қате табылмады",
+		"Төлем автоматты түрде расталды.",
+	} {
+		if !strings.Contains(caption, fragment) {
+			t.Fatalf("caption missing %q in:\n%s", fragment, caption)
+		}
+	}
+	for _, raw := range []string{"null", "undefined", "<nil>"} {
+		if strings.Contains(caption, raw) {
+			t.Fatalf("caption contains raw technical value %q: %s", raw, caption)
+		}
+	}
+}
+
+func TestReceiptAdminCaptionMarksDuplicateAttemptForManualReview(t *testing.T) {
+	payment := repository.Payment{
+		ID:          "payment-3",
+		PaymentType: repository.PaymentTypeSubscription,
+		TariffTitle: "STANDARD",
+		AmountKZT:   24900,
+		Status:      repository.PaymentStatusApproved,
+		CreatedAt:   time.Date(2026, 5, 20, 11, 0, 0, 0, time.UTC),
+	}
+	receipt := duplicateReceiptAttempt(repository.Receipt{
+		ValidationStatus: repository.ReceiptStatusApproved,
+		FileHash:         "hash",
+		CreatedAt:        time.Date(2026, 5, 20, 11, 5, 0, 0, time.UTC),
+	})
+
+	caption := formatReceiptAdminMessage(repository.User{TelegramID: 888}, payment, receipt)
+	for _, fragment := range []string{
+		"Статус: қолмен тексеру қажет",
+		"Бірегейлік: қайталанған чек",
+		"Тексеру нәтижесі: қайталанған чек",
+		"Себеп: чек бұрын қолданылған",
+		"Әкімші панелінен тексеріп, төлемді растаңыз немесе қабылдамаңыз.",
+	} {
+		if !strings.Contains(caption, fragment) {
+			t.Fatalf("duplicate caption missing %q in:\n%s", fragment, caption)
+		}
 	}
 }

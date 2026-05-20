@@ -1193,6 +1193,16 @@ body.landing-mode {
   gap: 8px;
 }
 
+.lesson-detail-card {
+  display: grid;
+  gap: 14px;
+}
+
+.lesson-detail-actions {
+  display: grid;
+  gap: 10px;
+}
+
 .tariff-card {
   display: grid;
   gap: 12px;
@@ -2141,6 +2151,141 @@ select:focus {
   line-height: 1.4;
 }
 
+.test-question-card {
+  display: grid;
+  gap: 12px;
+}
+
+.test-result-card {
+  display: grid;
+  gap: 14px;
+  border-color: rgba(200, 162, 74, 0.24);
+}
+
+.test-result-card.passed {
+  border-color: rgba(112, 217, 158, 0.42);
+}
+
+.test-result-card.failed {
+  border-color: rgba(255, 107, 107, 0.42);
+}
+
+.test-result-stats {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.test-result-stats div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(10, 13, 19, 0.55);
+}
+
+.test-result-stats span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.test-result-stats strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+.test-unlock-note {
+  margin: 0;
+  color: var(--success);
+  font-weight: 800;
+}
+
+.test-answer-review {
+  display: grid;
+  gap: 12px;
+}
+
+.test-option.reviewed {
+  cursor: default;
+}
+
+.test-option.reviewed input {
+  pointer-events: none;
+}
+
+.test-option.reviewed.correct {
+  border-color: rgba(112, 217, 158, 0.58);
+  background: rgba(112, 217, 158, 0.12);
+}
+
+.test-option.reviewed.wrong {
+  border-color: rgba(255, 107, 107, 0.58);
+  background: rgba(214, 80, 70, 0.16);
+}
+
+.test-option.reviewed.selected {
+  box-shadow: inset 0 0 0 1px rgba(245, 241, 232, 0.05);
+}
+
+.test-option.reviewed.correct span {
+  color: #dff8e9;
+}
+
+.test-option.reviewed.wrong span {
+  color: #ffd7d2;
+}
+
+.test-option em {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-style: normal;
+}
+
+.answer-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.answer-badge.correct {
+  color: var(--success);
+  border-color: rgba(112, 217, 158, 0.42);
+  background: rgba(112, 217, 158, 0.12);
+}
+
+.answer-badge.yours {
+  color: var(--gold-bright);
+  border-color: rgba(232, 206, 140, 0.36);
+  background: rgba(200, 162, 74, 0.1);
+}
+
+.test-result-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+@media (min-width: 620px) {
+  .test-result-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .test-result-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 /* =============================================================
    BOTTOM CTA / TABBAR
    ============================================================= */
@@ -3038,6 +3183,13 @@ tr:hover td {
   z-index: 900;
 }
 
+.legal-backdrop {
+  padding: max(12px, var(--tg-safe-area-inset-top), env(safe-area-inset-top, 0px))
+    max(12px, env(safe-area-inset-right, 0px))
+    max(18px, var(--tg-safe-area-inset-bottom), env(safe-area-inset-bottom, 0px))
+    max(12px, env(safe-area-inset-left, 0px));
+}
+
 .modal {
   width: min(480px, 100%);
   max-height: min(
@@ -3061,9 +3213,10 @@ tr:hover td {
 .modal.legal-modal {
   width: min(760px, calc(100vw - 24px));
   max-height: min(
-    92dvh,
-    calc(var(--browser-viewport-height) - var(--app-top-padding) - var(--app-bottom-padding) - 12px)
+    84dvh,
+    calc(var(--viewport-stable-height) - var(--app-top-padding) - var(--app-bottom-padding) - 56px)
   );
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .modal-head {
@@ -3135,8 +3288,8 @@ tr:hover td {
 }
 
 .legal-doc-shell {
-  min-height: 260px;
-  max-height: min(58dvh, 560px);
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding: 16px;

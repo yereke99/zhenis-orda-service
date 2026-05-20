@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -93,6 +94,10 @@ func (b *TelegramBot) StartLongPolling(ctx context.Context) {
 
 func (b *TelegramBot) SendMessage(ctx context.Context, chatID int64, text string) error {
 	return b.sendMessage(ctx, chatID, text, nil)
+}
+
+func (b *TelegramBot) SendDocument(ctx context.Context, chatID int64, filePath, fileName, caption string) error {
+	return b.sendDocument(ctx, chatID, filePath, fileName, caption)
 }
 
 func (b *TelegramBot) CreateInviteLink(ctx context.Context, chatID, name string, expiresAt time.Time) (string, error) {
@@ -558,7 +563,7 @@ func (b *TelegramBot) handleReceiptUpload(ctx context.Context, user repository.U
 		case errors.Is(err, repository.ErrReceiptAlreadyApproved):
 			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "receipt_already_approved"))
 		case errors.Is(err, repository.ErrReceiptDuplicate):
-			b.notifyReceiptAdmins(ctx, user, payment, receipt, "Duplicate receipt upload attempt")
+			b.NotifyReceiptAdmins(ctx, user, payment, duplicateReceiptAttempt(receipt))
 			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "receipt_duplicate"))
 		case errors.Is(err, repository.ErrPaymentExpired):
 			return b.SendMessage(ctx, msg.Chat.ID, i18n.T(user.Language, "payment_expired"))
@@ -576,7 +581,7 @@ func (b *TelegramBot) handleReceiptUpload(ctx context.Context, user repository.U
 	if err := b.SendMessage(ctx, msg.Chat.ID, userMessage); err != nil {
 		return err
 	}
-	b.notifyReceiptAdmins(ctx, user, payment, receipt, "Payment receipt processed")
+	b.NotifyReceiptAdmins(ctx, user, payment, receipt)
 	return nil
 }
 
@@ -609,9 +614,29 @@ func receiptHasValidationError(receipt repository.Receipt, code string) bool {
 	return false
 }
 
-func (b *TelegramBot) notifyReceiptAdmins(ctx context.Context, user repository.User, payment repository.Payment, receipt repository.Receipt, title string) {
+func (b *TelegramBot) NotifyReceiptAdmins(ctx context.Context, user repository.User, payment repository.Payment, receipt repository.Receipt) {
+	caption := formatReceiptAdminMessage(user, payment, receipt)
+	filePath := strings.TrimSpace(receipt.FilePath)
+	if filePath == "" {
+		filePath = strings.TrimSpace(payment.ReceiptFilePath)
+	}
+	fileName := safeTelegramDocumentFileName(receipt.FileName)
 	for _, adminID := range b.adminIDs {
-		_ = b.SendMessage(ctx, adminID, formatReceiptAdminMessage(title, user, payment, receipt))
+		if adminID == 0 {
+			continue
+		}
+		if err := b.SendDocument(ctx, adminID, filePath, fileName, caption); err != nil {
+			if b.logger != nil {
+				b.logger.Warn(
+					"receipt admin document notification failed",
+					zap.Int64("admin_id", adminID),
+					zap.String("payment_id", payment.ID),
+					zap.String("receipt_id", receipt.ID),
+					zap.Error(err),
+				)
+			}
+			continue
+		}
 	}
 }
 
@@ -685,6 +710,103 @@ func (b *TelegramBot) sendMessage(ctx context.Context, chatID int64, text string
 		return fmt.Errorf("telegram sendMessage failed: %s", resp.Description)
 	}
 	return nil
+}
+
+func (b *TelegramBot) sendDocument(ctx context.Context, chatID int64, filePath, fileName, caption string) error {
+	if chatID == 0 {
+		return fmt.Errorf("telegram chat id is empty")
+	}
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return fmt.Errorf("receipt file path is empty")
+	}
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return err
+	}
+	if strings.TrimSpace(caption) != "" {
+		if err := writer.WriteField("caption", caption); err != nil {
+			return err
+		}
+	}
+	part, err := writer.CreateFormFile("document", safeTelegramDocumentFileName(fileName))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiBase+"/sendDocument", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("telegram sendDocument status %d: %s", resp.StatusCode, string(raw))
+	}
+	var decoded struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return err
+	}
+	if !decoded.OK {
+		return fmt.Errorf("telegram sendDocument failed: %s", decoded.Description)
+	}
+	return nil
+}
+
+func safeTelegramDocumentFileName(fileName string) string {
+	fileName = filepath.Base(strings.TrimSpace(fileName))
+	if fileName == "" || fileName == "." || fileName == string(filepath.Separator) {
+		fileName = "receipt.pdf"
+	}
+	ext := strings.ToLower(filepath.Ext(fileName))
+	base := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	var clean strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z':
+			clean.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			clean.WriteRune(r)
+		case r >= '0' && r <= '9':
+			clean.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			clean.WriteRune(r)
+		default:
+			clean.WriteRune('_')
+		}
+	}
+	name := strings.Trim(clean.String(), "._-")
+	if name == "" {
+		name = "receipt"
+	}
+	if len(name) > 80 {
+		name = strings.Trim(name[:80], "._-")
+	}
+	if ext != ".pdf" {
+		ext = ".pdf"
+	}
+	return name + ext
 }
 
 func (b *TelegramBot) postJSON(ctx context.Context, method string, payload any, dest any) error {

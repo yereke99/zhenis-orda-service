@@ -383,14 +383,21 @@ func (s *Store) SubmitTest(ctx context.Context, userID string, levelNumber int, 
 		}
 		correct := 0
 		correctByQuestion := map[string]bool{}
+		results := make([]TestAnswerResult, 0, total)
 		for _, question := range test.Questions {
 			selectedID := selected[question.ID]
+			result := TestAnswerResult{QuestionID: question.ID, SelectedOptionID: selectedID}
 			for _, option := range question.Options {
+				if option.IsCorrect {
+					result.CorrectOptionID = option.ID
+				}
 				if option.ID == selectedID && option.IsCorrect {
 					correct++
 					correctByQuestion[question.ID] = true
 				}
 			}
+			result.IsCorrect = correctByQuestion[question.ID]
+			results = append(results, result)
 		}
 		score := int(math.Round(float64(correct) / float64(total) * 100))
 		passed := score >= test.PassPercent
@@ -415,7 +422,7 @@ func (s *Store) SubmitTest(ctx context.Context, userID string, levelNumber int, 
 				return err
 			}
 		}
-		attempt = TestAttempt{ID: attemptID, UserID: userID, TestID: test.ID, ScorePercent: score, CorrectCount: correct, TotalCount: total, Passed: passed, CreatedAt: nowUTC()}
+		attempt = TestAttempt{ID: attemptID, UserID: userID, TestID: test.ID, ScorePercent: score, CorrectCount: correct, TotalCount: total, PassPercent: test.PassPercent, Passed: passed, Results: results, CreatedAt: nowUTC()}
 		p, err := s.recalculateUserProgressTx(ctx, tx, userID)
 		if err != nil {
 			return err
