@@ -243,6 +243,9 @@ func (s *Store) approvePaymentTx(ctx context.Context, tx *sql.Tx, paymentID stri
 		return Payment{}, err
 	}
 	if enforceReviewRules && receipt != nil {
+		if receiptBlocksApproval(*receipt) {
+			return Payment{}, ErrInvalidState
+		}
 		comment := strings.TrimSpace(overrideComment)
 		switch receipt.ValidationStatus {
 		case ReceiptStatusDuplicate, ReceiptStatusSuspicious, ReceiptStatusRejected:

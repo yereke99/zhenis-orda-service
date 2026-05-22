@@ -5627,10 +5627,12 @@
       ${statusBadge(receipt.validation_status)}
       <span>Байланыс: ${esc(payment.contact_phone || "—")}</span>
       <span>Төлем сомасы: ${money(payment.amount_kzt)} ₸</span>
+      <span>Рұқсат етілген ауытқу: ${typeof receipt.amount_tolerance_kzt === "number" ? `${money(receipt.amount_tolerance_kzt)} ₸` : "—"}</span>
       <span>Чектегі сома: ${receipt.parsed_amount_kzt ? `${money(receipt.parsed_amount_kzt)} ₸` : "—"}</span>
       <span>Айырма: ${diff === null ? "—" : `${money(diff)} ₸`}</span>
       <span>БИН: ${esc(receipt.parsed_recipient_bin || "—")}</span>
       <span>Күтілетін БИН: ${esc(receipt.expected_recipient_bin || "—")}</span>
+      <span>Валюта: ${esc(receipt.parsed_currency || "—")}</span>
       <span>Транзакция: ${esc(receipt.receipt_transaction_key || receipt.parsed_transaction_id || receipt.parsed_check_id || "—")}</span>
       <span>Провайдер: ${esc(receipt.provider || "unknown")}</span>
       <span>QR: ${receipt.qr_found ? "QR табылды" : "QR табылмады"}</span>

@@ -64,6 +64,7 @@ func main() {
 		bot = handler.NewTelegramBot(cfg.Token, store, kv, cfg.PaymentDir, cfg.MiniAppURL, cfg.AdminIDs, cfg.MaxReceiptBytes, log)
 		bot.SetReceiptValidationOptions(repository.ReceiptValidationOptions{
 			ExpectedRecipientBIN: cfg.PaymentRecipientBIN,
+			AllowedRecipientBINs: cfg.PaymentAllowedMerchantIINBINs,
 			AmountToleranceKZT:   cfg.PaymentAmountToleranceKZT,
 			SubscriptionDays:     cfg.SubscriptionDefaultDays,
 		})

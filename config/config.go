@@ -12,42 +12,43 @@ import (
 )
 
 type Config struct {
-	Token                       string
-	Port                        string
-	Env                         string
-	BaseURL                     string
-	MiniAppURL                  string
-	DBPath                      string
-	RedisAddr                   string
-	RedisPassword               string
-	RedisDB                     int
-	AdminIDs                    []int64
-	AdminPasswordHash           string
-	UploadDir                   string
-	BookUploadDir               string
-	FreeLessonUploadDir         string
-	PaymentDir                  string
-	AllowedOrigins              []string
-	WhatsAppSalesPhone          string
-	KaspiPayURL                 string
-	KaspiQRImageURL             string
-	HalykPaymentURL             string
-	BankCardPaymentURL          string
-	PaymentPendingTTL           time.Duration
-	PaymentRecipientBIN         string
-	PaymentAmountToleranceKZT   int
-	SubscriptionDefaultDays     int
-	TelegramLogChatID           int64
-	TelegramLogThreadID         int
-	DisableTelegramBot          bool
-	TelegramTestCommandsEnabled bool
-	MaxReceiptBytes             int64
-	MaxBookImageBytes           int64
-	MaxFreeLessonImageBytes     int64
-	BrowserSessionTTL           time.Duration
-	TelegramInitDataMaxAge      time.Duration
-	InactiveReminderCooldown    time.Duration
-	SubscriptionReminderHours   int
+	Token                         string
+	Port                          string
+	Env                           string
+	BaseURL                       string
+	MiniAppURL                    string
+	DBPath                        string
+	RedisAddr                     string
+	RedisPassword                 string
+	RedisDB                       int
+	AdminIDs                      []int64
+	AdminPasswordHash             string
+	UploadDir                     string
+	BookUploadDir                 string
+	FreeLessonUploadDir           string
+	PaymentDir                    string
+	AllowedOrigins                []string
+	WhatsAppSalesPhone            string
+	KaspiPayURL                   string
+	KaspiQRImageURL               string
+	HalykPaymentURL               string
+	BankCardPaymentURL            string
+	PaymentPendingTTL             time.Duration
+	PaymentRecipientBIN           string
+	PaymentAllowedMerchantIINBINs []string
+	PaymentAmountToleranceKZT     int
+	SubscriptionDefaultDays       int
+	TelegramLogChatID             int64
+	TelegramLogThreadID           int
+	DisableTelegramBot            bool
+	TelegramTestCommandsEnabled   bool
+	MaxReceiptBytes               int64
+	MaxBookImageBytes             int64
+	MaxFreeLessonImageBytes       int64
+	BrowserSessionTTL             time.Duration
+	TelegramInitDataMaxAge        time.Duration
+	InactiveReminderCooldown      time.Duration
+	SubscriptionReminderHours     int
 }
 
 var defaultAdminIDs = []int64{800703982, 513594097}
@@ -56,40 +57,53 @@ func Load() (Config, error) {
 	uploadDir := getEnv("UPLOAD_DIR", "uploads")
 	recipientBIN := strings.TrimSpace(os.Getenv("PAYMENT_RECIPIENT_BIN"))
 	if recipientBIN == "" {
-		recipientBIN = getEnv("PAYMENT_COMPANY_BIN", "830520499025")
+		recipientBIN = strings.TrimSpace(os.Getenv("PAYMENT_COMPANY_BIN"))
+	}
+	allowedMerchantIINBINs := splitDigitCSV(os.Getenv("PAYMENT_ALLOWED_MERCHANT_IIN_BINS"))
+	if len(allowedMerchantIINBINs) == 0 {
+		if recipientBIN == "" {
+			recipientBIN = "830520499025"
+		}
+		if normalized := digitsOnly(recipientBIN); normalized != "" {
+			allowedMerchantIINBINs = []string{normalized}
+		}
+	}
+	if recipientBIN == "" && len(allowedMerchantIINBINs) > 0 {
+		recipientBIN = allowedMerchantIINBINs[0]
 	}
 	cfg := Config{
-		Token:                     "8146044709:AAGljvxX5uoj1TkYcAA05XKkhgmOffHadtY",
-		Port:                      getEnv("PORT", "8088"),
-		Env:                       getEnv("ENV", "development"),
-		BaseURL:                   strings.TrimRight(getEnv("BASE_URL", "https://zhenis-orda.kz"), "/"),
-		MiniAppURL:                strings.TrimRight(getEnv("MINI_APP_URL", "https://zhenis-orda.kz"), "/"),
-		DBPath:                    getEnv("DB_PATH", "data/zhenis_orda.sqlite"),
-		RedisAddr:                 getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisPassword:             "YOUR_PASSWORD_HERE_1999",
-		AdminPasswordHash:         strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
-		AdminIDs:                  defaultAdminIDs,
-		UploadDir:                 uploadDir,
-		BookUploadDir:             getEnv("BOOK_UPLOAD_DIR", filepath.Join(uploadDir, "books")),
-		FreeLessonUploadDir:       getEnv("FREE_LESSON_UPLOAD_DIR", filepath.Join(uploadDir, "free-lessons")),
-		PaymentDir:                getEnv("PAYMENT_DIR", "payment"),
-		AllowedOrigins:            splitCSV(getEnv("ALLOWED_ORIGINS", "https://zhenis-orda.kz")),
-		WhatsAppSalesPhone:        digitsOnly(os.Getenv("WHATSAPP_SALES_PHONE")),
-		KaspiPayURL:               "https://pay.kaspi.kz/pay/vdx8u2ff",
-		KaspiQRImageURL:           os.Getenv("KASPI_QR_IMAGE_URL"),
-		HalykPaymentURL:           os.Getenv("HALYK_PAYMENT_URL"),
-		BankCardPaymentURL:        os.Getenv("BANK_CARD_PAYMENT_URL"),
-		PaymentRecipientBIN:       digitsOnly(recipientBIN),
-		PaymentAmountToleranceKZT: getEnvInt("PAYMENT_AMOUNT_TOLERANCE_KZT", 500),
-		SubscriptionDefaultDays:   getEnvInt("SUBSCRIPTION_DEFAULT_DAYS", 30),
-		DisableTelegramBot:        getEnvBool("DISABLE_TELEGRAM_BOT", false),
-		MaxReceiptBytes:           int64(getEnvInt("MAX_RECEIPT_BYTES", 10*1024*1024)),
-		MaxBookImageBytes:         int64(getEnvInt("MAX_BOOK_IMAGE_BYTES", 5*1024*1024)),
-		MaxFreeLessonImageBytes:   int64(getEnvInt("MAX_FREE_LESSON_IMAGE_BYTES", 5*1024*1024)),
-		BrowserSessionTTL:         time.Duration(getEnvInt("BROWSER_SESSION_TTL_HOURS", 24)) * time.Hour,
-		TelegramInitDataMaxAge:    time.Duration(getEnvInt("TELEGRAM_INIT_DATA_MAX_AGE_HOURS", 24)) * time.Hour,
-		InactiveReminderCooldown:  time.Duration(getEnvInt("INACTIVE_REMINDER_COOLDOWN_HOURS", 72)) * time.Hour,
-		SubscriptionReminderHours: getEnvInt("SUBSCRIPTION_REMINDER_HOURS", 72),
+		Token:                         "8146044709:AAGljvxX5uoj1TkYcAA05XKkhgmOffHadtY",
+		Port:                          getEnv("PORT", "8088"),
+		Env:                           getEnv("ENV", "development"),
+		BaseURL:                       strings.TrimRight(getEnv("BASE_URL", "https://zhenis-orda.kz"), "/"),
+		MiniAppURL:                    strings.TrimRight(getEnv("MINI_APP_URL", "https://zhenis-orda.kz"), "/"),
+		DBPath:                        getEnv("DB_PATH", "data/zhenis_orda.sqlite"),
+		RedisAddr:                     getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisPassword:                 "YOUR_PASSWORD_HERE_1999",
+		AdminPasswordHash:             strings.TrimSpace(os.Getenv("ADMIN_PASSWORD_HASH")),
+		AdminIDs:                      defaultAdminIDs,
+		UploadDir:                     uploadDir,
+		BookUploadDir:                 getEnv("BOOK_UPLOAD_DIR", filepath.Join(uploadDir, "books")),
+		FreeLessonUploadDir:           getEnv("FREE_LESSON_UPLOAD_DIR", filepath.Join(uploadDir, "free-lessons")),
+		PaymentDir:                    getEnv("PAYMENT_DIR", "payment"),
+		AllowedOrigins:                splitCSV(getEnv("ALLOWED_ORIGINS", "https://zhenis-orda.kz")),
+		WhatsAppSalesPhone:            digitsOnly(os.Getenv("WHATSAPP_SALES_PHONE")),
+		KaspiPayURL:                   "https://pay.kaspi.kz/pay/vdx8u2ff",
+		KaspiQRImageURL:               os.Getenv("KASPI_QR_IMAGE_URL"),
+		HalykPaymentURL:               os.Getenv("HALYK_PAYMENT_URL"),
+		BankCardPaymentURL:            os.Getenv("BANK_CARD_PAYMENT_URL"),
+		PaymentRecipientBIN:           digitsOnly(recipientBIN),
+		PaymentAllowedMerchantIINBINs: allowedMerchantIINBINs,
+		PaymentAmountToleranceKZT:     getEnvInt("PAYMENT_AMOUNT_TOLERANCE_KZT", 500),
+		SubscriptionDefaultDays:       getEnvInt("SUBSCRIPTION_DEFAULT_DAYS", 30),
+		DisableTelegramBot:            getEnvBool("DISABLE_TELEGRAM_BOT", false),
+		MaxReceiptBytes:               int64(getEnvInt("MAX_RECEIPT_BYTES", 10*1024*1024)),
+		MaxBookImageBytes:             int64(getEnvInt("MAX_BOOK_IMAGE_BYTES", 5*1024*1024)),
+		MaxFreeLessonImageBytes:       int64(getEnvInt("MAX_FREE_LESSON_IMAGE_BYTES", 5*1024*1024)),
+		BrowserSessionTTL:             time.Duration(getEnvInt("BROWSER_SESSION_TTL_HOURS", 24)) * time.Hour,
+		TelegramInitDataMaxAge:        time.Duration(getEnvInt("TELEGRAM_INIT_DATA_MAX_AGE_HOURS", 24)) * time.Hour,
+		InactiveReminderCooldown:      time.Duration(getEnvInt("INACTIVE_REMINDER_COOLDOWN_HOURS", 72)) * time.Hour,
+		SubscriptionReminderHours:     getEnvInt("SUBSCRIPTION_REMINDER_HOURS", 72),
 	}
 
 	cfg.RedisDB = getEnvInt("REDIS_DB", 0)
@@ -143,8 +157,8 @@ func (c Config) Validate() error {
 	if c.PaymentPendingTTL <= 0 {
 		problems = append(problems, "PAYMENT_PENDING_TTL_MINUTES must be positive")
 	}
-	if c.PaymentRecipientBIN == "" {
-		problems = append(problems, "PAYMENT_RECIPIENT_BIN is required")
+	if c.PaymentRecipientBIN == "" && len(c.PaymentAllowedMerchantIINBINs) == 0 {
+		problems = append(problems, "PAYMENT_ALLOWED_MERCHANT_IIN_BINS or PAYMENT_RECIPIENT_BIN is required")
 	}
 	if c.PaymentAmountToleranceKZT < 0 {
 		problems = append(problems, "PAYMENT_AMOUNT_TOLERANCE_KZT must be zero or positive")
@@ -235,6 +249,21 @@ func splitCSV(raw string) []string {
 		if part != "" {
 			values = append(values, part)
 		}
+	}
+	return values
+}
+
+func splitDigitCSV(raw string) []string {
+	parts := splitCSV(raw)
+	values := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		value := digitsOnly(part)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		values = append(values, value)
 	}
 	return values
 }

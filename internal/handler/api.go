@@ -146,6 +146,7 @@ func (s *Server) handlePayment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) receiptValidationOptions() repository.ReceiptValidationOptions {
 	return repository.ReceiptValidationOptions{
 		ExpectedRecipientBIN: s.cfg.PaymentRecipientBIN,
+		AllowedRecipientBINs: s.cfg.PaymentAllowedMerchantIINBINs,
 		AmountToleranceKZT:   s.cfg.PaymentAmountToleranceKZT,
 		SubscriptionDays:     s.cfg.SubscriptionDefaultDays,
 	}
@@ -269,10 +270,12 @@ func (s *Server) handlePaymentReceiptUpload(w http.ResponseWriter, r *http.Reque
 	if s.bot != nil {
 		if updated.Status == repository.PaymentStatusApproved {
 			_ = s.bot.SendMessage(r.Context(), user.TelegramID, formatPaymentApprovedMessage(user.Language, updated))
+		} else if receiptUserNotificationNeeded(updated, receipt) {
+			_ = s.bot.SendMessage(r.Context(), user.TelegramID, receiptUserMessage(user.Language, updated, receipt))
 		}
 		s.notifyReceiptAdmins(r.Context(), user, updated, receipt)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"payment": updated, "receipt": receipt})
+	writeJSON(w, http.StatusOK, map[string]any{"payment": updated, "receipt": receipt, "message": receiptUserMessage(user.Language, updated, receipt)})
 }
 
 func (s *Server) notifyReceiptAdmins(ctx context.Context, user repository.User, payment repository.Payment, receipt repository.Receipt) {

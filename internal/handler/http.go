@@ -579,17 +579,26 @@ func formatReceiptAdminMessage(user repository.User, payment repository.Payment,
 	if user.TelegramID != 0 {
 		telegramID = strconv.FormatInt(user.TelegramID, 10)
 	}
-	return fmt.Sprintf("🧾 Жаңа төлем чегі келді\n\n👤 Қолданушы: %s\n🔗 Telegram: %s\n🆔 Telegram ID: %s\n📞 Байланыс нөмірі: %s\n\n🎓 Тариф/курс: %s\n💰 Төлем сомасы: %s\n📌 Статус: %s\n🧾 Төлем ID: %s\n\n📄 Чек ақпараты:\n• Анықталған сома: %s\n• БИН/ИИН: %s\n• Бірегейлік: %s\n• Тексеру нәтижесі: %s\n• Себеп: %s\n\n🕒 Төлем құрылған уақыт: %s\n🕒 Чек жіберілген уақыт: %s\n\n%s",
+	title := "🧾 Жаңа төлем чегі келді"
+	if paymentAutoRejectedReceipt(payment) {
+		title = "🧾 Төлем чегі автоматты түрде қабылданбады"
+	}
+	return fmt.Sprintf("%s\n\n👤 Қолданушы: %s\n🔗 Telegram: %s\n🆔 Telegram ID: %s\n📞 Байланыс нөмірі: %s\n\n🎓 Тариф/курс: %s\n💰 Күтілген сома: %s\n📏 Рұқсат етілген ауытқу: %s\n📌 Статус: %s\n🧾 Төлем ID: %s\n\n📄 Чек ақпараты:\n• Чектегі сома: %s\n• Валюта: %s\n• Сатушы БИН/ИИН: %s\n• Күтілетін БИН/ИИН: %s\n• Чек нөмірі: %s\n• Бірегейлік: %s\n• Тексеру нәтижесі: %s\n• Себеп: %s\n\n🕒 Төлем құрылған уақыт: %s\n🕒 Чек жіберілген уақыт: %s\n\n%s",
+		title,
 		fullName,
 		username,
 		telegramID,
 		contactPhone,
 		cleanCaptionValue(paymentDisplayTitle(payment), "Көрсетілмеген"),
 		optionalKZTAmount(payment.AmountKZT),
+		receiptToleranceText(receipt),
 		adminPaymentStatusText(payment, receipt),
 		cleanCaptionValue(payment.ID, "Жоқ"),
 		receiptAmountText(receipt),
+		receiptCurrencyText(receipt),
 		cleanCaptionValue(receipt.ParsedRecipientBIN, "Анықталмады"),
+		cleanCaptionValue(receipt.ExpectedRecipientBIN, "Анықталмады"),
+		cleanCaptionValue(firstNonEmpty(receipt.ParsedCheckID, receipt.ReceiptTransactionKey, receipt.ParsedTransactionID), "Анықталмады"),
 		receiptUniquenessText(receipt),
 		receiptValidationResultText(receipt),
 		receiptValidationReasonText(receipt),
@@ -604,6 +613,17 @@ func receiptAmountText(receipt repository.Receipt) string {
 		return "Анықталмады"
 	}
 	return formatKZTAmount(*receipt.ParsedAmountKZT) + " ₸"
+}
+
+func receiptToleranceText(receipt repository.Receipt) string {
+	if receipt.AmountToleranceKZT < 0 {
+		return "Анықталмады"
+	}
+	return formatKZTAmount(receipt.AmountToleranceKZT) + " ₸"
+}
+
+func receiptCurrencyText(receipt repository.Receipt) string {
+	return cleanCaptionValue(receipt.ParsedCurrency, "Анықталмады")
 }
 
 func optionalKZTAmount(amount int) string {
@@ -647,6 +667,9 @@ func captionTime(value time.Time) string {
 }
 
 func adminPaymentStatusText(payment repository.Payment, receipt repository.Receipt) string {
+	if paymentAutoRejectedReceipt(payment) {
+		return "автоматты түрде қабылданбады"
+	}
 	if receiptNeedsManualReview(payment, receipt) {
 		return "қолмен тексеру қажет"
 	}
@@ -671,6 +694,9 @@ func adminPaymentStatusText(payment repository.Payment, receipt repository.Recei
 }
 
 func receiptNeedsManualReview(payment repository.Payment, receipt repository.Receipt) bool {
+	if payment.Status == repository.PaymentStatusRejected {
+		return false
+	}
 	if payment.Status == repository.PaymentStatusUploadedReceipt {
 		return true
 	}
@@ -680,11 +706,15 @@ func receiptNeedsManualReview(payment repository.Payment, receipt repository.Rec
 	}
 	for _, code := range receipt.ValidationErrors {
 		switch code {
-		case "duplicate_identity_found", "amount_mismatch", "recipient_bin_mismatch", "recipient_bin_missing":
+		case "duplicate_identity_found", "amount_mismatch", "currency_missing", "currency_mismatch", "recipient_bin_mismatch", "recipient_bin_missing":
 			return true
 		}
 	}
 	return false
+}
+
+func paymentAutoRejectedReceipt(payment repository.Payment) bool {
+	return payment.Status == repository.PaymentStatusRejected && strings.HasPrefix(strings.TrimSpace(payment.AdminComment), "auto_rejected:")
 }
 
 func receiptUniquenessText(receipt repository.Receipt) string {
@@ -742,6 +772,10 @@ func receiptValidationReason(code string) string {
 		return "сома анықталмады"
 	case "amount_mismatch":
 		return "сома сәйкес емес"
+	case "currency_missing":
+		return "валюта анықталмады"
+	case "currency_mismatch":
+		return "валюта KZT емес"
 	case "recipient_bin_not_configured":
 		return "күтілетін БИН/ИИН бапталмаған"
 	case "recipient_bin_missing":
@@ -784,6 +818,12 @@ func duplicateReceiptAttempt(receipt repository.Receipt) repository.Receipt {
 }
 
 func receiptAdminInstruction(payment repository.Payment, receipt repository.Receipt) string {
+	if paymentAutoRejectedReceipt(payment) {
+		return "Қолжетімділік берілмеді. Әкімші панелінен себебін тексеруге болады."
+	}
+	if payment.Status == repository.PaymentStatusRejected {
+		return "Төлем қабылданбады. Қолжетімділік берілмеді."
+	}
 	if receiptNeedsManualReview(payment, receipt) {
 		return "Әкімші панелінен тексеріп, төлемді растаңыз немесе қабылдамаңыз."
 	}

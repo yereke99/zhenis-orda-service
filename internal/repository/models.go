@@ -189,6 +189,7 @@ type Receipt struct {
 	Provider              string     `json:"provider,omitempty"`
 	ParsedAmountKZT       *int       `json:"parsed_amount_kzt,omitempty"`
 	ExpectedAmountKZT     *int       `json:"expected_amount_kzt,omitempty"`
+	AmountToleranceKZT    int        `json:"amount_tolerance_kzt,omitempty"`
 	AmountDifferenceKZT   *int       `json:"amount_difference_kzt,omitempty"`
 	ParsedCurrency        string     `json:"parsed_currency,omitempty"`
 	ParsedTransactionID   string     `json:"parsed_transaction_id,omitempty"`

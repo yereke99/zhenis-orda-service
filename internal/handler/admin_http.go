@@ -115,6 +115,7 @@ func (s *Server) handleAdminPayments(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range payments {
 		if payments[i].Receipt != nil {
+			payments[i].Receipt.AmountToleranceKZT = s.cfg.PaymentAmountToleranceKZT
 			payments[i].Receipt.FilePath = "/api/admin/receipts/" + payments[i].Receipt.ID + "/file"
 			payments[i].ReceiptFilePath = payments[i].Receipt.FilePath
 		} else {
@@ -135,6 +136,7 @@ func (s *Server) handleAdminPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if receipt, _ := s.store.LatestReceiptForPayment(r.Context(), payment.ID); receipt != nil {
+		receipt.AmountToleranceKZT = s.cfg.PaymentAmountToleranceKZT
 		receipt.FilePath = "/api/admin/receipts/" + receipt.ID + "/file"
 		payment.Receipt = receipt
 		payment.ReceiptFilePath = receipt.FilePath

@@ -349,11 +349,12 @@ func TestTelegramNotifyReceiptAdminsSendsDocumentWithKazakhCaptionToEveryAdmin(t
 		"Telegram ID: 777",
 		"Байланыс нөмірі: +77001002030",
 		"Тариф/курс: BASIC",
-		"Төлем сомасы: 9 900 ₸",
+		"Күтілген сома: 9 900 ₸",
+		"Рұқсат етілген ауытқу: 0 ₸",
 		"Статус: қолмен тексеру қажет",
 		"Төлем ID: payment-1",
-		"Анықталған сома: 8 900 ₸",
-		"БИН/ИИН: 111111111111",
+		"Чектегі сома: 8 900 ₸",
+		"Сатушы БИН/ИИН: 111111111111",
 		"Бірегейлік: бірегей",
 		"Тексеру нәтижесі: қолмен тексеру қажет",
 		"Себеп: сома сәйкес емес; БИН/ИИН сәйкес емес",
@@ -384,10 +385,10 @@ func TestReceiptAdminCaptionUsesFallbacksAndAutoApprovedStatus(t *testing.T) {
 		"Telegram ID: Жоқ",
 		"Байланыс нөмірі: Көрсетілмеген",
 		"Тариф/курс: Premium курс",
-		"Төлем сомасы: Анықталмады",
+		"Күтілген сома: Анықталмады",
 		"Статус: автоматты түрде расталды",
-		"Анықталған сома: Анықталмады",
-		"БИН/ИИН: Анықталмады",
+		"Чектегі сома: Анықталмады",
+		"Сатушы БИН/ИИН: Анықталмады",
 		"Бірегейлік: Анықталмады",
 		"Себеп: Қате табылмады",
 		"Төлем автоматты түрде расталды.",
@@ -399,6 +400,73 @@ func TestReceiptAdminCaptionUsesFallbacksAndAutoApprovedStatus(t *testing.T) {
 	for _, raw := range []string{"null", "undefined", "<nil>"} {
 		if strings.Contains(caption, raw) {
 			t.Fatalf("caption contains raw technical value %q: %s", raw, caption)
+		}
+	}
+}
+
+func TestReceiptAdminCaptionShowsAutoRejectedReason(t *testing.T) {
+	parsedAmount := 100
+	payment := repository.Payment{
+		ID:           "payment-auto-reject",
+		PaymentType:  repository.PaymentTypeSubscription,
+		TariffTitle:  "BASIC",
+		AmountKZT:    9500,
+		Status:       repository.PaymentStatusRejected,
+		AdminComment: "auto_rejected: amount_mismatch",
+		CreatedAt:    time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC),
+	}
+	receipt := repository.Receipt{
+		ParsedAmountKZT:      &parsedAmount,
+		ExpectedAmountKZT:    &payment.AmountKZT,
+		AmountToleranceKZT:   500,
+		ParsedCurrency:       "KZT",
+		ParsedRecipientBIN:   "830520499025",
+		ExpectedRecipientBIN: "830520499025",
+		ParsedCheckID:        "QR15625065508",
+		ValidationStatus:     repository.ReceiptStatusRejected,
+		ValidationErrors:     []string{"amount_mismatch"},
+		CreatedAt:            time.Date(2026, 5, 20, 12, 5, 0, 0, time.UTC),
+	}
+
+	caption := formatReceiptAdminMessage(repository.User{TelegramID: 777, FirstName: "Test"}, payment, receipt)
+	for _, fragment := range []string{
+		"Төлем чегі автоматты түрде қабылданбады",
+		"Себеп: сома сәйкес емес",
+		"Күтілген сома: 9 500 ₸",
+		"Чектегі сома: 100 ₸",
+		"Сатушы БИН/ИИН: 830520499025",
+		"Чек нөмірі: QR15625065508",
+		"Қолжетімділік берілмеді",
+	} {
+		if !strings.Contains(caption, fragment) {
+			t.Fatalf("auto rejected caption missing %q in:\n%s", fragment, caption)
+		}
+	}
+}
+
+func TestReceiptUserMessageExplainsWrongAmount(t *testing.T) {
+	parsedAmount := 100
+	payment := repository.Payment{
+		PaymentType: repository.PaymentTypeSubscription,
+		TariffTitle: "BASIC",
+		AmountKZT:   9500,
+		Status:      repository.PaymentStatusRejected,
+	}
+	receipt := repository.Receipt{
+		ParsedAmountKZT:  &parsedAmount,
+		ValidationStatus: repository.ReceiptStatusRejected,
+		ValidationErrors: []string{"amount_mismatch"},
+	}
+
+	message := receiptUserMessage("kk", payment, receipt)
+	for _, fragment := range []string{
+		"Төлем сомасы сәйкес келмейді.",
+		"Таңдалған тариф/курс: BASIC — 9 500 ₸",
+		"Чектегі сома: 100 ₸",
+		"Қолжетімділік берілмеді.",
+	} {
+		if !strings.Contains(message, fragment) {
+			t.Fatalf("message missing %q in:\n%s", fragment, message)
 		}
 	}
 }

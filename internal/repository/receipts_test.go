@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ const testRecipientBIN = "830520499025"
 func receiptOpts() repository.ReceiptValidationOptions {
 	return repository.ReceiptValidationOptions{
 		ExpectedRecipientBIN: testRecipientBIN,
+		AllowedRecipientBINs: []string{testRecipientBIN},
 		AmountToleranceKZT:   0,
 		SubscriptionDays:     30,
 	}
@@ -51,6 +53,13 @@ func hasValidationError(receipt repository.Receipt, code string) bool {
 
 func validReceiptText(tx, amount, bin string) string {
 	return "Kaspi чек transaction " + tx + " Получатель БИН " + bin + " Сумма " + amount + " ₸"
+}
+
+func setBasicTariffPrice(t *testing.T, ctx context.Context, store *repository.Store, price int) {
+	t.Helper()
+	if _, err := store.DB().ExecContext(ctx, `UPDATE tariffs SET price_kzt = ? WHERE code = 'BASIC'`, price); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestReceiptPDFValidationAutoApprovesPayment(t *testing.T) {
@@ -138,7 +147,109 @@ func TestReceiptAmountToleranceAllowsSmallDifference(t *testing.T) {
 	}
 }
 
-func TestReceiptAmountOutsideToleranceNeedsManualReview(t *testing.T) {
+func TestReceiptStrictSelectedTariffAmountAndMerchant(t *testing.T) {
+	cases := []struct {
+		name       string
+		amount     string
+		bin        string
+		text       string
+		wantStatus string
+		wantError  string
+	}{
+		{
+			name:       "100 kzt with correct merchant rejects",
+			amount:     "100",
+			bin:        testRecipientBIN,
+			wantStatus: repository.PaymentStatusRejected,
+			wantError:  "amount_mismatch",
+		},
+		{
+			name:       "exact amount valid",
+			amount:     "9 500",
+			bin:        testRecipientBIN,
+			wantStatus: repository.PaymentStatusApproved,
+		},
+		{
+			name:       "lower boundary valid",
+			amount:     "9 000",
+			bin:        testRecipientBIN,
+			wantStatus: repository.PaymentStatusApproved,
+		},
+		{
+			name:       "below lower boundary rejects",
+			amount:     "8 999",
+			bin:        testRecipientBIN,
+			wantStatus: repository.PaymentStatusRejected,
+			wantError:  "amount_mismatch",
+		},
+		{
+			name:       "wrong merchant rejects",
+			amount:     "9 500",
+			bin:        "111111111111",
+			wantStatus: repository.PaymentStatusRejected,
+			wantError:  "recipient_bin_mismatch",
+		},
+		{
+			name:       "missing merchant rejects",
+			text:       "Kaspi OFD чек transaction TX-STRICT-MISSING-BIN Сумма 9 500 ₸",
+			wantStatus: repository.PaymentStatusRejected,
+			wantError:  "recipient_bin_missing",
+		},
+		{
+			name:       "wrong currency rejects",
+			text:       "Kaspi OFD чек transaction TX-STRICT-USD ИИН/БИН продавца " + testRecipientBIN + " Сумма 9 500 USD",
+			wantStatus: repository.PaymentStatusRejected,
+			wantError:  "currency_mismatch",
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, ctx := newTestStore(t)
+			setBasicTariffPrice(t, ctx, store, 9500)
+			user := registerUser(t, ctx, store, int64(7120+i), "")
+			payment := createPayment(t, ctx, store, user.ID, "BASIC")
+			if payment.AmountKZT != 9500 {
+				t.Fatalf("payment amount = %d", payment.AmountKZT)
+			}
+			text := tc.text
+			if text == "" {
+				text = "Kaspi OFD чек transaction TX-STRICT-" + strconv.Itoa(i) + " ИИН/БИН продавца " + tc.bin + " Сумма " + tc.amount + " ₸"
+			}
+			path, size := writeReceiptPDF(t, text)
+			opts := receiptOpts()
+			opts.AmountToleranceKZT = 500
+
+			updated, receipt, err := store.AttachReceiptToPaymentWithValidation(ctx, user.ID, payment.ID, path, "kaspi.pdf", "application/pdf", size, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.Status != tc.wantStatus {
+				t.Fatalf("payment status = %s, receipt=%#v", updated.Status, receipt)
+			}
+			if tc.wantError != "" && !hasValidationError(receipt, tc.wantError) {
+				t.Fatalf("expected error %s, got %v", tc.wantError, receipt.ValidationErrors)
+			}
+			if tc.wantStatus == repository.PaymentStatusRejected {
+				sub, err := store.GetActiveSubscription(ctx, user.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if sub != nil {
+					t.Fatalf("rejected receipt opened subscription: %#v", sub)
+				}
+				updatedUser, err := store.GetUserByID(ctx, user.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if updatedUser.CurrentLevel != 0 {
+					t.Fatalf("rejected receipt changed level to %d", updatedUser.CurrentLevel)
+				}
+			}
+		})
+	}
+}
+
+func TestReceiptAmountOutsideToleranceRejectsPayment(t *testing.T) {
 	store, ctx := newTestStore(t)
 	user := registerUser(t, ctx, store, 7111, "")
 	payment := createPayment(t, ctx, store, user.ID, "BASIC")
@@ -150,11 +261,11 @@ func TestReceiptAmountOutsideToleranceNeedsManualReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != repository.PaymentStatusUploadedReceipt {
+	if updated.Status != repository.PaymentStatusRejected {
 		t.Fatalf("payment status = %s", updated.Status)
 	}
-	if receipt.ValidationStatus != repository.ReceiptStatusSuspicious || !hasValidationError(receipt, "amount_mismatch") {
-		t.Fatalf("expected manual review amount mismatch, status=%s errors=%v", receipt.ValidationStatus, receipt.ValidationErrors)
+	if receipt.ValidationStatus != repository.ReceiptStatusRejected || !hasValidationError(receipt, "amount_mismatch") {
+		t.Fatalf("expected rejected amount mismatch, status=%s errors=%v", receipt.ValidationStatus, receipt.ValidationErrors)
 	}
 }
 
@@ -191,8 +302,8 @@ func TestReceiptValidationBlocksWrongAmountAndRecipient(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if updated.Status == repository.PaymentStatusApproved {
-				t.Fatalf("invalid receipt approved: %#v", receipt)
+			if updated.Status != repository.PaymentStatusRejected {
+				t.Fatalf("invalid receipt status = %s: %#v", updated.Status, receipt)
 			}
 			if !hasValidationError(receipt, tc.wantError) {
 				t.Fatalf("expected %s, got %v", tc.wantError, receipt.ValidationErrors)
@@ -227,7 +338,7 @@ func TestReceiptDuplicateIdentitiesAreIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status == repository.PaymentStatusApproved || receipt.ValidationStatus != repository.ReceiptStatusDuplicate {
+	if updated.Status != repository.PaymentStatusRejected || receipt.ValidationStatus != repository.ReceiptStatusDuplicate {
 		t.Fatalf("same file duplicate status payment=%s receipt=%s errors=%v", updated.Status, receipt.ValidationStatus, receipt.ValidationErrors)
 	}
 
@@ -237,7 +348,7 @@ func TestReceiptDuplicateIdentitiesAreIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status == repository.PaymentStatusApproved || receipt.ValidationStatus != repository.ReceiptStatusDuplicate {
+	if updated.Status != repository.PaymentStatusRejected || receipt.ValidationStatus != repository.ReceiptStatusDuplicate {
 		t.Fatalf("same transaction duplicate status payment=%s receipt=%s errors=%v", updated.Status, receipt.ValidationStatus, receipt.ValidationErrors)
 	}
 }
@@ -263,7 +374,7 @@ func TestReceiptQRIdentityCanApproveAndRejectDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status == repository.PaymentStatusApproved || receipt.ValidationStatus != repository.ReceiptStatusDuplicate {
+	if updated.Status != repository.PaymentStatusRejected || receipt.ValidationStatus != repository.ReceiptStatusDuplicate {
 		t.Fatalf("same QR duplicate status payment=%s receipt=%s errors=%v", updated.Status, receipt.ValidationStatus, receipt.ValidationErrors)
 	}
 }
@@ -306,7 +417,7 @@ func TestReceiptDoesNotApproveExpiredCancelledOrWrongPendingPayment(t *testing.T
 	if updated.ID != newer.ID {
 		t.Fatalf("expected latest payment %s, got %s", newer.ID, updated.ID)
 	}
-	if updated.Status == repository.PaymentStatusApproved || !hasValidationError(receipt, "amount_mismatch") {
+	if updated.Status != repository.PaymentStatusRejected || !hasValidationError(receipt, "amount_mismatch") {
 		t.Fatalf("latest mismatching payment should not approve: payment=%s errors=%v", updated.Status, receipt.ValidationErrors)
 	}
 	olderAfter, err := store.GetPayment(ctx, older.ID)

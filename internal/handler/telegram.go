@@ -597,12 +597,41 @@ func receiptUserMessage(language string, payment repository.Payment, receipt rep
 	case receiptHasValidationError(receipt, "duplicate_identity_found") || receipt.ValidationStatus == repository.ReceiptStatusDuplicate:
 		return i18n.T(language, "receipt_duplicate")
 	case receiptHasValidationError(receipt, "amount_mismatch"):
-		return i18n.T(language, "receipt_wrong_amount")
+		return formatReceiptWrongAmountMessage(payment, receipt)
+	case receiptHasValidationError(receipt, "currency_missing") || receiptHasValidationError(receipt, "currency_mismatch"):
+		return "Чектегі валюта сәйкес келмейді.\nҚолжетімділік берілмеді.\nДұрыс чек жіберіңіз немесе қолдауға жазыңыз."
 	case receiptHasValidationError(receipt, "recipient_bin_mismatch") || receiptHasValidationError(receipt, "recipient_bin_missing"):
-		return i18n.T(language, "receipt_wrong_recipient")
+		return "Чектегі сатушы деректері сәйкес келмейді.\nҚолжетімділік берілмеді.\nДұрыс чек жіберіңіз немесе қолдауға жазыңыз."
+	case payment.Status == repository.PaymentStatusRejected || receipt.ValidationStatus == repository.ReceiptStatusRejected:
+		return "Төлем түбіртегі қабылданбады.\nҚолжетімділік берілмеді.\nДұрыс чек жіберіңіз немесе қолдауға жазыңыз."
 	default:
 		return i18n.T(language, "payment_uploaded")
 	}
+}
+
+func receiptUserNotificationNeeded(payment repository.Payment, receipt repository.Receipt) bool {
+	if payment.Status == repository.PaymentStatusRejected || receipt.ValidationStatus == repository.ReceiptStatusRejected || receipt.ValidationStatus == repository.ReceiptStatusDuplicate {
+		return true
+	}
+	for _, code := range receipt.ValidationErrors {
+		switch code {
+		case "duplicate_identity_found", "amount_mismatch", "currency_missing", "currency_mismatch", "recipient_bin_mismatch", "recipient_bin_missing":
+			return true
+		}
+	}
+	return false
+}
+
+func formatReceiptWrongAmountMessage(payment repository.Payment, receipt repository.Receipt) string {
+	parsedAmount := "Анықталмады"
+	if receipt.ParsedAmountKZT != nil {
+		parsedAmount = formatKZTAmount(*receipt.ParsedAmountKZT) + " ₸"
+	}
+	return fmt.Sprintf("Төлем сомасы сәйкес келмейді.\nТаңдалған тариф/курс: %s — %s\nЧектегі сома: %s\n\nҚолжетімділік берілмеді.\nДұрыс чек жіберіңіз немесе қолдауға жазыңыз.",
+		paymentDisplayTitle(payment),
+		optionalKZTAmount(payment.AmountKZT),
+		parsedAmount,
+	)
 }
 
 func receiptHasValidationError(receipt repository.Receipt, code string) bool {

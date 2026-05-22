@@ -52,27 +52,28 @@ func newTestHTTPServerWithStoreAndConfig(t *testing.T, env string, configure fun
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		Token:                     "test-token",
-		Port:                      "8080",
-		Env:                       env,
-		BaseURL:                   "http://localhost:8080",
-		MiniAppURL:                "http://localhost:8080",
-		DBPath:                    ":memory:",
-		UploadDir:                 t.TempDir(),
-		BookUploadDir:             t.TempDir(),
-		FreeLessonUploadDir:       t.TempDir(),
-		PaymentDir:                t.TempDir(),
-		AllowedOrigins:            []string{"http://localhost:8080"},
-		WhatsAppSalesPhone:        "77476823396",
-		PaymentPendingTTL:         time.Hour,
-		PaymentRecipientBIN:       "830520499025",
-		PaymentAmountToleranceKZT: 0,
-		SubscriptionDefaultDays:   30,
-		MaxReceiptBytes:           1024 * 1024,
-		MaxBookImageBytes:         1024 * 1024,
-		MaxFreeLessonImageBytes:   1024 * 1024,
-		BrowserSessionTTL:         time.Hour,
-		TelegramInitDataMaxAge:    time.Hour,
+		Token:                         "test-token",
+		Port:                          "8080",
+		Env:                           env,
+		BaseURL:                       "http://localhost:8080",
+		MiniAppURL:                    "http://localhost:8080",
+		DBPath:                        ":memory:",
+		UploadDir:                     t.TempDir(),
+		BookUploadDir:                 t.TempDir(),
+		FreeLessonUploadDir:           t.TempDir(),
+		PaymentDir:                    t.TempDir(),
+		AllowedOrigins:                []string{"http://localhost:8080"},
+		WhatsAppSalesPhone:            "77476823396",
+		PaymentPendingTTL:             time.Hour,
+		PaymentRecipientBIN:           "830520499025",
+		PaymentAllowedMerchantIINBINs: []string{"830520499025"},
+		PaymentAmountToleranceKZT:     0,
+		SubscriptionDefaultDays:       30,
+		MaxReceiptBytes:               1024 * 1024,
+		MaxBookImageBytes:             1024 * 1024,
+		MaxFreeLessonImageBytes:       1024 * 1024,
+		BrowserSessionTTL:             time.Hour,
+		TelegramInitDataMaxAge:        time.Hour,
 	}
 	if configure != nil {
 		configure(&cfg)
@@ -1142,6 +1143,80 @@ func TestMiniAppReceiptUpload(t *testing.T) {
 	}
 	if uploaded.Payment.Status != repository.PaymentStatusApproved {
 		t.Fatalf("expected auto-approved payment, got %s with receipt %#v", uploaded.Payment.Status, uploaded.Receipt)
+	}
+}
+
+func TestMiniAppReceiptUploadRejectsWrongAmountNoAccess(t *testing.T) {
+	srv, store := newTestHTTPServerWithStoreAndConfig(t, "development", func(cfg *config.Config) {
+		cfg.PaymentAmountToleranceKZT = 500
+	})
+	ctx := context.Background()
+	if _, err := store.DB().ExecContext(ctx, `UPDATE tariffs SET price_kzt = 9500 WHERE code = 'BASIC'`); err != nil {
+		t.Fatal(err)
+	}
+	acceptLatestLegalAgreement(t, srv, 0)
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr","contact_phone":"+7 700 100 20 30"}`))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, createReq)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create payment expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Payment repository.Payment `json:"payment"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Payment.AmountKZT != 9500 {
+		t.Fatalf("payment amount = %d", created.Payment.AmountKZT)
+	}
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("receipt", "receipt.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("Kaspi OFD чек Номер чека QR15625065508 ИИН/БИН продавца 830520499025 Сумма 100 ₸")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	uploadReq := httptest.NewRequest(http.MethodPost, "/api/payments/"+created.Payment.ID+"/receipt?miniapp_dev=1", &buf)
+	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
+	uploadRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusOK {
+		t.Fatalf("upload expected 200, got %d: %s", uploadRec.Code, uploadRec.Body.String())
+	}
+	var uploaded struct {
+		Payment repository.Payment `json:"payment"`
+		Receipt repository.Receipt `json:"receipt"`
+		Message string             `json:"message"`
+	}
+	if err := json.NewDecoder(uploadRec.Body).Decode(&uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Payment.Status != repository.PaymentStatusRejected {
+		t.Fatalf("expected rejected payment, got %s with receipt %#v", uploaded.Payment.Status, uploaded.Receipt)
+	}
+	if !strings.Contains(uploaded.Message, "Төлем сомасы сәйкес келмейді") || !strings.Contains(uploaded.Message, "Чектегі сома: 100 ₸") {
+		t.Fatalf("unexpected user message: %q", uploaded.Message)
+	}
+	sub, err := store.GetActiveSubscription(ctx, created.Payment.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub != nil {
+		t.Fatalf("wrong amount opened subscription: %#v", sub)
+	}
+	user, err := store.GetUserByID(ctx, created.Payment.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.CurrentLevel != 0 {
+		t.Fatalf("wrong amount changed level to %d", user.CurrentLevel)
 	}
 }
 

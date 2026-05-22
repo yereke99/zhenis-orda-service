@@ -21,6 +21,7 @@ const receiptDateTolerance = 15 * time.Minute
 
 type ReceiptValidationOptions struct {
 	ExpectedRecipientBIN string
+	AllowedRecipientBINs []string
 	AmountToleranceKZT   int
 	SubscriptionDays     int
 }
@@ -50,18 +51,19 @@ type ReceiptParseResult struct {
 }
 
 func ParseReceipt(filePath string, expectedAmount int, paymentCreatedAt time.Time, expectedProvider string) (ReceiptParseResult, error) {
-	return parseReceiptPDFWithProvider(filePath, expectedAmount, paymentCreatedAt, "", 0, "", expectedProvider)
+	return parseReceiptPDFWithProvider(filePath, expectedAmount, paymentCreatedAt, "", 0, "", nil, expectedProvider)
 }
 
 func ParseReceiptPDF(filePath string, expectedAmount int, paymentCreatedAt time.Time, paymentID string, toleranceKZT int, expectedRecipientBIN string) (ReceiptParseResult, error) {
-	return parseReceiptPDFWithProvider(filePath, expectedAmount, paymentCreatedAt, paymentID, toleranceKZT, expectedRecipientBIN, "")
+	return parseReceiptPDFWithProvider(filePath, expectedAmount, paymentCreatedAt, paymentID, toleranceKZT, expectedRecipientBIN, nil, "")
 }
 
-func parseReceiptPDFWithProvider(filePath string, expectedAmount int, paymentCreatedAt time.Time, paymentID string, toleranceKZT int, expectedRecipientBIN, expectedProvider string) (ReceiptParseResult, error) {
+func parseReceiptPDFWithProvider(filePath string, expectedAmount int, paymentCreatedAt time.Time, paymentID string, toleranceKZT int, expectedRecipientBIN string, allowedRecipientBINs []string, expectedProvider string) (ReceiptParseResult, error) {
+	allowedRecipientBINs = normalizeAllowedRecipientBINs(expectedRecipientBIN, allowedRecipientBINs)
 	result := ReceiptParseResult{
 		Provider:             "unknown",
 		ExpectedAmountKZT:    expectedAmount,
-		ExpectedRecipientBIN: normalizeDigits(expectedRecipientBIN),
+		ExpectedRecipientBIN: strings.Join(allowedRecipientBINs, ","),
 		ValidationStatus:     ReceiptStatusUploaded,
 		ValidationErrors:     []string{},
 	}
@@ -103,7 +105,7 @@ func parseReceiptPDFWithProvider(filePath string, expectedAmount int, paymentCre
 	result.ParsedPaymentDate = extractReceiptDate(rawText)
 	result.ParsedPayerMasked = maskSensitiveID(extractLabelValue(rawText, []string{"плательщик", "төлеуші", "payer", "sender"}))
 	result.ParsedRecipient = safeShortText(extractLabelValue(rawText, []string{"получатель", "recipient", "алушы", "кому", "merchant", "продавец"}), 120)
-	result.ParsedRecipientBIN = extractRecipientBIN(rawText, result.ExpectedRecipientBIN)
+	result.ParsedRecipientBIN = extractRecipientBIN(rawText, allowedRecipientBINs)
 	result.QRPayload = extractQRPayload(rawText)
 	if result.QRPayload != "" {
 		qrHash := sha256.Sum256([]byte(strings.ToLower(result.QRPayload)))
@@ -119,12 +121,17 @@ func parseReceiptPDFWithProvider(filePath string, expectedAmount int, paymentCre
 		if expectedAmount > 0 && absInt(diff) > toleranceKZT {
 			result.ValidationErrors = append(result.ValidationErrors, "amount_mismatch")
 		}
+		if result.ParsedCurrency == "" {
+			result.ValidationErrors = append(result.ValidationErrors, "currency_missing")
+		} else if result.ParsedCurrency != "KZT" {
+			result.ValidationErrors = append(result.ValidationErrors, "currency_mismatch")
+		}
 	}
-	if result.ExpectedRecipientBIN == "" {
+	if len(allowedRecipientBINs) == 0 {
 		result.ValidationErrors = append(result.ValidationErrors, "recipient_bin_not_configured")
 	} else if result.ParsedRecipientBIN == "" {
 		result.ValidationErrors = append(result.ValidationErrors, "recipient_bin_missing")
-	} else if result.ParsedRecipientBIN != result.ExpectedRecipientBIN {
+	} else if !recipientBINAllowed(result.ParsedRecipientBIN, allowedRecipientBINs) {
 		result.ValidationErrors = append(result.ValidationErrors, "recipient_bin_mismatch")
 	}
 	if !hasReceiptProviderMarker(rawText) {
@@ -147,12 +154,85 @@ func receiptValidationStatus(errors []string) string {
 		return ReceiptStatusValidCandidate
 	}
 	for _, code := range errors {
-		switch code {
-		case "amount_mismatch", "recipient_bin_mismatch", "payment_date_too_early", "provider_marker_missing", "recipient_bin_not_configured":
+		if receiptHardRejectValidationCode(code) {
+			return ReceiptStatusRejected
+		}
+	}
+	for _, code := range errors {
+		if receiptSuspiciousValidationCode(code) {
 			return ReceiptStatusSuspicious
 		}
 	}
 	return ReceiptStatusParsePartial
+}
+
+func receiptHardRejectValidationCode(code string) bool {
+	switch code {
+	case "amount_mismatch", "currency_missing", "currency_mismatch", "recipient_bin_missing", "recipient_bin_mismatch":
+		return true
+	default:
+		return false
+	}
+}
+
+func receiptSuspiciousValidationCode(code string) bool {
+	switch code {
+	case "payment_date_too_early", "provider_marker_missing", "recipient_bin_not_configured":
+		return true
+	default:
+		return false
+	}
+}
+
+func receiptBlocksApprovalValidationCode(code string) bool {
+	if receiptHardRejectValidationCode(code) {
+		return true
+	}
+	switch code {
+	case "duplicate_identity_found", "recipient_bin_not_configured":
+		return true
+	default:
+		return false
+	}
+}
+
+func receiptAutoRejectsPayment(result ReceiptParseResult) bool {
+	if result.ValidationStatus == ReceiptStatusRejected || result.ValidationStatus == ReceiptStatusDuplicate {
+		return true
+	}
+	for _, code := range result.ValidationErrors {
+		if code == "duplicate_identity_found" || receiptHardRejectValidationCode(code) {
+			return true
+		}
+	}
+	return false
+}
+
+func receiptBlocksApproval(receipt Receipt) bool {
+	if receipt.ValidationStatus == ReceiptStatusRejected || receipt.ValidationStatus == ReceiptStatusDuplicate {
+		return true
+	}
+	for _, code := range receipt.ValidationErrors {
+		if receiptBlocksApprovalValidationCode(code) {
+			return true
+		}
+	}
+	return false
+}
+
+func receiptBlockingReasonCodes(errors []string) []string {
+	reasons := make([]string, 0, len(errors))
+	seen := map[string]bool{}
+	for _, code := range errors {
+		if (code == "duplicate_identity_found" || receiptBlocksApprovalValidationCode(code)) && !seen[code] {
+			seen[code] = true
+			reasons = append(reasons, code)
+		}
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, "receipt_rejected")
+	}
+	return reasons
 }
 
 func ExtractPDFText(filePath string) (string, error) {
@@ -216,7 +296,12 @@ func (s *Store) AttachReceiptToPaymentWithValidation(ctx context.Context, userID
 }
 
 func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, fileName, mimeType string, fileSize int64, opts ReceiptValidationOptions) (Payment, Receipt, error) {
-	opts.ExpectedRecipientBIN = normalizeDigits(opts.ExpectedRecipientBIN)
+	allowedRecipientBINs := normalizeAllowedRecipientBINs(opts.ExpectedRecipientBIN, opts.AllowedRecipientBINs)
+	if len(allowedRecipientBINs) > 0 {
+		opts.ExpectedRecipientBIN = allowedRecipientBINs[0]
+	} else {
+		opts.ExpectedRecipientBIN = ""
+	}
 	var payment Payment
 	var receipt Receipt
 	var finalErr error
@@ -235,7 +320,7 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 			return finalErr
 		}
 
-		parsed, parseErr := parseReceiptPDFWithProvider(filePath, found.AmountKZT, found.CreatedAt, found.ID, opts.AmountToleranceKZT, opts.ExpectedRecipientBIN, found.Provider)
+		parsed, parseErr := parseReceiptPDFWithProvider(filePath, found.AmountKZT, found.CreatedAt, found.ID, opts.AmountToleranceKZT, opts.ExpectedRecipientBIN, allowedRecipientBINs, found.Provider)
 		if parseErr != nil && parsed.FileHash == "" {
 			return parseErr
 		}
@@ -275,11 +360,19 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 			nullableString(parsed.ParsedPayerMasked), parsed.ValidationStatus, string(errorsJSON), nullableStringPtrValue(duplicateID)); err != nil {
 			return err
 		}
+		nextPaymentStatus := PaymentStatusUploadedReceipt
+		adminComment := ""
+		if receiptAutoRejectsPayment(parsed) {
+			nextPaymentStatus = PaymentStatusRejected
+			adminComment = "auto_rejected: " + strings.Join(receiptBlockingReasonCodes(parsed.ValidationErrors), ", ")
+		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE payments
-			SET status = 'uploaded_receipt', receipt_file_path = ?, updated_at = CURRENT_TIMESTAMP
+			SET status = ?, receipt_file_path = ?,
+				admin_comment = CASE WHEN ? <> '' THEN ? ELSE admin_comment END,
+				updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?;
-		`, filePath, found.ID); err != nil {
+		`, nextPaymentStatus, filePath, adminComment, adminComment, found.ID); err != nil {
 			return err
 		}
 
@@ -300,6 +393,23 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 				return err
 			}
 			payment = approved
+		} else if nextPaymentStatus == PaymentStatusRejected {
+			auditJSON, _ := json.Marshal(map[string]any{
+				"receipt_id":        receiptID,
+				"validation_status": parsed.ValidationStatus,
+				"validation_errors": parsed.ValidationErrors,
+			})
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO admin_actions(id, admin_id, role, action, entity_type, entity_id, metadata_json)
+				VALUES (?, NULL, 'system', 'payment_auto_reject', 'payment', ?, ?);
+			`, newID(), found.ID, string(auditJSON)); err != nil {
+				return err
+			}
+			updated, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, found.ID))
+			if err != nil {
+				return err
+			}
+			payment = updated
 		} else {
 			updated, err := scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, found.ID))
 			if err != nil {
@@ -308,6 +418,7 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 			payment = updated
 		}
 		receipt, err = s.GetReceiptTx(ctx, tx, receiptID)
+		receipt.AmountToleranceKZT = opts.AmountToleranceKZT
 		return err
 	})
 	if finalErr != nil {
@@ -652,6 +763,19 @@ func extractCurrency(raw string) string {
 	if regexp.MustCompile(`(?i)(₸|тг|kzt|тенге)`).MatchString(raw) {
 		return "KZT"
 	}
+	currencies := []struct {
+		code string
+		re   *regexp.Regexp
+	}{
+		{"USD", regexp.MustCompile(`(?i)(\$|usd|доллар)`)},
+		{"EUR", regexp.MustCompile(`(?i)(€|eur|евро)`)},
+		{"RUB", regexp.MustCompile(`(?i)(₽|rub|руб)`)},
+	}
+	for _, currency := range currencies {
+		if currency.re.MatchString(raw) {
+			return currency.code
+		}
+	}
 	return ""
 }
 
@@ -675,8 +799,8 @@ func extractLabelValue(raw string, labels []string) string {
 	return ""
 }
 
-func extractRecipientBIN(raw, expected string) string {
-	expected = normalizeDigits(expected)
+func extractRecipientBIN(raw string, allowed []string) string {
+	allowed = normalizeAllowedRecipientBINs("", allowed)
 	contextPattern := regexp.MustCompile(`(?i)(?:получатель|recipient|алушы|merchant|продавец|компания|company|поставщик|кому)[^0-9]{0,120}(?:иин\s*/\s*бин|iin\s*/\s*bin|бин|bin|бсн|иин|iin|инн)[^0-9]{0,20}([0-9][0-9\s.\-]{10,20})`)
 	if match := contextPattern.FindStringSubmatch(raw); len(match) > 1 {
 		if digits := normalizeDigits(match[1]); len(digits) == 12 {
@@ -684,7 +808,7 @@ func extractRecipientBIN(raw, expected string) string {
 		}
 	}
 
-	labelPattern := regexp.MustCompile(`(?i)(?:иин\s*/\s*бин|iin\s*/\s*bin|бин|bin|бсн|иин|iin|инн)[^0-9]{0,20}([0-9][0-9\s.\-]{10,20})`)
+	labelPattern := regexp.MustCompile(`(?i)(?:seller[_\s-]*(?:iin[_\s/-]*bin|bin|iin)|иин\s*/\s*бин(?:\s+продавца)?|iin\s*/\s*bin(?:\s+seller)?|бин(?:\s+продавца)?|bin(?:\s+seller)?|бсн|иин|iin|инн)[^0-9]{0,30}([0-9][0-9\s.\-]{10,20})`)
 	matches := labelPattern.FindAllStringSubmatchIndex(raw, -1)
 	var first string
 	for _, match := range matches {
@@ -703,7 +827,7 @@ func extractRecipientBIN(raw, expected string) string {
 		if strings.Contains(prefix, "плательщик") || strings.Contains(prefix, "төлеуші") || strings.Contains(prefix, "payer") || strings.Contains(prefix, "sender") || strings.Contains(prefix, "отправитель") {
 			continue
 		}
-		if expected != "" && digits == expected {
+		if recipientBINAllowed(digits, allowed) {
 			return digits
 		}
 		if first == "" {
@@ -828,6 +952,37 @@ func nullableTime(value *time.Time) any {
 
 func normalizeDigits(value string) string {
 	return digitsOnlyString(value)
+}
+
+func normalizeAllowedRecipientBINs(primary string, values []string) []string {
+	allowed := make([]string, 0, len(values)+1)
+	seen := map[string]bool{}
+	add := func(value string) {
+		digits := normalizeDigits(value)
+		if digits == "" || seen[digits] {
+			return
+		}
+		seen[digits] = true
+		allowed = append(allowed, digits)
+	}
+	add(primary)
+	for _, value := range values {
+		add(value)
+	}
+	return allowed
+}
+
+func recipientBINAllowed(value string, allowed []string) bool {
+	value = normalizeDigits(value)
+	if value == "" {
+		return false
+	}
+	for _, expected := range allowed {
+		if value == normalizeDigits(expected) {
+			return true
+		}
+	}
+	return false
 }
 
 func digitsOnlyString(value string) string {

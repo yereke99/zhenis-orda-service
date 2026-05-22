@@ -563,28 +563,36 @@ func TestReceiptDuplicateBlocksApprovalWithoutOverride(t *testing.T) {
 	}
 	dir := t.TempDir()
 	file := filepath.Join(dir, "receipt.pdf")
-	body := []byte("Kaspi чек transaction ABC123 amount 4 990 ₸ 10.05.2026")
+	body := []byte("Kaspi чек transaction ABC123 Получатель БИН 830520499025 amount 9 900 ₸")
 	if err := os.WriteFile(file, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.AttachReceiptToPayment(ctx, first.ID, p1.ID, file, "receipt.pdf", "application/pdf", int64(len(body))); err != nil {
-		t.Fatal(err)
+	opts := repository.ReceiptValidationOptions{
+		ExpectedRecipientBIN: "830520499025",
+		AllowedRecipientBINs: []string{"830520499025"},
+		SubscriptionDays:     30,
 	}
-	if _, err := store.ApprovePaymentReviewed(ctx, p1.ID, repository.AdminActor{ID: 1, Role: repository.RoleSuperAdmin}, 30, "manual review"); err != nil {
+	if _, _, err := store.AttachReceiptToPaymentWithValidation(ctx, first.ID, p1.ID, file, "receipt.pdf", "application/pdf", int64(len(body)), opts); err != nil {
 		t.Fatal(err)
 	}
 	file2 := filepath.Join(dir, "receipt-copy.pdf")
 	if err := os.WriteFile(file2, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, receipt, err := store.AttachReceiptToPayment(ctx, second.ID, p2.ID, file2, "receipt-copy.pdf", "application/pdf", int64(len(body)))
+	updated, receipt, err := store.AttachReceiptToPaymentWithValidation(ctx, second.ID, p2.ID, file2, "receipt-copy.pdf", "application/pdf", int64(len(body)), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if receipt.ValidationStatus != repository.ReceiptStatusDuplicate {
 		t.Fatalf("expected duplicate receipt, got %#v", receipt)
 	}
+	if updated.Status != repository.PaymentStatusRejected {
+		t.Fatalf("expected duplicate payment rejected, got %s", updated.Status)
+	}
 	if _, err := store.ApprovePaymentReviewed(ctx, p2.ID, repository.AdminActor{ID: 1, Role: repository.RoleSuperAdmin}, 30, ""); err == nil {
 		t.Fatal("duplicate receipt approved without override comment")
+	}
+	if _, err := store.ApprovePaymentReviewed(ctx, p2.ID, repository.AdminActor{ID: 1, Role: repository.RoleSuperAdmin}, 30, "manual override"); err == nil {
+		t.Fatal("duplicate receipt approved with override comment")
 	}
 }
