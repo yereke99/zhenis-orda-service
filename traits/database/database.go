@@ -65,6 +65,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := addColumnIfMissing(ctx, db, "users", "photo_url", "TEXT"); err != nil {
 		return err
 	}
+	if err := addUserAccessColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := addTariffColumns(ctx, db); err != nil {
 		return err
 	}
@@ -105,6 +108,25 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	return Seed(ctx, db)
+}
+
+func addUserAccessColumns(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"blocked_reason", "TEXT"},
+		{"blocked_at", "DATETIME"},
+		{"blocked_by_admin_id", "INTEGER"},
+		{"unblocked_at", "DATETIME"},
+		{"unblocked_by_admin_id", "INTEGER"},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(ctx, db, "users", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func addTariffColumns(ctx context.Context, db *sql.DB) error {

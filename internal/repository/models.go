@@ -67,24 +67,29 @@ type TelegramUserInput struct {
 }
 
 type User struct {
-	ID              string        `json:"id"`
-	TelegramID      int64         `json:"telegram_id"`
-	Username        string        `json:"username"`
-	FirstName       string        `json:"first_name"`
-	LastName        string        `json:"last_name"`
-	PhotoURL        string        `json:"photo_url"`
-	Language        string        `json:"language"`
-	Phone           string        `json:"phone"`
-	ReferralCode    string        `json:"referral_code"`
-	InvitedByUserID *string       `json:"invited_by_user_id,omitempty"`
-	CurrentLevel    int           `json:"current_level"`
-	AccessClosed    bool          `json:"access_closed"`
-	CreatedAt       time.Time     `json:"created_at"`
-	UpdatedAt       time.Time     `json:"updated_at"`
-	LastSeenAt      time.Time     `json:"last_seen_at"`
-	Subscription    *Subscription `json:"subscription,omitempty"`
-	CoinBalance     int           `json:"coin_balance,omitempty"`
-	ReferralCount   int           `json:"referral_count,omitempty"`
+	ID                 string        `json:"id"`
+	TelegramID         int64         `json:"telegram_id"`
+	Username           string        `json:"username"`
+	FirstName          string        `json:"first_name"`
+	LastName           string        `json:"last_name"`
+	PhotoURL           string        `json:"photo_url"`
+	Language           string        `json:"language"`
+	Phone              string        `json:"phone"`
+	ReferralCode       string        `json:"referral_code"`
+	InvitedByUserID    *string       `json:"invited_by_user_id,omitempty"`
+	CurrentLevel       int           `json:"current_level"`
+	AccessClosed       bool          `json:"access_closed"`
+	BlockedReason      string        `json:"blocked_reason,omitempty"`
+	BlockedAt          *time.Time    `json:"blocked_at,omitempty"`
+	BlockedByAdminID   *int64        `json:"blocked_by_admin_id,omitempty"`
+	UnblockedAt        *time.Time    `json:"unblocked_at,omitempty"`
+	UnblockedByAdminID *int64        `json:"unblocked_by_admin_id,omitempty"`
+	CreatedAt          time.Time     `json:"created_at"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	LastSeenAt         time.Time     `json:"last_seen_at"`
+	Subscription       *Subscription `json:"subscription,omitempty"`
+	CoinBalance        int           `json:"coin_balance,omitempty"`
+	ReferralCount      int           `json:"referral_count,omitempty"`
 }
 
 type Tariff struct {

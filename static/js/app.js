@@ -38,9 +38,17 @@
     financialIqAnswers: {},
     financialIqResult: null,
     financialIqReturnScreen: "dashboard",
-    adminScreen: "dashboard",
-    admin: null,
-	    fullscreenRequested: false,
+	    adminScreen: "dashboard",
+	    admin: null,
+	    adminUsers: [],
+	    adminPayments: [],
+	    adminUserSearch: "",
+	    adminUsersLoading: false,
+	    adminPaymentsLoading: false,
+	    adminPaymentManualID: "",
+	    adminPaymentManualComment: "",
+	    adminPolling: { screen: "", timer: null, loading: false, lastWarningAt: 0 },
+		    fullscreenRequested: false,
 	    telegramViewportSetup: false,
 	    telegramBackHandlerBound: false,
 	    bootedAt: 0,
@@ -856,22 +864,32 @@
 	    return courses.find((item) => item.id === selected) || null;
 	  }
 
-	  function copyText(value) {
-	    const text = clean(value);
-	    if (navigator.clipboard && navigator.clipboard.writeText) {
-	      return navigator.clipboard.writeText(text);
-	    }
-	    const input = document.createElement("textarea");
-	    input.value = text;
-	    input.setAttribute("readonly", "readonly");
-	    input.style.position = "fixed";
-	    input.style.opacity = "0";
-	    document.body.appendChild(input);
-	    input.select();
-	    const ok = document.execCommand("copy");
-	    input.remove();
-	    return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
-	  }
+		  function copyText(value) {
+		    const text = clean(value);
+	    const fallback = () => {
+	      const input = document.createElement("textarea");
+	      input.value = text;
+	      input.setAttribute("readonly", "readonly");
+	      input.style.position = "fixed";
+		      input.style.left = "-9999px";
+		      input.style.top = "0";
+		      input.style.opacity = "0";
+	      document.body.appendChild(input);
+	      input.focus();
+	      input.select();
+	      input.setSelectionRange(0, input.value.length);
+	      try {
+	        const ok = document.execCommand("copy");
+	        return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+	      } finally {
+	        input.remove();
+	      }
+	    };
+		    if (navigator.clipboard && navigator.clipboard.writeText) {
+		      return navigator.clipboard.writeText(text).catch(fallback);
+		    }
+		    return fallback();
+		  }
 
   function html(markup) {
     if (els.appContent) els.appContent.innerHTML = markup;
@@ -992,16 +1010,17 @@
     suspicious: "Күдікті түбіртек",
     duplicate: "Қайталанған түбіртек",
     uploaded: "Жүктелді",
-    sent: "Жіберілді",
-  };
+	    sent: "Жіберілді",
+	    blocked: "Бұғатталған",
+	  };
 
   function statusBadge(value) {
     const raw = String(value == null ? "" : value);
     const label = statusText[raw] || (raw === "true" ? "Белсенді" : raw === "false" ? "Жабық" : raw || "—");
     const kind =
-      ["active", "approved", "completed", "sent", "valid_candidate", "true"].includes(raw)
-        ? "ok"
-        : ["rejected", "expired", "cancelled", "failed", "duplicate", "false"].includes(raw)
+	      ["active", "approved", "completed", "sent", "valid_candidate", "true"].includes(raw)
+	        ? "ok"
+	        : ["rejected", "expired", "cancelled", "failed", "duplicate", "false", "blocked"].includes(raw)
           ? "bad"
           : "warn";
     return `<span class="status ${kind}">${esc(label)}</span>`;
@@ -3830,11 +3849,54 @@
       .join("");
   }
 
-  /* ===========================================================
-     BROWSER ADMIN
-     =========================================================== */
+	  /* ===========================================================
+	     BROWSER ADMIN
+	     =========================================================== */
 
-  async function bootBrowserAdmin() {
+	  const ADMIN_POLL_MS = 2000;
+
+	  function stopAdminPolling() {
+	    const polling = state.adminPolling;
+	    if (polling && polling.timer) {
+	      clearInterval(polling.timer);
+	    }
+	    state.adminPolling = { screen: "", timer: null, loading: false, lastWarningAt: polling ? polling.lastWarningAt || 0 : 0 };
+	  }
+
+	  function startAdminPolling(screen, loader) {
+	    if (!screen || typeof loader !== "function") return;
+	    const current = state.adminPolling || {};
+	    if (current.timer && current.screen === screen) return;
+	    stopAdminPolling();
+	    const polling = state.adminPolling;
+	    polling.screen = screen;
+	    polling.timer = setInterval(async () => {
+	      if (state.mode !== "admin" || !state.admin || state.adminScreen !== screen) {
+	        stopAdminPolling();
+	        return;
+	      }
+	      if (polling.loading) return;
+	      polling.loading = true;
+	      try {
+	        await loader({ silent: true });
+	      } catch (error) {
+	        adminPollWarning(error);
+	      } finally {
+	        polling.loading = false;
+	      }
+	    }, ADMIN_POLL_MS);
+	  }
+
+	  function adminPollWarning(error) {
+	    const polling = state.adminPolling || {};
+	    const now = Date.now();
+	    if (now - (polling.lastWarningAt || 0) < 12000) return;
+	    polling.lastWarningAt = now;
+	    state.adminPolling = polling;
+	    toast((error && error.message) || "Авто жаңарту уақытша сәтсіз", "warn");
+	  }
+
+	  async function bootBrowserAdmin() {
     try {
       const me = await api("/api/browser-auth/me");
       state.admin = me.admin;
@@ -3846,9 +3908,10 @@
     }
   }
 
-  function showAdminLogin() {
-    if (els.adminApp) {
-      els.adminApp.classList.add("hidden");
+	  function showAdminLogin() {
+	    stopAdminPolling();
+	    if (els.adminApp) {
+	      els.adminApp.classList.add("hidden");
       els.adminApp.setAttribute("aria-hidden", "true");
     }
     if (els.adminAuth) {
@@ -3909,13 +3972,14 @@
     }
   }
 
-  async function handleAdminLogout() {
-    try {
-      await api("/api/browser-auth/logout", { method: "POST", body: "{}" });
-    } catch (_) {}
-    state.admin = null;
-    showAdminLogin();
-  }
+	  async function handleAdminLogout() {
+	    try {
+	      await api("/api/browser-auth/logout", { method: "POST", body: "{}" });
+	    } catch (_) {}
+	    stopAdminPolling();
+	    state.admin = null;
+	    showAdminLogin();
+	  }
 
   const adminScreens = [
     ["dashboard", "Басты бет"],
@@ -3958,8 +4022,9 @@
     );
   }
 
-  async function renderAdmin() {
-    if (els.adminTitle) {
+	  async function renderAdmin() {
+	    stopAdminPolling();
+	    if (els.adminTitle) {
       const meta = adminScreens.find(([key]) => key === state.adminScreen);
       els.adminTitle.textContent = meta ? meta[1] : "Басты бет";
     }
@@ -4054,147 +4119,143 @@
     `;
   }
 
-  async function renderAdminUsers() {
-    const params = new URLSearchParams();
-    const data = await api(`/api/admin/users?${params.toString()}`);
-    const users = data.users || [];
-    els.adminContent.innerHTML = `
-      <div class="card">
-        <div class="admin-section-head">
-          <div><p class="eyebrow">Қолданушылар</p><h2>Қолданушылар</h2></div>
-          <div class="admin-toolbar">
-            <input id="userSearch" placeholder="Аты немесе username бойынша іздеу" />
-          </div>
-        </div>
-        ${adminUsersTableHtml(users)}
-      </div>
-    `;
-    on("userSearch", debounce(async (event) => {
-      const q = event.target.value;
-      try {
-        const data = await api(`/api/admin/users?q=${encodeURIComponent(q)}`);
-        document.querySelector(".table-wrap")?.replaceWith(htmlToNode(adminUsersTableHtml(data.users || [])));
-      } catch (error) {
-        toast(error.message, "error");
-      }
-    }, 280), "input");
-    delegate(els.adminContent, "[data-user-access]", "click", (event, target) => {
-      const user = users.find((item) => item.id === target.dataset.userAccess) || { id: target.dataset.userAccess };
-      openUserPremiumAccessModal(user);
-    });
-  }
+	  async function renderAdminUsers() {
+	    const users = await fetchAdminUsers();
+	    els.adminContent.innerHTML = `
+	      <div class="card">
+	        <div class="admin-section-head">
+	          <div><p class="eyebrow">Қолданушылар</p><h2>Қолданушылар</h2></div>
+	          <div class="admin-toolbar">
+	            <input id="userSearch" placeholder="Аты немесе username бойынша іздеу" value="${esc(state.adminUserSearch)}" />
+	          </div>
+	        </div>
+	        ${adminUsersTableHtml(users)}
+	      </div>
+	    `;
+	    const reloadUsers = debounce(() => {
+	      loadAdminUsersTable().catch((error) => toast(error.message, "error"));
+	    }, 280);
+	    on("userSearch", (event) => {
+	      state.adminUserSearch = event.target.value;
+	      reloadUsers();
+	    }, "input");
+	    delegate(els.adminContent, "[data-user-access]", "click", (event, target) => {
+	      const user = (state.adminUsers || []).find((item) => item.id === target.dataset.userAccess) || { id: target.dataset.userAccess };
+	      openUserAccessModal(user);
+	    });
+	    startAdminPolling("users", loadAdminUsersTable);
+	  }
 
-  function adminUsersTableHtml(users) {
-    if (!users.length) return emptyState("Қолданушылар табылмады");
-    return `<div class="table-wrap"><table>
-      <thead><tr><th>ID</th><th>Telegram</th><th>Қолданушы</th><th>Деңгей</th><th>Coin</th><th>Қолжетімділік</th><th>Premium</th></tr></thead>
-      <tbody>${users
-        .map((user) => `<tr>
-          <td>${esc(shortId(user.id))}</td>
-          <td>${esc(user.telegram_id || "—")}</td>
-          <td><strong>${esc(user.first_name || "—")}</strong><div class="muted small">${esc(user.username ? `@${user.username}` : "")}</div></td>
-          <td>${esc(user.current_level || 0)}</td>
-          <td>${money(user.coin_balance || 0)}</td>
-          <td>${statusBadge(user.access_closed ? "false" : "true")}</td>
-          <td><button class="ghost-btn" data-user-access="${esc(user.id)}" type="button">Доступ</button></td>
-        </tr>`)
-        .join("")}</tbody>
-    </table></div>`;
-  }
+	  async function fetchAdminUsers() {
+	    if (state.adminUsersLoading) return state.adminUsers || [];
+	    state.adminUsersLoading = true;
+	    const q = state.adminUserSearch || "";
+	    try {
+	      const data = await api(`/api/admin/users?q=${encodeURIComponent(q)}`);
+	      state.adminUsers = data.users || [];
+	      return state.adminUsers;
+	    } finally {
+	      state.adminUsersLoading = false;
+	    }
+	  }
 
-  async function openUserPremiumAccessModal(user) {
-    const shell = openModalShell("Premium course access", `<div class="card skeleton"></div>`);
-    try {
-      const data = await api(`/api/admin/users/${user.id}/premium-course-access`);
-      const items = data.premium_course_access || [];
-      shell.body.innerHTML = `
-        <div class="admin-section-head">
-          <div>
-            <p class="eyebrow">${esc(user.first_name || user.username || shortId(user.id))}</p>
-            <h2>Premium course access</h2>
-          </div>
-        </div>
-        <div class="premium-access-list">
-          ${items.length ? items.map(userPremiumAccessRow).join("") : emptyState("Premium курстар табылмады")}
-        </div>
-      `;
-      bindUserPremiumAccess(shell, user, items);
-    } catch (error) {
-      shell.body.innerHTML = `<div class="error-card"><p>${esc(error.message || "Жүктеу мүмкін болмады")}</p></div>`;
-    }
-  }
+	  async function loadAdminUsersTable() {
+	    const users = await fetchAdminUsers();
+	    const table = els.adminContent && els.adminContent.querySelector("[data-admin-users-table]");
+	    if (table) {
+	      table.replaceWith(htmlToNode(adminUsersTableHtml(users)));
+	    }
+	    return users;
+	  }
 
-  function userPremiumAccessRow(item) {
-    const course = item.course || {};
-    const access = item.access || {};
-    const active = Boolean(item.active);
-    return `<section class="card premium-access-row" data-course-access="${esc(course.id)}">
-      <div class="card-header">
-        <div>
-          <p class="eyebrow">${esc(course.slug || "")}</p>
-          <h2>${esc(course.title || "Premium курс")}</h2>
-          <p class="muted">${money(course.price_kzt)} ₸</p>
-        </div>
-        <span class="status ${active ? "ok" : "bad"}">${active ? "Ашық" : "Жабық"}</span>
-      </div>
-      <div class="grid two tight">
-        <label class="field"><span>Access duration</span><select data-duration>
-          ${["lifetime", "30_days", "90_days", "custom"].map((value) => `<option value="${value}">${esc(statusText[value] || value)}</option>`).join("")}
-        </select></label>
-        <label class="field"><span>Custom date</span><input data-custom-date type="date" /></label>
-      </div>
-      <div class="grid two tight">
-        <button class="gold-btn" data-grant-course="${esc(course.id)}" type="button">Доступ беру</button>
-        <button class="danger-btn" data-revoke-course="${esc(course.id)}" ${active ? "" : "disabled"} type="button">Доступты жабу</button>
-      </div>
-      <p class="muted small">
-        Берілді: ${access.granted_at ? formatDateTime(access.granted_at) : "—"} ·
-        Admin: ${esc(access.granted_by_admin_id || "—")} ·
-        Аяқталуы: ${access.expires_at ? formatDate(access.expires_at) : "Lifetime"} ·
-        Жабылды: ${access.revoked_at ? formatDateTime(access.revoked_at) : "—"}
-      </p>
-    </section>`;
-  }
+	  function adminUsersTableHtml(users) {
+	    if (!users.length) return `<div data-admin-users-table>${emptyState("Қолданушылар табылмады")}</div>`;
+	    return `<div class="table-wrap" data-admin-users-table><table class="admin-users-table">
+	      <thead><tr><th>ID</th><th>Telegram</th><th>Қолданушы</th><th>Деңгей</th><th>Coin</th><th>Қолжетімділік</th><th>Әрекет</th></tr></thead>
+	      <tbody>${users
+	        .map((user) => {
+	          const blocked = Boolean(user.access_closed);
+	          return `<tr>
+	            <td><code class="mono-id">${esc(shortId(user.id))}</code></td>
+	            <td><code class="mono-id">${esc(user.telegram_id || "—")}</code></td>
+	            <td>
+	              <strong>${esc(user.first_name || "—")}</strong>
+	              <div class="muted small">${esc(user.username ? `@${user.username}` : "")}</div>
+	              ${blocked && user.blocked_reason ? `<div class="muted small wrap-text">Себеп: ${esc(user.blocked_reason)}</div>` : ""}
+	            </td>
+	            <td>${esc(user.current_level || 0)}</td>
+	            <td>${money(user.coin_balance || 0)}</td>
+	            <td>${statusBadge(blocked ? "blocked" : "active")}</td>
+	            <td><button class="${blocked ? "gold-btn" : "danger-btn"} icon-mini" data-user-access="${esc(user.id)}" type="button">${blocked ? "Бұғаттан шығару" : "Бұғаттау"}</button></td>
+	          </tr>`;
+	        })
+	        .join("")}</tbody>
+	    </table></div>`;
+	  }
 
-  function bindUserPremiumAccess(shell, user, items) {
-    shell.body.querySelectorAll("[data-grant-course]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const row = button.closest("[data-course-access]");
-        const duration = row.querySelector("[data-duration]").value;
-        const expiresAt = row.querySelector("[data-custom-date]").value;
-        if (duration === "custom" && !expiresAt) {
-          toast("Custom date таңдаңыз", "error");
-          return;
-        }
-        try {
-          await api(`/api/admin/users/${user.id}/premium-course-access/${button.dataset.grantCourse}`, {
-            method: "POST",
-            body: JSON.stringify({ active: true, duration_type: duration, expires_at: expiresAt }),
-          });
-          toast("Доступ ашылды", "success");
-          shell.close();
-          openUserPremiumAccessModal(user);
-        } catch (error) {
-          toast(error.message || "Доступ ашу мүмкін болмады", "error");
-        }
-      });
-    });
-    shell.body.querySelectorAll("[data-revoke-course]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        try {
-          await api(`/api/admin/users/${user.id}/premium-course-access/${button.dataset.revokeCourse}/revoke`, {
-            method: "POST",
-            body: "{}",
-          });
-          toast("Доступ жабылды", "success");
-          shell.close();
-          openUserPremiumAccessModal(user);
-        } catch (error) {
-          toast(error.message || "Доступ жабу мүмкін болмады", "error");
-        }
-      });
-    });
-  }
+	  function openUserAccessModal(user) {
+	    const blocked = Boolean(user.access_closed);
+	    const displayName = compact(user.first_name) || compact(user.username) || shortId(user.id);
+	    const shell = openModalShell("Қолжетімділік", `
+	      <div class="access-modal">
+	        <div class="admin-section-head">
+	          <div>
+	            <p class="eyebrow">${esc(blocked ? "Бұғатталған" : "Белсенді")}</p>
+	            <h2>${esc(displayName)}</h2>
+	          </div>
+	          ${statusBadge(blocked ? "blocked" : "active")}
+	        </div>
+	        <div class="access-detail-grid">
+	          <div><span>Telegram ID</span><code>${esc(user.telegram_id || "—")}</code></div>
+	          <div><span>Username</span><code>${esc(user.username ? `@${user.username}` : "—")}</code></div>
+	          <div><span>Қазіргі статус</span><strong>${blocked ? "Қолжетімділік жабық" : "Қолжетімділік ашық"}</strong></div>
+	          <div><span>Бұғаттау себебі</span><strong>${esc(blocked ? user.blocked_reason || "—" : "—")}</strong></div>
+	          <div><span>Бұғатталған уақыты</span><strong>${blocked && user.blocked_at ? formatDateTime(user.blocked_at) : "—"}</strong></div>
+	          <div><span>Бұғаттаған admin</span><code>${esc(blocked && user.blocked_by_admin_id ? user.blocked_by_admin_id : "—")}</code></div>
+	        </div>
+	        <form id="userAccessForm" class="form">
+	          <label class="field">
+	            <span>${blocked ? "Қалпына келтіру пікірі" : "Бұғаттау себебі"}</span>
+	            <textarea name="reason" ${blocked ? "" : "required"} placeholder="${blocked ? "Қолжетімділік қайта ашылды" : "Себебін жазыңыз"}"></textarea>
+	          </label>
+	          <div class="action-row end">
+	            <button class="ghost-btn" data-close-modal type="button">Жабу</button>
+	            <button class="${blocked ? "gold-btn" : "danger-btn"}" type="submit">
+	              <span class="btn-label">${blocked ? "Бұғаттан шығару" : "Бұғаттау"}</span><span class="btn-spinner"></span>
+	            </button>
+	          </div>
+	        </form>
+	      </div>
+	    `);
+	    shell.body.querySelector("[data-close-modal]")?.addEventListener("click", () => shell.close());
+	    shell.body.querySelector("#userAccessForm").addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const form = event.currentTarget;
+	      const submitBtn = form.querySelector("button[type=submit]");
+	      const reason = compact(new FormData(form).get("reason"));
+	      if (!blocked && !reason) {
+	        toast("Бұғаттау себебін жазыңыз", "error");
+	        return;
+	      }
+	      if (buttonIsLoading(submitBtn)) return;
+	      setButtonLoading(submitBtn, true);
+	      setModalBusy(shell, true);
+	      try {
+	        const res = await api(`/api/admin/users/${user.id}/${blocked ? "unblock" : "block"}`, {
+	          method: "POST",
+	          body: JSON.stringify({ reason }),
+	        });
+	        toast(blocked ? "Қолжетімділік ашылды" : "Қолданушы бұғатталды", "success");
+	        if (res.warnings && res.warnings.length) toast(res.warnings.join("; "), "warn");
+	        shell.close();
+	        await loadAdminUsersTable();
+	      } catch (error) {
+	        toast(error.message || "Қолжетімділікті өзгерту мүмкін болмады", "error");
+	        setModalBusy(shell, false);
+	        setButtonLoading(submitBtn, false);
+	      }
+	    });
+	  }
 
 	  async function renderAdminTable(url, key, columns, title) {
 	    const data = await api(url);
@@ -5542,106 +5603,196 @@
     return "";
   }
 
-  async function renderAdminPayments() {
-    const data = await api("/api/admin/payments");
-    const rows = data.payments || [];
-    const paymentRows = rows.length
-      ? `<div class="table-wrap"><table>
-          <thead><tr><th>ID</th><th>Қолданушы</th><th>Байланыс</th><th>Төлем түрі</th><th>Өнім</th><th>Сома</th><th>Статус</th><th>Чек валидациясы</th><th>Чек</th></tr></thead>
-          <tbody>${rows
-            .map((payment) => {
-              const receipt = payment.receipt || {};
-              const product = payment.payment_type === "premium_course"
-                ? payment.premium_course_title || payment.premium_course_slug || shortId(payment.premium_course_id)
-                : payment.tariff_code;
-              return `<tr>
-                <td>${esc(shortId(payment.id))}</td>
-                <td>${esc(payment.user ? `${payment.user.first_name || ""} @${payment.user.username || ""}` : shortId(payment.user_id))}</td>
-                <td>${esc(payment.contact_phone || (payment.user && payment.user.phone) || "—")}</td>
-                <td>${esc(payment.payment_type || "subscription")}</td>
-                <td>${esc(product || "—")}</td>
-                <td>${money(payment.amount_kzt)} ₸</td>
-                <td>${statusBadge(payment.status)}</td>
-                <td>${receipt.validation_status ? receiptValidationSummary(receipt, payment) : "—"}</td>
-                <td>${receipt.file_path ? `<a class="link" href="${esc(receipt.file_path)}" target="_blank" rel="noopener">Ашу</a>` : "—"}</td>
-              </tr>`;
-            })
-            .join("")}</tbody>
-        </table></div>`
-      : emptyState("Мәлімет табылмады");
-    els.adminContent.innerHTML = `
-      <div class="card">
-        <div class="admin-section-head">
-          <div><p class="eyebrow">Төлемдер</p><h2>Төлемдер</h2></div>
-        </div>
-        ${paymentRows}
-      </div>
-      <div class="card">
-        <div class="section-head"><h2>Қолмен тексеру</h2></div>
-        <form id="paymentAction" class="form">
-          <div class="grid two">
-            <label class="field"><span>Төлем ID</span><input name="id" required placeholder="UUID" /></label>
-            <label class="field"><span>Пікір / override</span><input name="comment" placeholder="Қабылдамау себебі немесе override түсіндірмесі" /></label>
-          </div>
-          <div class="action-row">
-            <button class="gold-btn" name="action" value="approve" type="submit">Қабылдау</button>
+	  async function renderAdminPayments() {
+	    const rows = await fetchAdminPayments();
+	    els.adminContent.innerHTML = `
+	      <div class="card">
+	        <div class="admin-section-head">
+	          <div><p class="eyebrow">Төлемдер</p><h2>Төлемдер</h2></div>
+	        </div>
+	        ${adminPaymentsTableHtml(rows)}
+	      </div>
+	      <div class="card">
+	        <div class="section-head"><h2>Қолмен тексеру</h2></div>
+	        <form id="paymentAction" class="form">
+	          <div class="grid two">
+	            <label class="field"><span>Төлем ID</span><input name="id" required placeholder="UUID" value="${esc(state.adminPaymentManualID)}" /></label>
+	            <label class="field"><span>Пікір / override</span><input name="comment" placeholder="Қабылдамау себебі немесе override түсіндірмесі" value="${esc(state.adminPaymentManualComment)}" /></label>
+	          </div>
+	          <div class="action-row">
+	            <button class="gold-btn" name="action" value="approve" type="submit">Қабылдау</button>
             <button class="danger-btn" name="action" value="reject" type="submit">Қабылдамау</button>
           </div>
         </form>
-      </div>
-    `;
-    document.getElementById("paymentAction").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const submitter = event.submitter;
-      const form = new FormData(event.currentTarget);
-      const id = form.get("id");
-      try {
-        if (submitter.value === "approve") {
-          await api(`/api/admin/payments/${id}/approve`, {
-            method: "POST",
+	      </div>
+	    `;
+	    const paymentForm = document.getElementById("paymentAction");
+	    paymentForm.addEventListener("input", (event) => {
+	      if (event.target.name === "id") state.adminPaymentManualID = event.target.value;
+	      if (event.target.name === "comment") state.adminPaymentManualComment = event.target.value;
+	    });
+	    paymentForm.addEventListener("submit", async (event) => {
+	      event.preventDefault();
+	      const submitter = event.submitter;
+	      const form = new FormData(event.currentTarget);
+	      const id = form.get("id");
+	      state.adminPaymentManualID = clean(id);
+	      state.adminPaymentManualComment = clean(form.get("comment"));
+	      try {
+	        if (submitter.value === "approve") {
+	          await api(`/api/admin/payments/${id}/approve`, {
+	            method: "POST",
             body: JSON.stringify({ days: 30, override_comment: form.get("comment") }),
           });
           toast("Қабылданды", "success");
-        } else {
-          await api(`/api/admin/payments/${id}/reject`, {
-            method: "POST",
-            body: JSON.stringify({ comment: form.get("comment") }),
-          });
-          toast("Қабылданбады", "success");
-        }
-        renderAdminPayments();
-      } catch (error) {
-        toast(error.message || "Әрекет орындалмады", "error");
-      }
-    });
-  }
+	        } else {
+	          await api(`/api/admin/payments/${id}/reject`, {
+	            method: "POST",
+	            body: JSON.stringify({ comment: form.get("comment") }),
+	          });
+	          toast("Қабылданбады", "success");
+	        }
+	        await loadAdminPaymentsTable();
+	      } catch (error) {
+	        toast(error.message || "Әрекет орындалмады", "error");
+	      }
+	    });
+	    delegate(els.adminContent, "[data-copy-payment-id]", "click", (event, target) => {
+	      event.preventDefault();
+	      copyText(target.dataset.copyPaymentId)
+	        .then(() => toast("UUID көшірілді", "success"))
+	        .catch(() => toast("UUID көшіру мүмкін болмады", "error"));
+	    });
+	    delegate(els.adminContent, "[data-use-payment-id]", "click", (event, target) => {
+	      event.preventDefault();
+	      const id = target.dataset.usePaymentId || "";
+	      const input = document.querySelector("#paymentAction input[name=id]");
+	      state.adminPaymentManualID = id;
+	      if (input) {
+	        input.value = id;
+	        input.focus();
+	      }
+	      toast("UUID қолмен тексеруге қойылды", "success");
+	    });
+	    startAdminPolling("payments", loadAdminPaymentsTable);
+	  }
 
-  function receiptValidationSummary(receipt, payment) {
-    const errors = receipt.validation_errors || [];
-    const diff = typeof receipt.amount_difference_kzt === "number"
+	  async function fetchAdminPayments() {
+	    if (state.adminPaymentsLoading) return state.adminPayments || [];
+	    state.adminPaymentsLoading = true;
+	    try {
+	      const data = await api("/api/admin/payments");
+	      state.adminPayments = data.payments || [];
+	      return state.adminPayments;
+	    } finally {
+	      state.adminPaymentsLoading = false;
+	    }
+	  }
+
+	  async function loadAdminPaymentsTable() {
+	    const rows = await fetchAdminPayments();
+	    const table = els.adminContent && els.adminContent.querySelector("[data-admin-payments-table]");
+	    if (table) {
+	      table.replaceWith(htmlToNode(adminPaymentsTableHtml(rows)));
+	    }
+	    return rows;
+	  }
+
+	  function adminPaymentsTableHtml(rows) {
+	    if (!rows.length) return `<div data-admin-payments-table>${emptyState("Мәлімет табылмады")}</div>`;
+	    return `<div class="table-wrap admin-payments-table-wrap" data-admin-payments-table><table class="admin-payments-table">
+	      <thead><tr><th>ID</th><th>Қолданушы</th><th>Байланыс</th><th>Төлем түрі</th><th>Өнім</th><th>Сома</th><th>Статус</th><th>Чек валидациясы</th><th>Чек</th></tr></thead>
+	      <tbody>${rows
+	        .map((payment) => {
+	          const receipt = payment.receipt || {};
+	          const product = payment.payment_type === "premium_course"
+	            ? payment.premium_course_title || payment.premium_course_slug || shortId(payment.premium_course_id)
+	            : payment.tariff_code;
+	          return `<tr>
+	            <td>${paymentIDCell(payment)}</td>
+	            <td>${esc(payment.user ? `${payment.user.first_name || ""} @${payment.user.username || ""}` : shortId(payment.user_id))}</td>
+	            <td>${esc(payment.contact_phone || (payment.user && payment.user.phone) || "—")}</td>
+	            <td>${esc(payment.payment_type || "subscription")}</td>
+	            <td>${esc(product || "—")}</td>
+	            <td>${money(payment.amount_kzt)} ₸</td>
+	            <td>${statusBadge(payment.status)}${payment.admin_comment ? `<div class="muted small wrap-text">${esc(payment.admin_comment)}</div>` : ""}</td>
+	            <td>${receipt.validation_status ? receiptValidationSummary(receipt, payment) : "—"}</td>
+	            <td>${receiptOpenHtml(receipt)}</td>
+	          </tr>`;
+	        })
+	        .join("")}</tbody>
+	    </table></div>`;
+	  }
+
+	  function paymentIDCell(payment) {
+	    const id = clean(payment && payment.id);
+	    return `<div class="payment-id-cell">
+	      <code class="mono-id full">${esc(id || "—")}</code>
+	      <div class="action-row payment-id-actions">
+	        <button class="ghost-btn icon-mini" data-copy-payment-id="${esc(id)}" type="button">Copy UUID</button>
+	        <button class="ghost-btn icon-mini" data-use-payment-id="${esc(id)}" type="button">Қолмен тексеру</button>
+	      </div>
+	    </div>`;
+	  }
+
+	  function receiptOpenHtml(receipt) {
+	    const path = compact(receipt && receipt.file_path);
+	    if (!path) return `<button class="ghost-btn receipt-open-btn" type="button" disabled>Чек жоқ</button>`;
+	    return `<a class="ghost-btn receipt-open-btn" href="${esc(path)}" target="_blank" rel="noopener">Чекті ашу</a>`;
+	  }
+
+	  function receiptValidationSummary(receipt, payment) {
+	    const errors = receipt.validation_errors || [];
+	    const diff = typeof receipt.amount_difference_kzt === "number"
       ? receipt.amount_difference_kzt
       : typeof receipt.parsed_amount_kzt === "number"
-        ? receipt.parsed_amount_kzt - payment.amount_kzt
-        : null;
-    return `<div class="receipt-validation">
-      ${statusBadge(receipt.validation_status)}
-      <span>Байланыс: ${esc(payment.contact_phone || "—")}</span>
-      <span>Төлем сомасы: ${money(payment.amount_kzt)} ₸</span>
-      <span>Рұқсат етілген ауытқу: ${typeof receipt.amount_tolerance_kzt === "number" ? `${money(receipt.amount_tolerance_kzt)} ₸` : "—"}</span>
-      <span>Чектегі сома: ${receipt.parsed_amount_kzt ? `${money(receipt.parsed_amount_kzt)} ₸` : "—"}</span>
-      <span>Айырма: ${diff === null ? "—" : `${money(diff)} ₸`}</span>
-      <span>БИН: ${esc(receipt.parsed_recipient_bin || "—")}</span>
-      <span>Күтілетін БИН: ${esc(receipt.expected_recipient_bin || "—")}</span>
-      <span>Валюта: ${esc(receipt.parsed_currency || "—")}</span>
-      <span>Чек нөмірі: ${esc(receipt.parsed_check_id || receipt.receipt_transaction_key || receipt.parsed_transaction_id || "—")}</span>
-      <span>Провайдер: ${esc(receipt.provider || "unknown")}</span>
-      <span>QR: ${receipt.qr_found ? "QR табылды" : "QR табылмады"}</span>
-      <span>Файл hash: ${esc(receipt.file_hash ? receipt.file_hash.slice(0, 12) : "—")}</span>
-      <span>Text hash: ${esc(receipt.raw_text_hash ? receipt.raw_text_hash.slice(0, 12) : "—")}</span>
-      <span>Қайталану: ${receipt.duplicate_of_receipt_id ? "Күдікті/қайталанған" : "Бірегей"}</span>
-      ${errors.length ? `<small>${esc(errors.join(", "))}</small>` : ""}
-    </div>`;
-  }
+	        ? receipt.parsed_amount_kzt - payment.amount_kzt
+	        : null;
+	    const approved = receipt.validation_status === "approved";
+	    const identity = receipt.parsed_check_id || receipt.receipt_transaction_key || receipt.parsed_transaction_id || "—";
+	    return `<div class="receipt-validation">
+	      ${statusBadge(receipt.validation_status)}
+	      ${validationDetail("Байланыс", payment.contact_phone || "—")}
+	      ${validationDetail("Күтілетін сома", `${money(payment.amount_kzt)} ₸`)}
+	      ${validationDetail("Рұқсат етілген ауытқу", typeof receipt.amount_tolerance_kzt === "number" ? `${money(receipt.amount_tolerance_kzt)} ₸` : "—")}
+	      ${validationDetail("Чектегі сома", typeof receipt.parsed_amount_kzt === "number" ? `${money(receipt.parsed_amount_kzt)} ₸` : "—")}
+	      ${validationDetail("Айырма", diff === null ? "—" : `${money(diff)} ₸`)}
+	      ${validationDetail("БИН/ИИН", receipt.parsed_recipient_bin || "—", true)}
+	      ${validationDetail("Күтілетін БИН/ИИН", receipt.expected_recipient_bin || "—", true)}
+	      ${validationDetail("Валюта", receipt.parsed_currency || "—")}
+	      ${validationDetail("Чек/QR", identity, true)}
+	      ${validationDetail("Провайдер", receipt.provider || "unknown")}
+	      ${validationDetail("QR", receipt.qr_found ? "QR табылды" : "QR табылмады")}
+	      ${validationDetail("Файл hash", receipt.file_hash || "—", true)}
+	      ${validationDetail("Text hash", receipt.raw_text_hash || "—", true)}
+	      ${validationDetail("Қайталану", receipt.duplicate_of_receipt_id ? `Қайталанған: ${receipt.duplicate_of_receipt_id}` : "Бірегей", Boolean(receipt.duplicate_of_receipt_id))}
+	      ${!approved && errors.length ? `<small>${errors.map(receiptErrorText).map(esc).join(", ")}</small>` : ""}
+	    </div>`;
+	  }
+
+	  function validationDetail(label, value, mono) {
+	    const tag = mono ? "code" : "strong";
+	    return `<span><b>${esc(label)}:</b> <${tag}>${esc(value)}</${tag}></span>`;
+	  }
+
+	  function receiptErrorText(code) {
+	    const labels = {
+	      amount_mismatch: "Сома рұқсат етілген ауытқудан тыс",
+	      amount_not_found: "Чектегі сома оқылмады",
+	      currency_missing: "Валюта табылмады",
+	      currency_mismatch: "Валюта KZT емес",
+	      recipient_bin_missing: "БИН/ИИН табылмады",
+	      recipient_bin_mismatch: "БИН/ИИН сәйкес емес",
+	      recipient_bin_not_configured: "Күтілетін БИН/ИИН бапталмаған",
+	      provider_marker_missing: "Провайдер белгісі табылмады",
+	      payment_date_too_early: "Чек төлем жасалған уақыттан ертерек",
+	      strong_identity_not_found: "Чек/QR нөмірі табылмады",
+	      duplicate_identity_found: "Қайталанған чек белгісі табылды",
+	      pdf_text_unreadable: "PDF мәтіні оқылмады",
+	      file_read_failed: "Файл оқылмады",
+	    };
+	    return labels[code] || String(code || "");
+	  }
 
   async function renderAdminChannels() {
     const [levels, data] = await Promise.all([adminLevels(), api("/api/admin/channels")]);

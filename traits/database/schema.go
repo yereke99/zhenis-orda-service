@@ -14,6 +14,11 @@ CREATE TABLE IF NOT EXISTS users (
 	invited_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
 	current_level INTEGER NOT NULL DEFAULT 0,
 	access_closed INTEGER NOT NULL DEFAULT 0,
+	blocked_reason TEXT,
+	blocked_at DATETIME,
+	blocked_by_admin_id INTEGER,
+	unblocked_at DATETIME,
+	unblocked_by_admin_id INTEGER,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

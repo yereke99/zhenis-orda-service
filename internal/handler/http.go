@@ -27,6 +27,10 @@ type InviteIssuer interface {
 	SendMessage(ctx context.Context, chatID int64, text string) error
 }
 
+type TelegramMemberRemover interface {
+	RemoveChatMember(ctx context.Context, chatID string, userID int64) error
+}
+
 type ReceiptAdminNotifier interface {
 	NotifyReceiptAdmins(ctx context.Context, user repository.User, payment repository.Payment, receipt repository.Receipt)
 }
@@ -126,6 +130,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /api/admin/users", admin(s.handleAdminUsers, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
 	mux.Handle("GET /api/admin/users/{id}", admin(s.handleAdminUser, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
 	mux.Handle("PATCH /api/admin/users/{id}/access", admin(s.handleAdminUserAccess, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("POST /api/admin/users/{id}/block", admin(s.handleAdminBlockUser, repository.RoleSuperAdmin, repository.RoleSupport))
+	mux.Handle("POST /api/admin/users/{id}/unblock", admin(s.handleAdminUnblockUser, repository.RoleSuperAdmin, repository.RoleSupport))
 	mux.Handle("POST /api/admin/users/{id}/bonus", admin(s.handleAdminUserBonus, repository.RoleSuperAdmin, repository.RoleSupport))
 	mux.Handle("GET /api/admin/payments", admin(s.handleAdminPayments, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))
 	mux.Handle("GET /api/admin/payments/{id}", admin(s.handleAdminPayment, repository.RoleSuperAdmin, repository.RoleSupport, repository.RoleAnalyst))

@@ -276,10 +276,18 @@ func (s *Store) HasPremiumCourseAccess(ctx context.Context, userID, courseID str
 }
 
 func (s *Store) ActivePremiumCourseAccess(ctx context.Context, userID, courseID string) (*UserCourseAccess, error) {
-	access, err := scanUserCourseAccess(s.db.QueryRowContext(ctx, userCourseAccessSelectSQL+`
-		WHERE user_id = ? AND course_id = ? AND access_status = 'active'
-			AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-		ORDER BY granted_at DESC
+	access, err := scanUserCourseAccess(s.db.QueryRowContext(ctx, `
+		SELECT user_course_access.id, user_course_access.user_id, user_course_access.course_id,
+			user_course_access.access_status, user_course_access.access_source,
+			user_course_access.granted_by_admin_id, user_course_access.payment_id,
+			user_course_access.granted_at, user_course_access.expires_at, user_course_access.revoked_at,
+			user_course_access.created_at, user_course_access.updated_at
+		FROM user_course_access
+		JOIN users u ON u.id = user_course_access.user_id
+		WHERE user_course_access.user_id = ? AND user_course_access.course_id = ? AND user_course_access.access_status = 'active'
+			AND u.access_closed = 0
+			AND (user_course_access.expires_at IS NULL OR user_course_access.expires_at > CURRENT_TIMESTAMP)
+		ORDER BY user_course_access.granted_at DESC
 		LIMIT 1;
 	`, userID, courseID))
 	if err != nil {
@@ -435,12 +443,22 @@ func (s *Store) ListUserPremiumCourseAccess(ctx context.Context, userID string) 
 		return nil, err
 	}
 	defer rows.Close()
-	var result []PremiumCourseAccessView
+	var courses []PremiumCourse
 	for rows.Next() {
 		course, err := scanPremiumCourse(rows)
 		if err != nil {
 			return nil, err
 		}
+		courses = append(courses, course)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	result := make([]PremiumCourseAccessView, 0, len(courses))
+	for _, course := range courses {
 		view := PremiumCourseAccessView{Course: course}
 		access, err := scanUserCourseAccess(s.db.QueryRowContext(ctx, userCourseAccessSelectSQL+`
 			WHERE user_id = ? AND course_id = ?
@@ -455,7 +473,7 @@ func (s *Store) ListUserPremiumCourseAccess(ctx context.Context, userID string) 
 		view.Active, _ = s.HasPremiumCourseAccess(ctx, userID, course.ID, nowUTC())
 		result = append(result, view)
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 func (s *Store) ReusablePremiumCourseTelegramInvite(ctx context.Context, userID, courseID, telegramChatID string) (*PremiumCourseTelegramInvite, error) {

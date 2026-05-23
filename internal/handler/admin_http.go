@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"mime"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 
 	"zhenis-orda-service/internal/repository"
 )
@@ -51,24 +53,347 @@ func (s *Server) handleAdminUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminUserAccess(w http.ResponseWriter, r *http.Request) {
-	actor := adminFromContext(r.Context())
 	id, err := parsePathID(r, "id")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad id")
 		return
 	}
 	var req struct {
-		Closed bool `json:"closed"`
+		Closed  bool   `json:"closed"`
+		Reason  string `json:"reason"`
+		Comment string `json:"comment"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if err := s.store.SetUserAccessClosed(r.Context(), id, req.Closed); mapRepoError(w, err) {
+	s.applyAdminUserAccessChange(w, r, id, req.Closed, firstNonEmpty(req.Reason, req.Comment))
+}
+
+func (s *Server) handleAdminBlockUser(w http.ResponseWriter, r *http.Request) {
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad id")
 		return
 	}
-	_ = s.store.Audit(r.Context(), actor, "user_access", "user", id, req)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	s.applyAdminUserAccessChange(w, r, id, true, req.Reason)
+}
+
+func (s *Server) handleAdminUnblockUser(w http.ResponseWriter, r *http.Request) {
+	id, err := parsePathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := decodeJSON(r, &req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	s.applyAdminUserAccessChange(w, r, id, false, req.Reason)
+}
+
+type adminTelegramDestination struct {
+	Source           string
+	ID               string
+	Title            string
+	TelegramChatID   string
+	InviteLinkType   string
+	ManualInviteLink string
+	LevelNumber      int
+	ExpiresAt        *time.Time
+}
+
+func (s *Server) applyAdminUserAccessChange(w http.ResponseWriter, r *http.Request, userID string, closed bool, reason string) {
+	actor := adminFromContext(r.Context())
+	reason = strings.TrimSpace(reason)
+	if closed && reason == "" {
+		writeError(w, http.StatusBadRequest, "block reason is required")
+		return
+	}
+	before, err := s.store.GetUserByID(r.Context(), userID)
+	if mapRepoError(w, err) {
+		return
+	}
+	if closed && actor.ID != 0 && before.TelegramID == actor.ID {
+		writeError(w, http.StatusConflict, "cannot block current admin")
+		return
+	}
+
+	destinations := []adminTelegramDestination{}
+	warnings := []string{}
+	if closed {
+		destinations, warnings = s.adminUserTelegramDestinations(r.Context(), before)
+	}
+
+	user, err := s.store.SetUserAccessState(r.Context(), userID, closed, actor.ID, reason)
+	if mapRepoError(w, err) {
+		return
+	}
+
+	if closed {
+		warnings = append(warnings, s.sendAdminAccessTelegramMessage(r.Context(), user, adminBlockMessage(reason))...)
+		warnings = append(warnings, s.removeUserFromTelegramDestinations(r.Context(), user, destinations)...)
+	} else {
+		destinations, warnings = s.adminUserTelegramDestinations(r.Context(), user)
+		links, linkWarnings := s.userRejoinLinks(r.Context(), user, destinations)
+		warnings = append(warnings, linkWarnings...)
+		warnings = append(warnings, s.sendAdminAccessTelegramMessage(r.Context(), user, adminUnblockMessage(links))...)
+	}
+
+	action := "user_unblocked"
+	if closed {
+		action = "user_blocked"
+	}
+	_ = s.store.Audit(r.Context(), actor, action, "user", userID, map[string]any{
+		"reason":                reason,
+		"telegram_id":           user.TelegramID,
+		"telegram_destinations": len(destinations),
+		"warnings":              warnings,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "user": user, "warnings": warnings})
+}
+
+func (s *Server) adminUserTelegramDestinations(ctx context.Context, user repository.User) ([]adminTelegramDestination, []string) {
+	destinations := []adminTelegramDestination{}
+	warnings := []string{}
+	seen := map[string]bool{}
+	add := func(item adminTelegramDestination) {
+		item.Title = strings.TrimSpace(item.Title)
+		item.TelegramChatID = strings.TrimSpace(item.TelegramChatID)
+		item.ManualInviteLink = strings.TrimSpace(item.ManualInviteLink)
+		if item.Title == "" {
+			item.Title = item.Source
+		}
+		key := item.Source + ":" + item.ID + ":" + item.TelegramChatID + ":" + item.ManualInviteLink
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		destinations = append(destinations, item)
+	}
+
+	if channels, err := s.store.ListChannels(ctx, user.ID, false); err == nil {
+		for _, channel := range channels {
+			if !channel.Access {
+				continue
+			}
+			add(adminTelegramDestination{
+				Source:           "channel",
+				ID:               channel.ID,
+				Title:            channel.Title,
+				TelegramChatID:   channel.TelegramChatID,
+				InviteLinkType:   channel.InviteLinkType,
+				ManualInviteLink: channel.ManualInviteLink,
+			})
+		}
+	} else {
+		warnings = append(warnings, "Каналдар тізімін тексеру мүмкін болмады")
+		s.logAdminUserAccessWarning(ctx, user, "admin channel destination lookup failed", err)
+	}
+
+	if levels, err := s.store.ListLevels(ctx, user.ID); err == nil {
+		for _, level := range levels {
+			if !level.Access || !level.TelegramConfigured {
+				continue
+			}
+			full, err := s.store.GetLevelByNumber(ctx, level.Number)
+			if err != nil || strings.TrimSpace(full.TelegramChatID) == "" {
+				continue
+			}
+			add(adminTelegramDestination{
+				Source:         "level",
+				ID:             full.ID,
+				Title:          fmt.Sprintf("Деңгей %d Telegram", full.Number),
+				TelegramChatID: full.TelegramChatID,
+				InviteLinkType: "bot",
+				LevelNumber:    full.Number,
+			})
+		}
+	} else {
+		warnings = append(warnings, "Деңгей Telegram топтарын тексеру мүмкін болмады")
+		s.logAdminUserAccessWarning(ctx, user, "admin level destination lookup failed", err)
+	}
+
+	if courses, err := s.store.ListUserPremiumCourseAccess(ctx, user.ID); err == nil {
+		for _, item := range courses {
+			if !item.Active {
+				continue
+			}
+			course := item.Course
+			if strings.TrimSpace(course.TelegramChatID) == "" && strings.TrimSpace(course.ManualInviteLink) == "" {
+				continue
+			}
+			var expiresAt *time.Time
+			if item.Access != nil {
+				expiresAt = item.Access.ExpiresAt
+			}
+			add(adminTelegramDestination{
+				Source:           "premium_course",
+				ID:               course.ID,
+				Title:            course.Title,
+				TelegramChatID:   course.TelegramChatID,
+				InviteLinkType:   course.InviteLinkType,
+				ManualInviteLink: course.ManualInviteLink,
+				ExpiresAt:        expiresAt,
+			})
+		}
+	} else {
+		warnings = append(warnings, "Premium курс Telegram қолжетімділігін тексеру мүмкін болмады")
+		s.logAdminUserAccessWarning(ctx, user, "admin premium destination lookup failed", err)
+	}
+	return destinations, warnings
+}
+
+func (s *Server) removeUserFromTelegramDestinations(ctx context.Context, user repository.User, destinations []adminTelegramDestination) []string {
+	if user.TelegramID == 0 {
+		return nil
+	}
+	remover, ok := s.bot.(TelegramMemberRemover)
+	if s.bot == nil || !ok {
+		if hasTelegramChatDestinations(destinations) {
+			return []string{"Telegram арналарынан шығару үшін бот бапталмаған"}
+		}
+		return nil
+	}
+	warnings := []string{}
+	seenChats := map[string]bool{}
+	for _, destination := range destinations {
+		chatID := strings.TrimSpace(destination.TelegramChatID)
+		if chatID == "" || seenChats[chatID] {
+			continue
+		}
+		seenChats[chatID] = true
+		if err := remover.RemoveChatMember(ctx, chatID, user.TelegramID); err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s арнасынан шығару мүмкін болмады", destination.Title))
+			s.logAdminUserAccessWarning(ctx, user, "telegram member removal failed", err, zap.String("chat_id", chatID), zap.String("destination", destination.Title))
+		}
+	}
+	return warnings
+}
+
+func (s *Server) userRejoinLinks(ctx context.Context, user repository.User, destinations []adminTelegramDestination) ([]string, []string) {
+	links := []string{}
+	warnings := []string{}
+	seenLinks := map[string]bool{}
+	for _, destination := range destinations {
+		link := strings.TrimSpace(destination.ManualInviteLink)
+		expiresAt := time.Now().UTC().Add(24 * time.Hour)
+		if destination.ExpiresAt != nil && destination.ExpiresAt.Before(expiresAt) {
+			expiresAt = *destination.ExpiresAt
+		}
+		if link == "" && strings.TrimSpace(destination.TelegramChatID) != "" && (destination.InviteLinkType == "" || destination.InviteLinkType == "bot") {
+			if s.bot == nil {
+				warnings = append(warnings, fmt.Sprintf("%s шақыру сілтемесін жасау үшін бот бапталмаған", destination.Title))
+				continue
+			}
+			generated, err := s.bot.CreateInviteLink(ctx, destination.TelegramChatID, fmt.Sprintf("user:%d %s:%s", user.TelegramID, destination.Source, destination.ID), expiresAt)
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("%s шақыру сілтемесін жасау мүмкін болмады", destination.Title))
+				s.logAdminUserAccessWarning(ctx, user, "telegram invite create failed", err, zap.String("chat_id", destination.TelegramChatID), zap.String("destination", destination.Title))
+				continue
+			}
+			link = generated
+			s.recordAdminRejoinInvite(ctx, user, destination, link, expiresAt)
+		}
+		if link == "" || seenLinks[link] {
+			continue
+		}
+		seenLinks[link] = true
+		links = append(links, fmt.Sprintf("• %s: %s", destination.Title, link))
+	}
+	return links, warnings
+}
+
+func (s *Server) recordAdminRejoinInvite(ctx context.Context, user repository.User, destination adminTelegramDestination, link string, expiresAt time.Time) {
+	switch destination.Source {
+	case "channel":
+		exp := expiresAt.Format(time.RFC3339)
+		if err := s.store.RecordInviteLink(ctx, user.ID, destination.ID, link, &exp); err != nil {
+			s.logAdminUserAccessWarning(ctx, user, "channel invite record failed", err, zap.String("destination_id", destination.ID))
+		}
+	case "level":
+		telegramID := user.TelegramID
+		_, err := s.store.CreateLevelTelegramInvite(ctx, repository.UserLevelTelegramInvite{
+			UserID:         user.ID,
+			TelegramUserID: &telegramID,
+			LevelID:        destination.ID,
+			TelegramChatID: destination.TelegramChatID,
+			InviteLink:     link,
+			ExpiresAt:      &expiresAt,
+			Status:         "issued",
+		})
+		if err != nil {
+			s.logAdminUserAccessWarning(ctx, user, "level invite record failed", err, zap.String("destination_id", destination.ID))
+		}
+	case "premium_course":
+		_, err := s.store.CreatePremiumCourseTelegramInvite(ctx, repository.PremiumCourseTelegramInvite{
+			UserID:         user.ID,
+			CourseID:       destination.ID,
+			TelegramChatID: firstNonEmpty(destination.TelegramChatID, "manual"),
+			InviteLink:     link,
+			ExpiresAt:      &expiresAt,
+			Status:         "issued",
+		})
+		if err != nil {
+			s.logAdminUserAccessWarning(ctx, user, "premium invite record failed", err, zap.String("destination_id", destination.ID))
+		}
+	}
+}
+
+func (s *Server) sendAdminAccessTelegramMessage(ctx context.Context, user repository.User, message string) []string {
+	if s.bot == nil || user.TelegramID == 0 {
+		return []string{"Telegram хабарлама жіберілмеді: бот немесе Telegram ID жоқ"}
+	}
+	if err := s.bot.SendMessage(ctx, user.TelegramID, message); err != nil {
+		s.logAdminUserAccessWarning(ctx, user, "telegram access notification failed", err)
+		return []string{"Telegram хабарлама жіберу мүмкін болмады"}
+	}
+	return nil
+}
+
+func (s *Server) logAdminUserAccessWarning(ctx context.Context, user repository.User, message string, err error, fields ...zap.Field) {
+	_ = ctx
+	if s.logger == nil || err == nil {
+		return
+	}
+	base := []zap.Field{
+		zap.String("user_id", user.ID),
+		zap.Int64("telegram_id", user.TelegramID),
+		zap.Error(err),
+	}
+	base = append(base, fields...)
+	s.logger.Warn(message, base...)
+}
+
+func hasTelegramChatDestinations(destinations []adminTelegramDestination) bool {
+	for _, destination := range destinations {
+		if strings.TrimSpace(destination.TelegramChatID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func adminBlockMessage(reason string) string {
+	return fmt.Sprintf("🚫 Сіздің платформаға қолжетімділігіңіз уақытша шектелді.\n\nСебебі: %s\n\nСіз уақытша жабық Telegram-арналардан шығарылдыңыз. Қосымша ақпарат алу үшін қолдау қызметіне жазыңыз.", strings.TrimSpace(reason))
+}
+
+func adminUnblockMessage(links []string) string {
+	channelText := "Mini App ішіндегі арналар бөліміне кіріп, өзіңізге қолжетімді арналарға қайта қосылыңыз."
+	if len(links) > 0 {
+		channelText = strings.Join(links, "\n")
+	}
+	return fmt.Sprintf("✅ Сіздің аккаунтыңыз қайта ашылды.\n\nПлатформадағы қолжетімділігіңіз қалпына келтірілді.\n\nТөмендегі қолжетімді Telegram-арналарға қайта қосыла аласыз:\n%s", channelText)
 }
 
 func (s *Server) handleAdminUserBonus(w http.ResponseWriter, r *http.Request) {

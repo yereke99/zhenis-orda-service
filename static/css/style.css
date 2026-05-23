@@ -2814,6 +2814,49 @@ tr:hover td {
   font-size: 12px;
 }
 
+.mono-id,
+.receipt-validation code,
+.access-detail-grid code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--gold-soft);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.mono-id.full {
+  display: block;
+  max-width: 260px;
+}
+
+.wrap-text {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.payment-id-cell {
+  display: grid;
+  gap: 8px;
+  min-width: 190px;
+}
+
+.payment-id-actions {
+  gap: 6px;
+}
+
+.payment-id-actions .icon-mini {
+  min-height: 32px;
+  padding: 7px 9px;
+}
+
+.receipt-open-btn {
+  min-height: 40px;
+  padding: 10px 14px;
+  border-color: var(--border-strong);
+  color: var(--gold-bright);
+  white-space: nowrap;
+}
+
 .switch-field {
   min-height: 50px;
   display: inline-flex;
@@ -2924,14 +2967,63 @@ tr:hover td {
 
 .receipt-validation {
   display: grid;
-  gap: 4px;
-  min-width: 220px;
+  gap: 6px;
+  min-width: 280px;
+  max-width: 420px;
 }
 
 .receipt-validation span:not(.status),
 .receipt-validation small {
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.receipt-validation span:not(.status) b {
+  color: var(--text-soft);
+  font-weight: 800;
+}
+
+.receipt-validation span:not(.status) strong {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.access-modal {
+  display: grid;
+  gap: 16px;
+}
+
+.access-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.access-detail-grid div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: rgba(10, 13, 19, 0.46);
+}
+
+.access-detail-grid span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.access-detail-grid strong {
+  display: block;
+  color: var(--text-soft);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .builder-head,
@@ -3140,6 +3232,10 @@ tr:hover td {
   border-color: rgba(255, 107, 107, 0.5);
 }
 
+.toast.warn {
+  border-color: rgba(242, 201, 107, 0.55);
+}
+
 .toast .toast-dot {
   width: 8px;
   height: 8px;
@@ -3154,6 +3250,10 @@ tr:hover td {
 
 .toast.error .toast-dot {
   background: var(--danger);
+}
+
+.toast.warn .toast-dot {
+  background: var(--warning);
 }
 
 @keyframes toast-in {

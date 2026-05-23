@@ -120,11 +120,18 @@ type sentBotMessage struct {
 }
 
 type testInviteBot struct {
-	messages []sentBotMessage
-	links    []string
-	calls    int
-	chatID   string
-	name     string
+	messages  []sentBotMessage
+	removed   []removedChatMember
+	links     []string
+	calls     int
+	chatID    string
+	name      string
+	removeErr error
+}
+
+type removedChatMember struct {
+	chatID string
+	userID int64
 }
 
 func (b *testInviteBot) CreateInviteLink(ctx context.Context, chatID, name string, expiresAt time.Time) (string, error) {
@@ -140,6 +147,11 @@ func (b *testInviteBot) CreateInviteLink(ctx context.Context, chatID, name strin
 func (b *testInviteBot) SendMessage(ctx context.Context, chatID int64, text string) error {
 	b.messages = append(b.messages, sentBotMessage{chatID: chatID, text: text})
 	return nil
+}
+
+func (b *testInviteBot) RemoveChatMember(ctx context.Context, chatID string, userID int64) error {
+	b.removed = append(b.removed, removedChatMember{chatID: chatID, userID: userID})
+	return b.removeErr
 }
 
 type failingInviteBot struct{}
@@ -685,6 +697,184 @@ func TestBrowserAdminAuthAndStats(t *testing.T) {
 	srv.Routes().ServeHTTP(statsRec, statsReq)
 	if statsRec.Code != http.StatusOK {
 		t.Fatalf("stats expected 200, got %d: %s", statsRec.Code, statsRec.Body.String())
+	}
+}
+
+func TestAdminBlockUnblockUserPreservesPurchasedAccess(t *testing.T) {
+	srv, store := newTestHTTPServerWithStoreAndConfig(t, "development", func(cfg *config.Config) {
+		cfg.AdminIDs = []int64{111222}
+	})
+	cookie := loginAdminCookie(t, srv)
+	bot := &testInviteBot{links: []string{"https://t.me/+rejoin"}}
+	srv.SetBot(bot)
+
+	ctx := context.Background()
+	user, _, err := store.RegisterOrUpdateTelegramUser(ctx, repository.TelegramUserInput{
+		TelegramID: 9401,
+		Username:   "blocked_user",
+		FirstName:  "Blocked User",
+		Language:   "kk",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var levelID string
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM levels WHERE number = 1`).Scan(&levelID); err != nil {
+		t.Fatal(err)
+	}
+	lesson, err := store.UpsertLesson(ctx, repository.Lesson{
+		LevelID:   levelID,
+		TitleKK:   "Protected lesson",
+		TitleRU:   "Protected lesson",
+		VideoURL:  "https://example.test/video",
+		SortOrder: 1,
+		IsActive:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertTest(ctx, repository.Test{
+		LessonID:    lesson.ID,
+		Title:       "Protected test",
+		PassPercent: 50,
+		IsActive:    true,
+		Questions: []repository.TestQuestion{{
+			QuestionTextKK: "Question",
+			QuestionTextRU: "Question",
+			Options: []repository.TestOption{
+				{OptionTextKK: "Yes", OptionTextRU: "Yes", IsCorrect: true, SortOrder: 1},
+				{OptionTextKK: "No", OptionTextRU: "No", SortOrder: 2},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payment, err := store.CreatePayment(ctx, user.ID, "BASIC", "kaspi_qr", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApprovePayment(ctx, payment.ID, 111222, 30); err != nil {
+		t.Fatal(err)
+	}
+	var courseID string
+	if err := store.DB().QueryRowContext(ctx, `SELECT id FROM premium_courses WHERE status = 'active' ORDER BY sort_order ASC LIMIT 1`).Scan(&courseID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GrantPremiumCourseAccess(ctx, user.ID, courseID, repository.PremiumAccessSourceManual, 111222, nil, repository.PremiumAccessDurationLifetime, nil); err != nil {
+		t.Fatal(err)
+	}
+	chatID, err := repository.NormalizeTelegramChatID("2351826422")
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.UpsertChannel(ctx, repository.Channel{
+		Title:             "Paid channel",
+		TelegramChatID:    chatID,
+		InviteLinkType:    "bot",
+		TariffRequirement: "BASIC",
+		LevelRequirement:  1,
+		IsActive:          true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unauthReq := httptest.NewRequest(http.MethodPost, "/api/admin/users/"+user.ID+"/block", bytes.NewBufferString(`{"reason":"test"}`))
+	unauthRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated block expected 401, got %d: %s", unauthRec.Code, unauthRec.Body.String())
+	}
+
+	emptyReq := httptest.NewRequest(http.MethodPost, "/api/admin/users/"+user.ID+"/block", bytes.NewBufferString(`{"reason":" "}`))
+	emptyReq.AddCookie(cookie)
+	emptyRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(emptyRec, emptyReq)
+	if emptyRec.Code != http.StatusBadRequest {
+		t.Fatalf("empty reason block expected 400, got %d: %s", emptyRec.Code, emptyRec.Body.String())
+	}
+
+	blockReq := httptest.NewRequest(http.MethodPost, "/api/admin/users/"+user.ID+"/block", bytes.NewBufferString(`{"reason":"moderation check"}`))
+	blockReq.AddCookie(cookie)
+	blockRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(blockRec, blockReq)
+	if blockRec.Code != http.StatusOK {
+		t.Fatalf("block expected 200, got %d: %s", blockRec.Code, blockRec.Body.String())
+	}
+	blocked, err := store.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blocked.AccessClosed || blocked.BlockedReason != "moderation check" || blocked.BlockedAt == nil || blocked.BlockedByAdminID == nil || *blocked.BlockedByAdminID != 111222 {
+		t.Fatalf("block metadata was not saved: %#v", blocked)
+	}
+	if len(bot.messages) != 1 || bot.messages[0].chatID != 9401 || !strings.Contains(bot.messages[0].text, "moderation check") {
+		t.Fatalf("block notification missing reason: %#v", bot.messages)
+	}
+	removedChannel := false
+	for _, removed := range bot.removed {
+		if removed.chatID == channel.TelegramChatID && removed.userID == 9401 {
+			removedChannel = true
+		}
+	}
+	if !removedChannel {
+		t.Fatalf("block did not remove user from paid channel, removals: %#v", bot.removed)
+	}
+	sub, err := store.GetActiveSubscription(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub == nil {
+		t.Fatal("block deleted or hid active subscription")
+	}
+	var activeCourseRows int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM user_course_access WHERE user_id = ? AND course_id = ? AND access_status = 'active'`, user.ID, courseID).Scan(&activeCourseRows); err != nil {
+		t.Fatal(err)
+	}
+	if activeCourseRows != 1 {
+		t.Fatalf("block changed premium course access rows, got %d", activeCourseRows)
+	}
+	if ok, err := store.CanAccessLevel(ctx, user.ID, 1); err != nil || ok {
+		t.Fatalf("blocked user should not access level, ok=%v err=%v", ok, err)
+	}
+	if ok, err := store.HasPremiumCourseAccess(ctx, user.ID, courseID, time.Now()); err != nil || ok {
+		t.Fatalf("blocked user should not use premium access, ok=%v err=%v", ok, err)
+	}
+	testReq := httptest.NewRequest(http.MethodGet, "/api/tests/1?miniapp_dev=1&telegram_id=9401", nil)
+	testRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(testRec, testReq)
+	if testRec.Code != http.StatusForbidden {
+		t.Fatalf("blocked test access expected 403, got %d: %s", testRec.Code, testRec.Body.String())
+	}
+
+	unblockReq := httptest.NewRequest(http.MethodPost, "/api/admin/users/"+user.ID+"/unblock", bytes.NewBufferString(`{"reason":"restored"}`))
+	unblockReq.AddCookie(cookie)
+	unblockRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(unblockRec, unblockReq)
+	if unblockRec.Code != http.StatusOK {
+		t.Fatalf("unblock expected 200, got %d: %s", unblockRec.Code, unblockRec.Body.String())
+	}
+	unblocked, err := store.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unblocked.AccessClosed || unblocked.UnblockedAt == nil || unblocked.UnblockedByAdminID == nil || *unblocked.UnblockedByAdminID != 111222 {
+		t.Fatalf("unblock metadata was not saved: %#v", unblocked)
+	}
+	if len(bot.messages) < 2 || !strings.Contains(bot.messages[len(bot.messages)-1].text, "https://t.me/+rejoin") {
+		t.Fatalf("unblock notification did not include rejoin link: %#v", bot.messages)
+	}
+	if ok, err := store.CanAccessLevel(ctx, user.ID, 1); err != nil || !ok {
+		t.Fatalf("unblocked user should regain level access, ok=%v err=%v", ok, err)
+	}
+	if ok, err := store.HasPremiumCourseAccess(ctx, user.ID, courseID, time.Now()); err != nil || !ok {
+		t.Fatalf("unblocked user should regain premium access, ok=%v err=%v", ok, err)
+	}
+	testReq = httptest.NewRequest(http.MethodGet, "/api/tests/1?miniapp_dev=1&telegram_id=9401", nil)
+	testRec = httptest.NewRecorder()
+	srv.Routes().ServeHTTP(testRec, testReq)
+	if testRec.Code != http.StatusOK {
+		t.Fatalf("unblocked test access expected 200, got %d: %s", testRec.Code, testRec.Body.String())
 	}
 }
 

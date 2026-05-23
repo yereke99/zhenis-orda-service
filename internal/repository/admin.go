@@ -85,8 +85,41 @@ func (s *Store) ListUsers(ctx context.Context, search string, limit, offset int)
 }
 
 func (s *Store) SetUserAccessClosed(ctx context.Context, userID string, closed bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET access_closed = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, boolInt(closed), userID)
+	_, err := s.SetUserAccessState(ctx, userID, closed, 0, "")
 	return err
+}
+
+func (s *Store) SetUserAccessState(ctx context.Context, userID string, closed bool, adminID int64, reason string) (User, error) {
+	reason = strings.TrimSpace(reason)
+	adminValue := any(adminID)
+	if adminID == 0 {
+		adminValue = nil
+	}
+	var err error
+	if closed {
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE users
+			SET access_closed = 1,
+				blocked_reason = ?,
+				blocked_at = CURRENT_TIMESTAMP,
+				blocked_by_admin_id = ?,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?;
+		`, nullableString(reason), adminValue, userID)
+	} else {
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE users
+			SET access_closed = 0,
+				unblocked_at = CURRENT_TIMESTAMP,
+				unblocked_by_admin_id = ?,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?;
+		`, adminValue, userID)
+	}
+	if err != nil {
+		return User{}, err
+	}
+	return s.GetUserByID(ctx, userID)
 }
 
 func (s *Store) ListPayments(ctx context.Context, status string, limit, offset int) ([]Payment, error) {
@@ -778,9 +811,10 @@ func (s *Store) ListStreams(ctx context.Context, userID string, admin bool) ([]L
 		return nil, err
 	}
 	if !admin && userID != "" {
+		user, _ := s.GetUserByID(ctx, userID)
 		sub, _ := s.GetActiveSubscription(ctx, userID)
 		for i := range streams {
-			if sub == nil || tariffRank(sub.TariffCode) < tariffRank(streams[i].TariffRequirement) {
+			if user.AccessClosed || sub == nil || tariffRank(sub.TariffCode) < tariffRank(streams[i].TariffRequirement) {
 				streams[i].StreamURL = ""
 				streams[i].RecordingURL = ""
 			}

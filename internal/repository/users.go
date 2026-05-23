@@ -274,18 +274,46 @@ func (s *Store) AddCoinsTx(ctx context.Context, tx *sql.Tx, userID string, amoun
 const userSelectSQL = `
 	SELECT u.id, u.telegram_id, COALESCE(u.username, ''), COALESCE(u.first_name, ''), COALESCE(u.last_name, ''), COALESCE(u.photo_url, ''),
 		COALESCE(u.language, ''), COALESCE(u.phone, ''), u.referral_code, u.invited_by_user_id,
-		u.current_level, u.access_closed, u.created_at, u.updated_at, u.last_seen_at
+		u.current_level, u.access_closed, COALESCE(u.blocked_reason, ''), u.blocked_at, u.blocked_by_admin_id,
+		u.unblocked_at, u.unblocked_by_admin_id, u.created_at, u.updated_at, u.last_seen_at
 	FROM users u`
 
 func scanUserRow(row interface{ Scan(dest ...any) error }) (User, error) {
 	var user User
 	var invited sql.NullString
+	var blockedAt, unblockedAt sql.NullTime
+	var blockedByAdminID, unblockedByAdminID sql.NullInt64
 	var accessClosed int
-	if err := row.Scan(&user.ID, &user.TelegramID, &user.Username, &user.FirstName, &user.LastName, &user.PhotoURL, &user.Language, &user.Phone, &user.ReferralCode, &invited, &user.CurrentLevel, &accessClosed, &user.CreatedAt, &user.UpdatedAt, &user.LastSeenAt); err != nil {
+	if err := row.Scan(
+		&user.ID,
+		&user.TelegramID,
+		&user.Username,
+		&user.FirstName,
+		&user.LastName,
+		&user.PhotoURL,
+		&user.Language,
+		&user.Phone,
+		&user.ReferralCode,
+		&invited,
+		&user.CurrentLevel,
+		&accessClosed,
+		&user.BlockedReason,
+		&blockedAt,
+		&blockedByAdminID,
+		&unblockedAt,
+		&unblockedByAdminID,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+		&user.LastSeenAt,
+	); err != nil {
 		return User{}, rowErr(err)
 	}
 	user.InvitedByUserID = scanStringPtr(invited)
 	user.AccessClosed = accessClosed == 1
+	user.BlockedAt = scanTime(blockedAt)
+	user.BlockedByAdminID = scanInt64(blockedByAdminID)
+	user.UnblockedAt = scanTime(unblockedAt)
+	user.UnblockedByAdminID = scanInt64(unblockedByAdminID)
 	return user, nil
 }
 

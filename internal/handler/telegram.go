@@ -124,6 +124,40 @@ func (b *TelegramBot) CreateInviteLink(ctx context.Context, chatID, name string,
 	return resp.Result.InviteLink, nil
 }
 
+func (b *TelegramBot) RemoveChatMember(ctx context.Context, chatID string, userID int64) error {
+	if strings.TrimSpace(chatID) == "" || userID == 0 {
+		return fmt.Errorf("telegram chat id or user id is empty")
+	}
+	var banResp struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := b.postJSON(ctx, "banChatMember", map[string]any{
+		"chat_id": chatID,
+		"user_id": userID,
+	}, &banResp); err != nil {
+		return err
+	}
+	if !banResp.OK {
+		return fmt.Errorf("telegram banChatMember failed: %s", banResp.Description)
+	}
+	var unbanResp struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := b.postJSON(ctx, "unbanChatMember", map[string]any{
+		"chat_id":        chatID,
+		"user_id":        userID,
+		"only_if_banned": true,
+	}, &unbanResp); err != nil {
+		return err
+	}
+	if !unbanResp.OK {
+		return fmt.Errorf("telegram unbanChatMember failed: %s", unbanResp.Description)
+	}
+	return nil
+}
+
 func (b *TelegramBot) getUpdates(ctx context.Context, offset int64) ([]telegramUpdate, error) {
 	var resp struct {
 		OK     bool             `json:"ok"`
