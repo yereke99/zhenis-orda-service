@@ -96,9 +96,7 @@ func parseReceiptPDFWithProvider(filePath string, expectedAmount int, paymentCre
 		"transaction id", "transaction", "txn", "транзакция", "транзакции",
 		"операция", "операции", "номер операции", "id операции",
 	})
-	result.ParsedCheckID = extractIdentityValue(rawText, []string{
-		"check id", "receipt id", "receipt", "чек", "номер чека", "квитанция", "номер квитанции",
-	})
+	result.ParsedCheckID = extractReceiptCheckID(rawText)
 	result.ParsedReferenceID = extractIdentityValue(rawText, []string{
 		"reference id", "reference", "референс", "rrn", "referense",
 	})
@@ -267,6 +265,11 @@ func DecodeQRCode(filePath string) (string, error) {
 }
 
 func BuildReceiptIdentity(result ReceiptParseResult) ReceiptParseResult {
+	if checkID := normalizeReceiptNumber(result.ParsedCheckID); checkID != "" {
+		result.ParsedCheckID = checkID
+		result.ReceiptTransactionKey = checkID
+		return result
+	}
 	if result.ReceiptTransactionKey == "" {
 		for _, value := range []string{result.ParsedTransactionID, result.ParsedReferenceID, result.ParsedCheckID} {
 			if key := normalizeReceiptIdentity(value); key != "" {
@@ -325,7 +328,8 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 			return parseErr
 		}
 		parsed = BuildReceiptIdentity(parsed)
-		duplicateID, duplicateStrong, err := s.CheckReceiptDuplicate(ctx, tx, parsed, found.ID)
+		receiptID := newID()
+		duplicateID, duplicateStrong, err := s.checkReceiptDuplicate(ctx, tx, parsed, found.ID, receiptID)
 		if err != nil {
 			return err
 		}
@@ -341,7 +345,6 @@ func (s *Store) attachReceipt(ctx context.Context, userID, paymentID, filePath, 
 			parsed.ValidationStatus = ReceiptStatusUploaded
 		}
 		errorsJSON, _ := json.Marshal(parsed.ValidationErrors)
-		receiptID := newID()
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO payment_receipts(
 				id, payment_id, user_id, file_path, file_name, mime_type, file_size, status,
@@ -504,49 +507,33 @@ func inactivePaymentError(payment Payment) error {
 }
 
 func (s *Store) CheckReceiptDuplicate(ctx context.Context, q queryer, parsed ReceiptParseResult, paymentID string) (*string, bool, error) {
-	identities := []struct {
-		column string
-		value  string
-		strong bool
-	}{
-		{"file_hash", parsed.FileHash, true},
-		{"receipt_transaction_key", parsed.ReceiptTransactionKey, true},
-		{"parsed_transaction_id", parsed.ParsedTransactionID, true},
-		{"parsed_check_id", parsed.ParsedCheckID, true},
-		{"qr_payload_hash", parsed.QRPayloadHash, true},
-		{"raw_text_hash", parsed.RawTextHash, true},
-	}
+	return s.checkReceiptDuplicate(ctx, q, parsed, paymentID, "")
+}
+
+func (s *Store) checkReceiptDuplicate(ctx context.Context, q queryer, parsed ReceiptParseResult, paymentID, receiptID string) (*string, bool, error) {
+	identities := receiptDuplicateIdentities(parsed)
 	for _, identity := range identities {
 		if strings.TrimSpace(identity.value) == "" {
 			continue
 		}
 		var id string
+		args := []any{paymentID, identity.value}
+		excludeReceipt := ""
+		if strings.TrimSpace(receiptID) != "" {
+			excludeReceipt = " AND r.id <> ?"
+			args = append(args, receiptID)
+		}
 		err := q.QueryRowContext(ctx, `
-			SELECT id
-			FROM payment_receipts
-			WHERE validation_status = 'approved' AND payment_id <> ? AND `+identity.column+` = ?
-			ORDER BY created_at ASC
+			SELECT r.id
+			FROM payment_receipts r
+			JOIN payments p ON p.id = r.payment_id
+			WHERE r.validation_status = 'approved'
+				AND p.status = 'approved'
+				AND r.payment_id <> ?
+				AND r.`+identity.column+` = ?`+excludeReceipt+`
+			ORDER BY r.created_at ASC
 			LIMIT 1;
-		`, paymentID, identity.value).Scan(&id)
-		if err == nil {
-			return &id, identity.strong, nil
-		}
-		if err != sql.ErrNoRows {
-			return nil, false, err
-		}
-	}
-	for _, identity := range identities {
-		if strings.TrimSpace(identity.value) == "" {
-			continue
-		}
-		var id string
-		err := q.QueryRowContext(ctx, `
-			SELECT id
-			FROM payment_receipts
-			WHERE payment_id <> ? AND `+identity.column+` = ?
-			ORDER BY created_at ASC
-			LIMIT 1;
-		`, paymentID, identity.value).Scan(&id)
+		`, args...).Scan(&id)
 		if err == nil {
 			return &id, identity.strong, nil
 		}
@@ -555,6 +542,42 @@ func (s *Store) CheckReceiptDuplicate(ctx context.Context, q queryer, parsed Rec
 		}
 	}
 	return nil, false, nil
+}
+
+func receiptDuplicateIdentities(parsed ReceiptParseResult) []struct {
+	column string
+	value  string
+	strong bool
+} {
+	if checkID := normalizeReceiptNumber(parsed.ParsedCheckID); checkID != "" {
+		return []struct {
+			column string
+			value  string
+			strong bool
+		}{
+			{"parsed_check_id", checkID, true},
+			{"receipt_transaction_key", checkID, true},
+		}
+	}
+	if key := normalizeReceiptIdentity(parsed.ReceiptTransactionKey); key != "" {
+		return []struct {
+			column string
+			value  string
+			strong bool
+		}{
+			{"receipt_transaction_key", key, true},
+		}
+	}
+	if parsed.QRPayloadHash != "" {
+		return []struct {
+			column string
+			value  string
+			strong bool
+		}{
+			{"qr_payload_hash", parsed.QRPayloadHash, true},
+		}
+	}
+	return nil
 }
 
 func (s *Store) GetReceipt(ctx context.Context, receiptID string) (Receipt, error) {
@@ -789,6 +812,24 @@ func extractIdentityValue(raw string, labels []string) string {
 	return ""
 }
 
+func extractReceiptCheckID(raw string) string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:№\s*чека|номер\s+чека|чек\s*№|check\s*(?:id|number|no|№|#)?|receipt\s*(?:id|number|no|№|#)?|номер\s+квитанции|квитанция\s*№)\s*[:№#-]?\s*([A-Za-zА-Яа-я]{0,8}[\s._-]*[0-9][0-9A-Za-zА-Яа-я._-]{3,40})`),
+		regexp.MustCompile(`(?i)\b(QR[\s._-]*[0-9]{6,})\b`),
+	}
+	for _, pattern := range patterns {
+		for _, match := range pattern.FindAllStringSubmatch(raw, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			if value := normalizeReceiptNumber(match[1]); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
 func extractLabelValue(raw string, labels []string) string {
 	for _, label := range labels {
 		re := regexp.MustCompile(`(?i)` + regexp.QuoteMeta(label) + `\s*[:№#-]?\s*([A-Za-zА-Яа-я0-9._/\- ]{4,80})`)
@@ -913,6 +954,23 @@ func normalizeReceiptIdentity(value string) string {
 		}
 	}
 	return builder.String()
+}
+
+func normalizeReceiptNumber(value string) string {
+	key := normalizeReceiptIdentity(value)
+	if key == "" {
+		return ""
+	}
+	digits := 0
+	for _, r := range key {
+		if r >= '0' && r <= '9' {
+			digits++
+		}
+	}
+	if digits < 4 || len([]rune(key)) < 5 {
+		return ""
+	}
+	return key
 }
 
 func maskSensitiveID(value string) string {

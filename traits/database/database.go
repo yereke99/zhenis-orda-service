@@ -352,15 +352,21 @@ func migratePaymentsForPremiumCourses(ctx context.Context, db *sql.DB) error {
 }
 
 func addReceiptUniqueIndexes(ctx context.Context, db *sql.DB) error {
+	for _, name := range []string{
+		"uniq_receipts_approved_file_hash",
+		"uniq_receipts_approved_qr_hash",
+		"uniq_receipts_approved_raw_text_hash",
+	} {
+		if _, err := db.ExecContext(ctx, `DROP INDEX IF EXISTS `+name); err != nil {
+			return err
+		}
+	}
 	indexes := []struct {
 		name   string
 		column string
 	}{
-		{"uniq_receipts_approved_file_hash", "file_hash"},
 		{"uniq_receipts_approved_transaction_key", "receipt_transaction_key"},
 		{"uniq_receipts_approved_check", "parsed_check_id"},
-		{"uniq_receipts_approved_qr_hash", "qr_payload_hash"},
-		{"uniq_receipts_approved_raw_text_hash", "raw_text_hash"},
 	}
 	for _, index := range indexes {
 		ok, err := noApprovedReceiptDuplicates(ctx, db, index.column)

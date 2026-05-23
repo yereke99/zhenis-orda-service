@@ -536,10 +536,10 @@ func formatRejectMessage(language, comment string) string {
 }
 
 func formatPaymentApprovedMessage(language string, payment repository.Payment) string {
-	if payment.PaymentType == repository.PaymentTypePremiumCourse {
-		return fmt.Sprintf("Төлеміңіз сәтті тексерілді ✅\n\n«%s» курсы ашылды.\nЕнді Mini App ішінен сабақтарды бастай аласыз.", paymentDisplayTitle(payment))
-	}
-	return fmt.Sprintf("Төлеміңіз сәтті тексерілді ✅\n\n«%s» тарифі ашылды.\nЕнді Mini App ішінен сабақтарды бастай аласыз.", paymentDisplayTitle(payment))
+	return fmt.Sprintf("✅ Төлеміңіз сәтті расталды!\n\n🎓 Тариф/курс: %s\n💰 Сома: %s\n\nҚолжетімділік ашылды. Платформаға кіріп, сабақтарды бастай аласыз.",
+		paymentDisplayTitle(payment),
+		optionalKZTAmount(payment.AmountKZT),
+	)
 }
 
 func paymentDisplayTitle(payment repository.Payment) string {

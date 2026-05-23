@@ -1201,7 +1201,7 @@ func TestMiniAppReceiptUploadRejectsWrongAmountNoAccess(t *testing.T) {
 	if uploaded.Payment.Status != repository.PaymentStatusRejected {
 		t.Fatalf("expected rejected payment, got %s with receipt %#v", uploaded.Payment.Status, uploaded.Receipt)
 	}
-	if !strings.Contains(uploaded.Message, "Төлем сомасы сәйкес келмейді") || !strings.Contains(uploaded.Message, "Чектегі сома: 100 ₸") {
+	if !strings.Contains(uploaded.Message, "Чектегі сома сәйкес емес") || !strings.Contains(uploaded.Message, "Чектегі сома: 100 ₸") {
 		t.Fatalf("unexpected user message: %q", uploaded.Message)
 	}
 	sub, err := store.GetActiveSubscription(ctx, created.Payment.UserID)

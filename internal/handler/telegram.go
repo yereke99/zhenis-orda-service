@@ -601,7 +601,7 @@ func receiptUserMessage(language string, payment repository.Payment, receipt rep
 	case receiptHasValidationError(receipt, "currency_missing") || receiptHasValidationError(receipt, "currency_mismatch"):
 		return "Чектегі валюта сәйкес келмейді.\nҚолжетімділік берілмеді.\nДұрыс чек жіберіңіз немесе қолдауға жазыңыз."
 	case receiptHasValidationError(receipt, "recipient_bin_mismatch") || receiptHasValidationError(receipt, "recipient_bin_missing"):
-		return "Чектегі сатушы деректері сәйкес келмейді.\nҚолжетімділік берілмеді.\nДұрыс чек жіберіңіз немесе қолдауға жазыңыз."
+		return "⚠️ Чек дұрыс төлем алушыға жасалмаған.\n\nҚолдау қызметіне жазыңыз немесе дұрыс төлем чегін жіберіңіз."
 	case payment.Status == repository.PaymentStatusRejected || receipt.ValidationStatus == repository.ReceiptStatusRejected:
 		return "Төлем түбіртегі қабылданбады.\nҚолжетімділік берілмеді.\nДұрыс чек жіберіңіз немесе қолдауға жазыңыз."
 	default:
@@ -627,8 +627,7 @@ func formatReceiptWrongAmountMessage(payment repository.Payment, receipt reposit
 	if receipt.ParsedAmountKZT != nil {
 		parsedAmount = formatKZTAmount(*receipt.ParsedAmountKZT) + " ₸"
 	}
-	return fmt.Sprintf("Төлем сомасы сәйкес келмейді.\nТаңдалған тариф/курс: %s — %s\nЧектегі сома: %s\n\nҚолжетімділік берілмеді.\nДұрыс чек жіберіңіз немесе қолдауға жазыңыз.",
-		paymentDisplayTitle(payment),
+	return fmt.Sprintf("⚠️ Чектегі сома сәйкес емес.\n\nКүтілетін сома: %s\nЧектегі сома: %s\n\nДұрыс төлем жасап, жаңа PDF-чекті жіберіңіз.",
 		optionalKZTAmount(payment.AmountKZT),
 		parsedAmount,
 	)

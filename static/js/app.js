@@ -5633,7 +5633,7 @@
       <span>БИН: ${esc(receipt.parsed_recipient_bin || "—")}</span>
       <span>Күтілетін БИН: ${esc(receipt.expected_recipient_bin || "—")}</span>
       <span>Валюта: ${esc(receipt.parsed_currency || "—")}</span>
-      <span>Транзакция: ${esc(receipt.receipt_transaction_key || receipt.parsed_transaction_id || receipt.parsed_check_id || "—")}</span>
+      <span>Чек нөмірі: ${esc(receipt.parsed_check_id || receipt.receipt_transaction_key || receipt.parsed_transaction_id || "—")}</span>
       <span>Провайдер: ${esc(receipt.provider || "unknown")}</span>
       <span>QR: ${receipt.qr_found ? "QR табылды" : "QR табылмады"}</span>
       <span>Файл hash: ${esc(receipt.file_hash ? receipt.file_hash.slice(0, 12) : "—")}</span>

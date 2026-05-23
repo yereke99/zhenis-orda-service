@@ -460,10 +460,10 @@ func TestReceiptUserMessageExplainsWrongAmount(t *testing.T) {
 
 	message := receiptUserMessage("kk", payment, receipt)
 	for _, fragment := range []string{
-		"Төлем сомасы сәйкес келмейді.",
-		"Таңдалған тариф/курс: BASIC — 9 500 ₸",
+		"⚠️ Чектегі сома сәйкес емес.",
+		"Күтілетін сома: 9 500 ₸",
 		"Чектегі сома: 100 ₸",
-		"Қолжетімділік берілмеді.",
+		"Дұрыс төлем жасап, жаңа PDF-чекті жіберіңіз.",
 	} {
 		if !strings.Contains(message, fragment) {
 			t.Fatalf("message missing %q in:\n%s", fragment, message)
