@@ -61,6 +61,10 @@
   const TELEGRAM_AUTH_FAILED_MESSAGE =
     "Telegram авторизациясы сәтсіз аяқталды. Mini App-ты бот ішіндегі батырма арқылы қайта ашыңыз.";
   const DEFAULT_CHANNEL_LINK = "https://t.me/zhenisOrdaFinanceBot";
+  const WHATSAPP_SUPPORT_NUMBER = "77013717776";
+  const WHATSAPP_SUPPORT_MESSAGE = "Сәлеметсіз бе! ZHENIS ORDA бойынша көмек керек.";
+  const WHATSAPP_SUPPORT_URL = `https://wa.me/${WHATSAPP_SUPPORT_NUMBER}?text=${encodeURIComponent(WHATSAPP_SUPPORT_MESSAGE)}`;
+  const DEFAULT_PAYMENT_PROVIDER = "kaspi_qr";
   let certificatePopoverNode = null;
   let certificatePopoverOutsideHandler = null;
 
@@ -718,15 +722,108 @@
 	      tg.openLink(url);
 	      return;
 	    }
-	    window.open(url, "_blank", "noopener");
+	    window.open(url, "_blank", "noopener,noreferrer");
+	  }
+
+	  function openWhatsAppSupport() {
+	    openExternalLink(WHATSAPP_SUPPORT_URL, "WhatsApp сілтемесі қолжетімді емес");
 	  }
 
 	  function currentUserPhone() {
 	    return compact(state.me && state.me.user && state.me.user.phone);
 	  }
 
-	  function normalizePhoneInput(value) {
-	    return compact(value).replace(/\s+/g, " ");
+	  function kzPhoneTypingDigits(value) {
+	    let digits = String(value == null ? "" : value).replace(/\D/g, "");
+	    if (!digits) return "";
+	    if (digits[0] === "8") digits = "7" + digits.slice(1);
+	    if (digits.length > 11) digits = digits.slice(0, 11);
+	    return digits;
+	  }
+
+	  function kzPhoneCanonicalDigits(value) {
+	    let digits = kzPhoneTypingDigits(value);
+	    if (digits.length === 10) digits = "7" + digits;
+	    if (digits.length > 11) digits = digits.slice(0, 11);
+	    return digits;
+	  }
+
+	  function formatKzPhoneDigits(digits) {
+	    if (!digits) return "";
+	    if (digits[0] !== "7") return "+" + digits;
+	    const rest = digits.slice(1);
+	    let out = "+7";
+	    if (rest.length) out += " " + rest.slice(0, Math.min(3, rest.length));
+	    if (rest.length > 3) out += " " + rest.slice(3, Math.min(6, rest.length));
+	    if (rest.length > 6) out += " " + rest.slice(6, Math.min(8, rest.length));
+	    if (rest.length > 8) out += " " + rest.slice(8, Math.min(10, rest.length));
+	    return out;
+	  }
+
+	  function formatKzPhone(value) {
+	    return formatKzPhoneDigits(kzPhoneTypingDigits(value));
+	  }
+
+	  function isValidKzPhone(value) {
+	    const clean = kzPhoneCanonicalDigits(value);
+	    return clean.length === 11 && clean[0] === "7";
+	  }
+
+	  function normalizedKzPhone(value) {
+	    const clean = kzPhoneCanonicalDigits(value);
+	    return clean ? "+" + clean : "";
+	  }
+
+	  function bindKzPhoneInput(input) {
+	    if (!input) return;
+	    const reformat = () => {
+	      const raw = input.value;
+	      const selStart = input.selectionStart == null ? raw.length : input.selectionStart;
+	      let digitsBefore = 0;
+	      for (let i = 0; i < selStart && i < raw.length; i++) {
+	        if (/\d/.test(raw[i])) digitsBefore++;
+	      }
+	      const digits = kzPhoneTypingDigits(raw);
+	      const formatted = formatKzPhoneDigits(digits);
+	      if (formatted === raw && input.selectionStart === selStart) return;
+	      input.value = formatted;
+	      let pos = formatted.length;
+	      if (digitsBefore < digits.length) {
+	        let seen = 0;
+	        for (let i = 0; i < formatted.length; i++) {
+	          if (/\d/.test(formatted[i])) {
+	            seen++;
+	            if (seen > digitsBefore) {
+	              pos = i;
+	              break;
+	            }
+	          }
+	        }
+	      }
+	      try {
+	        input.setSelectionRange(pos, pos);
+	      } catch (_) {}
+	    };
+	    if (input.value) input.value = formatKzPhone(input.value);
+	    input.addEventListener("input", reformat);
+	    input.addEventListener("paste", () => {
+	      setTimeout(reformat, 0);
+	    });
+	  }
+
+	  function staticKaspiMethodHtml() {
+	    return `
+	      <div class="field payment-method-field">
+	        <span>Төлем тәсілі</span>
+	        <div class="payment-method-static" aria-label="Kaspi">
+	          <span class="payment-method-static-mark" aria-hidden="true">K</span>
+	          <div class="payment-method-static-meta">
+	            <strong>Kaspi</strong>
+	            <small>Kaspi арқылы қауіпсіз төлем</small>
+	          </div>
+	        </div>
+	      </div>
+	    `;
 	  }
 
 	  function paymentProviderURL(instructions, provider) {
@@ -751,7 +848,8 @@
 	      backdrop.className = "sheet-backdrop";
 	      const sheet = document.createElement("div");
 	      sheet.className = "purchase-sheet";
-	      const initialPhone = currentUserPhone();
+	      const savedPhone = currentUserPhone();
+	      const initialPhone = savedPhone ? formatKzPhoneDigits(kzPhoneCanonicalDigits(savedPhone)) : "";
 	      sheet.innerHTML = `
 	        <div class="sheet-handle" aria-hidden="true"></div>
 	        <div class="sheet-head">
@@ -763,12 +861,12 @@
 	        </div>
 	        <p class="muted">Тарифті рәсімдеу үшін байланыс нөміріңізді растаңыз.</p>
 	        <p class="sheet-product">${esc(product && product.title ? product.title : "Тариф")} · ${money(product && product.amount)} ₸</p>
-	        <form class="form purchase-phone-form">
+	        <form class="form purchase-phone-form" novalidate>
 	          <label class="field">
 	            <span>Байланыс нөмірі</span>
-	            <input name="contact_phone" inputmode="tel" autocomplete="tel" placeholder="+7 700 000 00 00" value="${esc(initialPhone)}" required />
+	            <input name="contact_phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+7 747 185 04 99" value="${esc(initialPhone)}" maxlength="18" required />
 	          </label>
-	          <p class="muted small">Егер бұл нөмір өзекті болмаса, өзгерте аласыз.</p>
+	          <p class="muted small">Нөмірді растаңыз немесе өзгертіңіз.</p>
 	          <div class="sheet-error" role="alert"></div>
 	          <div class="action-row sheet-actions">
 	            <button class="ghost-btn" data-close-sheet type="button">Жабу</button>
@@ -782,25 +880,36 @@
 	      };
 	      const input = sheet.querySelector("input[name=contact_phone]");
 	      const errorNode = sheet.querySelector(".sheet-error");
+	      bindKzPhoneInput(input);
+	      const clearError = () => {
+	        if (errorNode.textContent) errorNode.textContent = "";
+	        input.classList.remove("has-error");
+	      };
+	      input.addEventListener("input", clearError);
 	      sheet.querySelector(".sheet-close").addEventListener("click", () => close(null));
 	      sheet.querySelector("[data-close-sheet]").addEventListener("click", () => close(null));
 	      sheet.querySelector("form").addEventListener("submit", (event) => {
 	        event.preventDefault();
-	        const phone = normalizePhoneInput(input.value);
-	        const digitCount = (phone.match(/\d/g) || []).length;
-	        if (!phone || digitCount < 6) {
-	          errorNode.textContent = "Байланыс нөмірін жазыңыз.";
+	        if (!isValidKzPhone(input.value)) {
+	          errorNode.textContent = "Телефон нөмірін дұрыс енгізіңіз.";
+	          input.classList.add("has-error");
 	          input.focus();
 	          return;
 	        }
-	        close(phone);
+	        close(normalizedKzPhone(input.value));
 	      });
 	      backdrop.addEventListener("click", (event) => {
 	        if (event.target === backdrop) close(null);
 	      });
 	      backdrop.appendChild(sheet);
 	      els.modalRoot.appendChild(backdrop);
-	      setTimeout(() => input.focus(), 80);
+	      setTimeout(() => {
+	        input.focus();
+	        try {
+	          const end = input.value.length;
+	          input.setSelectionRange(end, end);
+	        } catch (_) {}
+	      }, 80);
 	    });
 	  }
 
@@ -2085,10 +2194,19 @@
           <button class="ghost-btn lg" data-next="premiumCourses" type="button">Premium курстар</button>
           <button class="ghost-btn lg" data-next="assignment" type="button">Тапсырмаларым</button>
           <button class="ghost-btn lg" data-next="support" type="button">Қолдау қызметі</button>
+          <button class="ghost-btn lg whatsapp-action" id="dashboardWhatsappSupport" type="button">
+            <span class="whatsapp-action-mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="16" height="16" focusable="false" aria-hidden="true">
+                <path fill="currentColor" d="M16.02 5.333c-5.9 0-10.687 4.787-10.687 10.687 0 1.88.493 3.713 1.427 5.333L5.333 26.667l5.46-1.4a10.66 10.66 0 0 0 5.227 1.36h.004c5.899 0 10.687-4.788 10.687-10.687 0-2.854-1.111-5.535-3.129-7.553a10.617 10.617 0 0 0-7.562-3.054Zm0 19.45h-.003a8.86 8.86 0 0 1-4.517-1.237l-.324-.192-3.24.829.866-3.16-.211-.336a8.86 8.86 0 0 1-1.358-4.717c0-4.9 3.987-8.887 8.89-8.887 2.373 0 4.604.926 6.281 2.606a8.829 8.829 0 0 1 2.605 6.288c0 4.9-3.987 8.806-8.989 8.806Zm5.124-6.624c-.281-.141-1.663-.821-1.92-.914-.257-.094-.444-.141-.631.141-.187.281-.722.914-.886 1.101-.164.187-.327.21-.609.07-.281-.14-1.187-.437-2.262-1.395-.835-.745-1.4-1.665-1.564-1.946-.164-.282-.018-.434.124-.574.127-.127.281-.328.422-.492.14-.164.187-.281.281-.469.094-.187.047-.351-.023-.492-.07-.141-.633-1.523-.866-2.084-.227-.547-.46-.472-.633-.481-.164-.008-.351-.01-.539-.01a1.04 1.04 0 0 0-.751.351c-.258.281-.984.961-.984 2.344 0 1.383 1.008 2.719 1.148 2.906.141.187 1.984 3.028 4.805 4.244.671.291 1.196.464 1.604.594.674.214 1.287.184 1.772.112.541-.081 1.663-.679 1.898-1.336.234-.656.234-1.219.164-1.336-.07-.117-.258-.187-.539-.328Z"/>
+              </svg>
+            </span>
+            <span>WhatsApp арқылы жазу</span>
+          </button>
         </div>
       </section>
     `);
     bindNext();
+    on("dashboardWhatsappSupport", openWhatsAppSupport);
     bindFinancialIqCta();
     bindCertificateGoal();
     bindFreeLessonCards();
@@ -2355,12 +2473,6 @@
 	      on("backPremiumPayment", () => setScreen("premiumCourses"));
 	      return;
 	    }
-	    const providers = (state.platform && state.platform.providers) || [
-	      { code: "kaspi_qr", title: "Kaspi QR" },
-	      { code: "kaspi_pay", title: "Kaspi Pay" },
-	      { code: "halyk", title: "Halyk" },
-	      { code: "bank_card", title: "Банк картасы" },
-	    ];
 	    html(`
 	      <section class="screen">
 	        <div class="section-head">
@@ -2373,10 +2485,7 @@
 	          <p class="muted">Бұл төлем жазылымды ұзартпайды. Kaspi арқылы төлем жасағаннан кейін PDF-чекті Telegram ботқа жіберіңіз.</p>
 	        </div>
 	        <form id="premiumPaymentForm" class="form">
-	          <label class="field">
-	            <span>Төлем провайдері</span>
-	            <select name="provider">${providers.map((provider) => `<option value="${esc(provider.code)}">${esc(provider.title)}</option>`).join("")}</select>
-	          </label>
+	          ${staticKaspiMethodHtml()}
 	          <button class="gold-btn lg" type="submit"><span class="btn-label">Курсты сатып алу</span><span class="btn-spinner"></span></button>
 	        </form>
 	        <div id="premiumPaymentResult"></div>
@@ -2389,7 +2498,7 @@
 	      if (buttonIsLoading(submitBtn)) return;
 	      setButtonLoading(submitBtn, true);
 	      try {
-	        const provider = new FormData(event.currentTarget).get("provider");
+	        const provider = DEFAULT_PAYMENT_PROVIDER;
 	        const contactPhone = await openPurchasePhoneSheet({
 	          title: course.title,
 	          amount: course.price_kzt,
@@ -3459,12 +3568,6 @@
 	      return;
 	    }
 	    const image = visibleTariffImage(tariff);
-	    const providers = (state.platform && state.platform.providers) || [
-	      { code: "kaspi_qr", title: "Kaspi QR" },
-	      { code: "kaspi_pay", title: "Kaspi Pay" },
-	      { code: "halyk", title: "Halyk" },
-	      { code: "bank_card", title: "Банк картасы" },
-	    ];
 	    html(`
 	      <section class="screen">
 	        <div class="section-head">
@@ -3480,10 +3583,7 @@
 	          <p class="muted">Kaspi арқылы төлем жасағаннан кейін PDF-чекті Telegram ботқа жіберіңіз.</p>
 	        </div>
 	        <form id="paymentForm" class="form">
-	          <label class="field">
-	            <span>Төлем провайдері</span>
-	            <select name="provider">${providers.map((provider) => `<option value="${esc(provider.code)}">${esc(provider.title)}</option>`).join("")}</select>
-	          </label>
+	          ${staticKaspiMethodHtml()}
 	          <button class="gold-btn lg" type="submit"><span class="btn-label">Тариф сатып алу</span><span class="btn-spinner"></span></button>
 	        </form>
 	        <div id="paymentResult"></div>
@@ -3496,7 +3596,7 @@
 	      if (buttonIsLoading(submitBtn)) return;
 	      setButtonLoading(submitBtn, true);
 	      try {
-	        const provider = new FormData(event.currentTarget).get("provider");
+	        const provider = DEFAULT_PAYMENT_PROVIDER;
 	        const contactPhone = await openPurchasePhoneSheet({
 	          title: tariff.title || tariff.code,
 	          amount: tariff.price_kzt,
@@ -3774,9 +3874,18 @@
 	          <button class="ghost-btn" data-next="referral" type="button">Дос шақыру</button>
           <button class="ghost-btn" data-next="support" type="button">Қолдау қызметі</button>
         </div>
+        <button class="ghost-btn lg block whatsapp-action" id="profileWhatsappSupport" type="button">
+          <span class="whatsapp-action-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="16" height="16" focusable="false" aria-hidden="true">
+              <path fill="currentColor" d="M16.02 5.333c-5.9 0-10.687 4.787-10.687 10.687 0 1.88.493 3.713 1.427 5.333L5.333 26.667l5.46-1.4a10.66 10.66 0 0 0 5.227 1.36h.004c5.899 0 10.687-4.788 10.687-10.687 0-2.854-1.111-5.535-3.129-7.553a10.617 10.617 0 0 0-7.562-3.054Zm0 19.45h-.003a8.86 8.86 0 0 1-4.517-1.237l-.324-.192-3.24.829.866-3.16-.211-.336a8.86 8.86 0 0 1-1.358-4.717c0-4.9 3.987-8.887 8.89-8.887 2.373 0 4.604.926 6.281 2.606a8.829 8.829 0 0 1 2.605 6.288c0 4.9-3.987 8.806-8.989 8.806Zm5.124-6.624c-.281-.141-1.663-.821-1.92-.914-.257-.094-.444-.141-.631.141-.187.281-.722.914-.886 1.101-.164.187-.327.21-.609.07-.281-.14-1.187-.437-2.262-1.395-.835-.745-1.4-1.665-1.564-1.946-.164-.282-.018-.434.124-.574.127-.127.281-.328.422-.492.14-.164.187-.281.281-.469.094-.187.047-.351-.023-.492-.07-.141-.633-1.523-.866-2.084-.227-.547-.46-.472-.633-.481-.164-.008-.351-.01-.539-.01a1.04 1.04 0 0 0-.751.351c-.258.281-.984.961-.984 2.344 0 1.383 1.008 2.719 1.148 2.906.141.187 1.984 3.028 4.805 4.244.671.291 1.196.464 1.604.594.674.214 1.287.184 1.772.112.541-.081 1.663-.679 1.898-1.336.234-.656.234-1.219.164-1.336-.07-.117-.258-.187-.539-.328Z"/>
+            </svg>
+          </span>
+          <span>WhatsApp арқылы жазу</span>
+        </button>
       </section>
     `);
     bindNext();
+    on("profileWhatsappSupport", openWhatsAppSupport);
   }
 
   function renderSupport() {
@@ -3787,12 +3896,28 @@
           <h1>Қолдау қызметі</h1>
           <p class="muted">Сұрағыңызды жазыңыз. Команда жауап береді.</p>
         </div>
+        <div class="card whatsapp-card">
+          <div class="whatsapp-card-head">
+            <span class="whatsapp-mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="22" height="22" focusable="false" aria-hidden="true">
+                <path fill="currentColor" d="M16.02 5.333c-5.9 0-10.687 4.787-10.687 10.687 0 1.88.493 3.713 1.427 5.333L5.333 26.667l5.46-1.4a10.66 10.66 0 0 0 5.227 1.36h.004c5.899 0 10.687-4.788 10.687-10.687 0-2.854-1.111-5.535-3.129-7.553a10.617 10.617 0 0 0-7.562-3.054Zm0 19.45h-.003a8.86 8.86 0 0 1-4.517-1.237l-.324-.192-3.24.829.866-3.16-.211-.336a8.86 8.86 0 0 1-1.358-4.717c0-4.9 3.987-8.887 8.89-8.887 2.373 0 4.604.926 6.281 2.606a8.829 8.829 0 0 1 2.605 6.288c0 4.9-3.987 8.806-8.989 8.806Zm5.124-6.624c-.281-.141-1.663-.821-1.92-.914-.257-.094-.444-.141-.631.141-.187.281-.722.914-.886 1.101-.164.187-.327.21-.609.07-.281-.14-1.187-.437-2.262-1.395-.835-.745-1.4-1.665-1.564-1.946-.164-.282-.018-.434.124-.574.127-.127.281-.328.422-.492.14-.164.187-.281.281-.469.094-.187.047-.351-.023-.492-.07-.141-.633-1.523-.866-2.084-.227-.547-.46-.472-.633-.481-.164-.008-.351-.01-.539-.01a1.04 1.04 0 0 0-.751.351c-.258.281-.984.961-.984 2.344 0 1.383 1.008 2.719 1.148 2.906.141.187 1.984 3.028 4.805 4.244.671.291 1.196.464 1.604.594.674.214 1.287.184 1.772.112.541-.081 1.663-.679 1.898-1.336.234-.656.234-1.219.164-1.336-.07-.117-.258-.187-.539-.328Z"/>
+              </svg>
+            </span>
+            <div>
+              <p class="eyebrow">WhatsApp</p>
+              <h2>WhatsApp қолдау</h2>
+              <p class="muted">Сұрағыңыз болса, WhatsApp арқылы қолдау қызметіне жазыңыз.</p>
+            </div>
+          </div>
+          <button id="whatsappSupportBtn" class="gold-btn lg block" type="button"><span class="btn-label">WhatsApp арқылы жазу</span></button>
+        </div>
         <form id="supportForm" class="form">
           <label class="field"><span>Хабарлама</span><textarea name="body" required placeholder="Хабарлама..."></textarea></label>
           <button class="gold-btn lg" type="submit"><span class="btn-label">Жіберу</span><span class="btn-spinner"></span></button>
         </form>
       </section>
     `);
+    on("whatsappSupportBtn", openWhatsAppSupport);
     document.getElementById("supportForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const submitBtn = event.currentTarget.querySelector("button[type=submit]");

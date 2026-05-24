@@ -3578,6 +3578,126 @@ tr:hover td {
 }
 
 /* =============================================================
+   WHATSAPP SUPPORT
+   ============================================================= */
+
+.whatsapp-card {
+  display: grid;
+  gap: 14px;
+}
+
+.whatsapp-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.whatsapp-card-head h2 {
+  margin: 2px 0 4px;
+}
+
+.whatsapp-card-head p {
+  margin: 0;
+}
+
+.whatsapp-mark {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+  color: #ffffff;
+  box-shadow: 0 12px 30px rgba(18, 140, 126, 0.32);
+}
+
+.whatsapp-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.whatsapp-action-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+  color: #ffffff;
+  flex: 0 0 auto;
+}
+
+/* =============================================================
+   STATIC PAYMENT METHOD (KASPI)
+   ============================================================= */
+
+.payment-method-field {
+  gap: 8px;
+}
+
+.payment-method-static {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(200, 162, 74, 0.08), rgba(200, 162, 74, 0.02)),
+    rgba(10, 13, 19, 0.78);
+  padding: 14px 16px;
+  min-height: 60px;
+}
+
+.payment-method-static-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #D6B66A 0%, #C8A24A 45%, #A9843A 100%);
+  color: #0A0D13;
+  font-weight: 900;
+  font-size: 18px;
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.payment-method-static-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.payment-method-static-meta strong {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.payment-method-static-meta small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* =============================================================
+   PHONE INPUT VALIDATION
+   ============================================================= */
+
+input.has-error,
+input.has-error:focus {
+  border-color: rgba(255, 107, 107, 0.7);
+  box-shadow: 0 0 0 4px rgba(255, 107, 107, 0.12);
+}
+
+/* =============================================================
    SCREEN LAYOUT
    ============================================================= */
 
