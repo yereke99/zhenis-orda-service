@@ -708,7 +708,7 @@
 	  function premiumCourseManagerUrl(course) {
 	    const phone = compact(state.whatsappSalesPhone).replace(/\D/g, "");
 	    if (!phone || !course) return "";
-	    const message = `Сәлеметсіз бе! Мен «${course.title || ""}» premium курсына қолжетімділік алғым келеді. Бағасы: ${money(course.price_kzt)} ₸.`;
+	    const message = `Сәлеметсіз бе! Маған «${compact(course.title)}» премиум курсы қызықтырды. Бағасы: ${money(course.price_kzt)} ₸. Толығырақ ақпарат алып, сатып алу бойынша көмектессеңіз.`;
 	    return `https://wa.me/${encodeURIComponent(phone)}?text=${encodeURIComponent(message)}`;
 	  }
 
@@ -2388,7 +2388,7 @@
 	      on("backPremiumCourse", closePremiumCourseDetail);
 	      on("backPremiumCourse2", closePremiumCourseDetail);
 	      on("buyPremiumCourse", () => setScreen("premiumPayment"));
-	      on("contactPremiumManager", () => openExternalLink(premiumCourseManagerUrl(course)));
+	      on("contactPremiumManager", () => openExternalLink(premiumCourseManagerUrl(course), "Менеджердің WhatsApp нөмірі бапталмаған"));
 	      bindPremiumLessonCards();
 	      return;
 	    }
