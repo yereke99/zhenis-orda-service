@@ -87,7 +87,7 @@ func Load() (Config, error) {
 		FreeLessonUploadDir:           getEnv("FREE_LESSON_UPLOAD_DIR", filepath.Join(uploadDir, "free-lessons")),
 		PaymentDir:                    getEnv("PAYMENT_DIR", "payment"),
 		AllowedOrigins:                splitCSV(getEnv("ALLOWED_ORIGINS", "https://zhenis-orda.kz")),
-		WhatsAppSalesPhone:            digitsOnly("87013717776"),
+		WhatsAppSalesPhone:            digitsOnly("77013717776"),
 		KaspiPayURL:                   "https://pay.kaspi.kz/pay/vdx8u2ff",
 		KaspiQRImageURL:               os.Getenv("KASPI_QR_IMAGE_URL"),
 		HalykPaymentURL:               os.Getenv("HALYK_PAYMENT_URL"),
