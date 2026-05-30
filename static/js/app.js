@@ -928,6 +928,20 @@
 	          </div>
 	          <button class="sheet-close" type="button" aria-label="Жабу">×</button>
 	        </div>
+	        <figure class="payment-manual-preview" aria-label="PDF-чекті бөлісу нұсқаулығы">
+	          <div class="payment-manual-image">
+	            <img
+	              src="/static/manual-photo/share.png"
+	              alt="PDF-чекті ашып, Бөлісу батырмасын басу нұсқаулығы"
+	              loading="lazy"
+	              decoding="async"
+	            />
+	          </div>
+	          <figcaption class="payment-manual-caption">
+	            <span>PDF-чекті ашып, «Бөлісу» батырмасын басыңыз</span>
+	            <span>Откройте PDF-чек и нажмите «Поделиться»</span>
+	          </figcaption>
+	        </figure>
 	        <ol class="instruction-list">
 	          <li>Kaspi арқылы төлем жасаңыз.</li>
 	          <li>Төлемнен кейін PDF-чекті ашыңыз.</li>
