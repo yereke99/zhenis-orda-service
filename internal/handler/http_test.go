@@ -1410,6 +1410,105 @@ func TestMiniAppReceiptUploadRejectsWrongAmountNoAccess(t *testing.T) {
 	}
 }
 
+func TestAdminApproveAutoRejectedPaymentNotifiesUserOnce(t *testing.T) {
+	srv, store := newTestHTTPServerWithStoreAndConfig(t, "development", func(cfg *config.Config) {
+		cfg.PaymentAmountToleranceKZT = 500
+	})
+	ctx := context.Background()
+	if _, err := store.DB().ExecContext(ctx, `UPDATE tariffs SET price_kzt = 9500 WHERE code = 'BASIC'`); err != nil {
+		t.Fatal(err)
+	}
+	cookie := loginAdminCookie(t, srv)
+	acceptLatestLegalAgreement(t, srv, 9205)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/payments?miniapp_dev=1&telegram_id=9205", bytes.NewBufferString(`{"tariff_code":"BASIC","provider":"kaspi_qr","contact_phone":"+7 700 100 20 30"}`))
+	createRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create payment expected 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Payment repository.Payment `json:"payment"`
+	}
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormFile("receipt", "receipt.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("Kaspi OFD чек Номер чека QR15625065509 ИИН/БИН продавца 830520499025 Сумма 100 ₸")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	uploadReq := httptest.NewRequest(http.MethodPost, "/api/payments/"+created.Payment.ID+"/receipt?miniapp_dev=1&telegram_id=9205", &buf)
+	uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
+	uploadRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusOK {
+		t.Fatalf("upload expected 200, got %d: %s", uploadRec.Code, uploadRec.Body.String())
+	}
+	var uploaded struct {
+		Payment repository.Payment `json:"payment"`
+	}
+	if err := json.NewDecoder(uploadRec.Body).Decode(&uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Payment.Status != repository.PaymentStatusRejected {
+		t.Fatalf("expected rejected payment before manual approval, got %s", uploaded.Payment.Status)
+	}
+
+	bot := &testInviteBot{}
+	srv.SetBot(bot)
+
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/admin/payments/"+created.Payment.ID+"/approve", bytes.NewBufferString(`{"days":30}`))
+	approveReq.AddCookie(cookie)
+	approveRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(approveRec, approveReq)
+	if approveRec.Code != http.StatusOK {
+		t.Fatalf("first approve expected 200, got %d: %s", approveRec.Code, approveRec.Body.String())
+	}
+	var approveBody struct {
+		Payment repository.Payment `json:"payment"`
+		Message string             `json:"message"`
+	}
+	if err := json.NewDecoder(approveRec.Body).Decode(&approveBody); err != nil {
+		t.Fatal(err)
+	}
+	if approveBody.Payment.Status != repository.PaymentStatusApproved || approveBody.Message != "payment approved" {
+		t.Fatalf("first approve response = %#v", approveBody)
+	}
+
+	approveReq2 := httptest.NewRequest(http.MethodPost, "/api/admin/payments/"+created.Payment.ID+"/approve", bytes.NewBufferString(`{"days":30}`))
+	approveReq2.AddCookie(cookie)
+	approveRec2 := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(approveRec2, approveReq2)
+	if approveRec2.Code != http.StatusOK {
+		t.Fatalf("second approve expected 200, got %d: %s", approveRec2.Code, approveRec2.Body.String())
+	}
+	var approveBody2 struct {
+		Payment repository.Payment `json:"payment"`
+		Message string             `json:"message"`
+	}
+	if err := json.NewDecoder(approveRec2.Body).Decode(&approveBody2); err != nil {
+		t.Fatal(err)
+	}
+	if approveBody2.Payment.Status != repository.PaymentStatusApproved || approveBody2.Message != "payment already approved" {
+		t.Fatalf("second approve response = %#v", approveBody2)
+	}
+	if len(bot.messages) != 1 {
+		t.Fatalf("expected one approval notification, got %d", len(bot.messages))
+	}
+	if bot.messages[0].chatID != 9205 {
+		t.Fatalf("approval notification chat id = %d", bot.messages[0].chatID)
+	}
+}
+
 func TestMiniAppReceiptUploadRejectsNonPDF(t *testing.T) {
 	srv := newTestHTTPServer(t, "development")
 	acceptLatestLegalAgreement(t, srv, 0)

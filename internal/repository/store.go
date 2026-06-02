@@ -13,14 +13,16 @@ import (
 )
 
 var (
-	ErrNotFound               = errors.New("not found")
-	ErrForbidden              = errors.New("forbidden")
-	ErrInvalidState           = errors.New("invalid state")
-	ErrReceiptAlreadyApproved = errors.New("receipt already approved")
-	ErrReceiptDuplicate       = errors.New("receipt duplicate")
-	ErrPaymentExpired         = errors.New("payment expired")
-	ErrPaymentCancelled       = errors.New("payment cancelled")
-	ErrAmbiguousPayment       = errors.New("ambiguous payment")
+	ErrNotFound                   = errors.New("not found")
+	ErrForbidden                  = errors.New("forbidden")
+	ErrInvalidState               = errors.New("invalid state")
+	ErrManualApprovalNotAllowed   = errors.New("payment is not eligible for manual approval")
+	ErrManualApprovalNeedsReceipt = errors.New("payment has no uploaded receipt for manual approval")
+	ErrReceiptAlreadyApproved     = errors.New("receipt already approved")
+	ErrReceiptDuplicate           = errors.New("receipt duplicate")
+	ErrPaymentExpired             = errors.New("payment expired")
+	ErrPaymentCancelled           = errors.New("payment cancelled")
+	ErrAmbiguousPayment           = errors.New("ambiguous payment")
 )
 
 type Store struct {

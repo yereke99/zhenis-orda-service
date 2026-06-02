@@ -221,6 +221,55 @@ func (s *Store) approvePayment(ctx context.Context, paymentID string, actor Admi
 	return payment, err
 }
 
+func paymentWasAutoRejected(payment Payment) bool {
+	return payment.Status == PaymentStatusRejected && strings.HasPrefix(strings.TrimSpace(payment.AdminComment), "auto_rejected:")
+}
+
+func receiptHasValidationErrorCode(receipt Receipt, code string) bool {
+	for _, value := range receipt.ValidationErrors {
+		if value == code {
+			return true
+		}
+	}
+	return false
+}
+
+func receiptBlocksManualApproval(receipt Receipt) bool {
+	return receipt.ValidationStatus == ReceiptStatusDuplicate || receiptHasValidationErrorCode(receipt, "duplicate_identity_found")
+}
+
+func manualApprovalEligibilityError(payment Payment, receipt *Receipt) error {
+	switch payment.Status {
+	case PaymentStatusPending, PaymentStatusUploadedReceipt:
+		return nil
+	case PaymentStatusExpired:
+		if receipt == nil {
+			return ErrManualApprovalNeedsReceipt
+		}
+		return nil
+	case PaymentStatusRejected:
+		if receipt == nil {
+			return ErrManualApprovalNeedsReceipt
+		}
+		if paymentWasAutoRejected(payment) {
+			return nil
+		}
+		return ErrManualApprovalNotAllowed
+	default:
+		return ErrManualApprovalNotAllowed
+	}
+}
+
+func approvedAdminComment(currentComment, overrideComment string) any {
+	if comment := strings.TrimSpace(overrideComment); comment != "" {
+		return comment
+	}
+	if strings.HasPrefix(strings.TrimSpace(currentComment), "auto_rejected:") {
+		return nil
+	}
+	return nullableString(currentComment)
+}
+
 func (s *Store) approvePaymentTx(ctx context.Context, tx *sql.Tx, paymentID string, actor AdminActor, subscriptionDays int, overrideComment string, enforceReviewRules bool) (Payment, error) {
 	if subscriptionDays <= 0 {
 		subscriptionDays = 30
@@ -232,34 +281,21 @@ func (s *Store) approvePaymentTx(ctx context.Context, tx *sql.Tx, paymentID stri
 	if found.Status == PaymentStatusApproved {
 		return found, nil
 	}
-	if found.Status != PaymentStatusPending && found.Status != PaymentStatusUploadedReceipt {
-		return Payment{}, ErrInvalidState
-	}
-	if found.ExpiresAt != nil && !found.ExpiresAt.After(nowUTC()) {
-		return Payment{}, ErrPaymentExpired
-	}
 	receipt, err := latestReceiptForPaymentTx(ctx, tx, found.ID)
 	if err != nil {
 		return Payment{}, err
 	}
-	if enforceReviewRules && receipt != nil {
-		if receiptBlocksApproval(*receipt) {
-			return Payment{}, ErrInvalidState
-		}
-		comment := strings.TrimSpace(overrideComment)
-		switch receipt.ValidationStatus {
-		case ReceiptStatusDuplicate, ReceiptStatusSuspicious, ReceiptStatusRejected:
-			if actor.Role != RoleSuperAdmin || comment == "" {
-				return Payment{}, ErrInvalidState
-			}
-		case ReceiptStatusParseFailed, ReceiptStatusParsePartial:
-			if comment == "" {
-				return Payment{}, ErrInvalidState
-			}
-		}
+	if err := manualApprovalEligibilityError(found, receipt); err != nil {
+		return Payment{}, err
+	}
+	if found.ExpiresAt != nil && !found.ExpiresAt.After(nowUTC()) && receipt == nil {
+		return Payment{}, ErrPaymentExpired
+	}
+	if enforceReviewRules && receipt != nil && receiptBlocksManualApproval(*receipt) {
+		return Payment{}, ErrManualApprovalNotAllowed
 	}
 	if found.PaymentType == PaymentTypePremiumCourse {
-		return s.approvePremiumCoursePaymentTx(ctx, tx, found, actor)
+		return s.approvePremiumCoursePaymentTx(ctx, tx, found, actor, overrideComment)
 	}
 	now := nowUTC()
 	startsAt := now
@@ -301,11 +337,12 @@ func (s *Store) approvePaymentTx(ctx context.Context, tx *sql.Tx, paymentID stri
 	if actor.ID == 0 {
 		approvedBy = nil
 	}
+	adminComment := approvedAdminComment(found.AdminComment, overrideComment)
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE payments
-		SET status = 'approved', subscription_id = ?, approved_by_admin_id = ?, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		SET status = 'approved', subscription_id = ?, admin_comment = ?, approved_by_admin_id = ?, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?;
-	`, subscriptionID, approvedBy, found.ID); err != nil {
+	`, subscriptionID, adminComment, approvedBy, found.ID); err != nil {
 		return Payment{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -331,7 +368,7 @@ func (s *Store) approvePaymentTx(ctx context.Context, tx *sql.Tx, paymentID stri
 	return scanPaymentRow(tx.QueryRowContext(ctx, paymentSelectSQL+` WHERE p.id = ?`, found.ID))
 }
 
-func (s *Store) approvePremiumCoursePaymentTx(ctx context.Context, tx *sql.Tx, found Payment, actor AdminActor) (Payment, error) {
+func (s *Store) approvePremiumCoursePaymentTx(ctx context.Context, tx *sql.Tx, found Payment, actor AdminActor, overrideComment string) (Payment, error) {
 	if found.PremiumCourseID == nil || strings.TrimSpace(*found.PremiumCourseID) == "" {
 		return Payment{}, ErrInvalidState
 	}
@@ -339,11 +376,12 @@ func (s *Store) approvePremiumCoursePaymentTx(ctx context.Context, tx *sql.Tx, f
 	if actor.ID == 0 {
 		approvedBy = nil
 	}
+	adminComment := approvedAdminComment(found.AdminComment, overrideComment)
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE payments
-		SET status = 'approved', approved_by_admin_id = ?, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		SET status = 'approved', admin_comment = ?, approved_by_admin_id = ?, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?;
-	`, approvedBy, found.ID); err != nil {
+	`, adminComment, approvedBy, found.ID); err != nil {
 		return Payment{}, err
 	}
 	paymentID := found.ID

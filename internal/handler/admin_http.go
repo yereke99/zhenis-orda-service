@@ -501,21 +501,31 @@ func (s *Server) handleAdminApprovePayment(w http.ResponseWriter, r *http.Reques
 		req.Days = s.cfg.SubscriptionDefaultDays
 	}
 	override := firstNonEmpty(req.OverrideComment, req.Comment)
+	before, err := s.store.GetPayment(r.Context(), id)
+	if mapRepoError(w, err) {
+		return
+	}
+	alreadyApproved := before.Status == repository.PaymentStatusApproved
 	payment, err := s.store.ApprovePaymentReviewed(r.Context(), id, actor, req.Days, override)
 	if mapRepoError(w, err) {
 		return
 	}
-	action := "payment_approve"
-	if payment.PaymentType == repository.PaymentTypePremiumCourse {
-		action = "premium_course_payment_approved"
-	}
-	_ = s.store.Audit(r.Context(), actor, action, "payment", id, req)
-	if s.bot != nil {
-		if user, err := s.store.GetUserByID(r.Context(), payment.UserID); err == nil {
-			_ = s.bot.SendMessage(r.Context(), user.TelegramID, formatPaymentApprovedMessage(user.Language, payment))
+	message := "payment approved"
+	if alreadyApproved {
+		message = "payment already approved"
+	} else {
+		action := "payment_approve"
+		if payment.PaymentType == repository.PaymentTypePremiumCourse {
+			action = "premium_course_payment_approved"
+		}
+		_ = s.store.Audit(r.Context(), actor, action, "payment", id, req)
+		if s.bot != nil {
+			if user, err := s.store.GetUserByID(r.Context(), payment.UserID); err == nil {
+				_ = s.bot.SendMessage(r.Context(), user.TelegramID, formatPaymentApprovedMessage(user.Language, payment))
+			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"payment": payment})
+	writeJSON(w, http.StatusOK, map[string]any{"payment": payment, "message": message})
 }
 
 func (s *Server) handleAdminRejectPayment(w http.ResponseWriter, r *http.Request) {

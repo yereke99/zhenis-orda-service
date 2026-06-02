@@ -436,6 +436,14 @@ func mapRepoError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, repository.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, repository.ErrPaymentExpired):
+		writeError(w, http.StatusConflict, "payment expired")
+	case errors.Is(err, repository.ErrPaymentCancelled):
+		writeError(w, http.StatusConflict, "payment cancelled")
+	case errors.Is(err, repository.ErrManualApprovalNeedsReceipt):
+		writeError(w, http.StatusConflict, "payment has no uploaded receipt for manual approval")
+	case errors.Is(err, repository.ErrManualApprovalNotAllowed):
+		writeError(w, http.StatusConflict, "payment is not eligible for manual approval")
 	case errors.Is(err, repository.ErrInvalidState):
 		writeError(w, http.StatusConflict, "invalid state")
 	default:

@@ -696,6 +696,112 @@ func TestReceiptPremiumCourseUsesCoursePrice(t *testing.T) {
 	}
 }
 
+func TestManualApproveAutoRejectedAmountMismatchPayment(t *testing.T) {
+	store, ctx := newTestStore(t)
+	user := registerUser(t, ctx, store, 7701, "")
+	payment := createPayment(t, ctx, store, user.ID, "BASIC")
+	path, size := writeReceiptPDF(t, validReceiptText("TX-MANUAL-APPROVE", "100", testRecipientBIN))
+	opts := receiptOpts()
+	opts.AmountToleranceKZT = 500
+
+	updated, receipt, err := store.AttachReceiptToPaymentWithValidation(ctx, user.ID, payment.ID, path, "kaspi.pdf", "application/pdf", size, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != repository.PaymentStatusRejected || !hasValidationError(receipt, "amount_mismatch") {
+		t.Fatalf("expected auto rejected mismatch, payment=%s receipt=%#v", updated.Status, receipt)
+	}
+
+	approved, err := store.ApprovePaymentReviewed(ctx, payment.ID, repository.AdminActor{ID: 7, Role: repository.RoleSupport}, 30, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Status != repository.PaymentStatusApproved {
+		t.Fatalf("manual approval status = %s", approved.Status)
+	}
+	if approved.SubscriptionID == nil || approved.AdminComment != "" {
+		t.Fatalf("manual approval did not normalize payment: %#v", approved)
+	}
+	latestReceipt, err := store.LatestReceiptForPayment(ctx, payment.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latestReceipt == nil || latestReceipt.ValidationStatus != repository.ReceiptStatusApproved {
+		t.Fatalf("receipt status after manual approval = %#v", latestReceipt)
+	}
+	sub, err := store.GetActiveSubscription(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub == nil || sub.Status != repository.SubscriptionStatusActive {
+		t.Fatalf("subscription after manual approval = %#v", sub)
+	}
+	expiresAt := sub.ExpiresAt
+	approvedAgain, err := store.ApprovePaymentReviewed(ctx, payment.ID, repository.AdminActor{ID: 7, Role: repository.RoleSupport}, 30, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approvedAgain.SubscriptionID == nil || *approvedAgain.SubscriptionID != *approved.SubscriptionID {
+		t.Fatalf("second manual approval changed subscription link: first=%#v second=%#v", approved.SubscriptionID, approvedAgain.SubscriptionID)
+	}
+	subAgain, err := store.GetActiveSubscription(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subAgain == nil || !subAgain.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("second manual approval extended subscription unexpectedly: before=%v after=%#v", expiresAt, subAgain)
+	}
+}
+
+func TestManualApproveExpiredAutoRejectedPayment(t *testing.T) {
+	store, ctx := newTestStore(t)
+	user := registerUser(t, ctx, store, 7702, "")
+	payment := createPayment(t, ctx, store, user.ID, "BASIC")
+	path, size := writeReceiptPDF(t, validReceiptText("TX-MANUAL-EXPIRED", "8 900", testRecipientBIN))
+	opts := receiptOpts()
+	opts.AmountToleranceKZT = 500
+
+	updated, receipt, err := store.AttachReceiptToPaymentWithValidation(ctx, user.ID, payment.ID, path, "kaspi.pdf", "application/pdf", size, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != repository.PaymentStatusRejected || !hasValidationError(receipt, "amount_mismatch") {
+		t.Fatalf("expected auto rejected mismatch, payment=%s receipt=%#v", updated.Status, receipt)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE payments SET status = 'expired', expires_at = datetime('now', '-1 minute') WHERE id = ?`, payment.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	approved, err := store.ApprovePaymentReviewed(ctx, payment.ID, repository.AdminActor{ID: 8, Role: repository.RoleSupport}, 30, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Status != repository.PaymentStatusApproved {
+		t.Fatalf("expired manual approval status = %s", approved.Status)
+	}
+	sub, err := store.GetActiveSubscription(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub == nil || sub.Status != repository.SubscriptionStatusActive {
+		t.Fatalf("expired manual approval did not restore access: %#v", sub)
+	}
+}
+
+func TestManualApproveExpiredPaymentWithoutReceiptReturnsClearError(t *testing.T) {
+	store, ctx := newTestStore(t)
+	user := registerUser(t, ctx, store, 7703, "")
+	payment := createPayment(t, ctx, store, user.ID, "BASIC")
+	if _, err := store.DB().ExecContext(ctx, `UPDATE payments SET status = 'expired', expires_at = datetime('now', '-1 minute') WHERE id = ?`, payment.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.ApprovePaymentReviewed(ctx, payment.ID, repository.AdminActor{ID: 9, Role: repository.RoleSupport}, 30, "")
+	if !errors.Is(err, repository.ErrManualApprovalNeedsReceipt) {
+		t.Fatalf("expected ErrManualApprovalNeedsReceipt, got %v", err)
+	}
+}
+
 func TestReceiptDoesNotApproveExpiredCancelledOrWrongPendingPayment(t *testing.T) {
 	store, ctx := newTestStore(t)
 	user := registerUser(t, ctx, store, 7501, "")

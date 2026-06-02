@@ -5766,6 +5766,12 @@
 	      </div>
 	    `;
 	    const paymentForm = document.getElementById("paymentAction");
+	    const setPaymentFormBusy = (loading, activeButton) => {
+	      paymentForm.querySelectorAll("input, button").forEach((control) => {
+	        if (control !== activeButton) control.disabled = Boolean(loading);
+	      });
+	      setButtonLoading(activeButton, loading);
+	    };
 	    paymentForm.addEventListener("input", (event) => {
 	      if (event.target.name === "id") state.adminPaymentManualID = event.target.value;
 	      if (event.target.name === "comment") state.adminPaymentManualComment = event.target.value;
@@ -5773,27 +5779,41 @@
 	    paymentForm.addEventListener("submit", async (event) => {
 	      event.preventDefault();
 	      const submitter = event.submitter;
-	      const form = new FormData(event.currentTarget);
-	      const id = form.get("id");
-	      state.adminPaymentManualID = clean(id);
-	      state.adminPaymentManualComment = clean(form.get("comment"));
+	      if (!submitter || buttonIsLoading(submitter)) return;
+	      const formEl = event.currentTarget;
+	      const form = new FormData(formEl);
+	      const id = compact(form.get("id"));
+	      const comment = compact(form.get("comment"));
+	      state.adminPaymentManualID = id;
+	      state.adminPaymentManualComment = comment;
+	      if (!id) {
+	        toast("Төлем ID міндетті", "error");
+	        return;
+	      }
 	      try {
+	        setPaymentFormBusy(true, submitter);
+	        let response;
 	        if (submitter.value === "approve") {
-	          await api(`/api/admin/payments/${id}/approve`, {
+	          response = await api(`/api/admin/payments/${encodeURIComponent(id)}/approve`, {
 	            method: "POST",
-            body: JSON.stringify({ days: 30, override_comment: form.get("comment") }),
-          });
-          toast("Қабылданды", "success");
+	            body: JSON.stringify({ days: 30, override_comment: comment }),
+	          });
+	          toast(response.message === "payment already approved" ? "Төлем бұрыннан қабылданған" : "Төлем қабылданды", "success");
 	        } else {
-	          await api(`/api/admin/payments/${id}/reject`, {
+	          response = await api(`/api/admin/payments/${encodeURIComponent(id)}/reject`, {
 	            method: "POST",
-	            body: JSON.stringify({ comment: form.get("comment") }),
+	            body: JSON.stringify({ comment }),
 	          });
 	          toast("Қабылданбады", "success");
 	        }
+	        formEl.reset();
+	        state.adminPaymentManualID = "";
+	        state.adminPaymentManualComment = "";
 	        await loadAdminPaymentsTable();
 	      } catch (error) {
 	        toast(error.message || "Әрекет орындалмады", "error");
+	      } finally {
+	        setPaymentFormBusy(false, submitter);
 	      }
 	    });
 	    delegate(els.adminContent, "[data-copy-payment-id]", "click", (event, target) => {
@@ -5865,13 +5885,33 @@
 
 	  function paymentIDCell(payment) {
 	    const id = clean(payment && payment.id);
+	    const canUseForManualReview = canUsePaymentForManualReview(payment);
 	    return `<div class="payment-id-cell">
 	      <code class="mono-id full">${esc(id || "—")}</code>
 	      <div class="action-row payment-id-actions">
 	        <button class="ghost-btn icon-mini" data-copy-payment-id="${esc(id)}" type="button">Copy UUID</button>
-	        <button class="ghost-btn icon-mini" data-use-payment-id="${esc(id)}" type="button">Қолмен тексеру</button>
+	        ${canUseForManualReview
+	          ? `<button class="ghost-btn icon-mini" data-use-payment-id="${esc(id)}" type="button">Қолмен тексеру</button>`
+	          : `<button class="ghost-btn icon-mini" type="button" disabled>Қолжетімсіз</button>`}
 	      </div>
 	    </div>`;
+	  }
+
+	  function canUsePaymentForManualReview(payment) {
+	    const receipt = payment && payment.receipt;
+	    if (!receipt) return false;
+	    const status = clean(payment && payment.status);
+	    if (status === "approved" || status === "cancelled") return false;
+	    if (status === "rejected") {
+	      const comment = compact(payment && payment.admin_comment);
+	      const errors = receipt.validation_errors || [];
+	      return /^auto_rejected:/i.test(comment) && receipt.validation_status !== "duplicate" && !errors.includes("duplicate_identity_found");
+	    }
+	    if (status === "pending" || status === "uploaded_receipt" || status === "expired") {
+	      const errors = receipt.validation_errors || [];
+	      return receipt.validation_status !== "duplicate" && !errors.includes("duplicate_identity_found");
+	    }
+	    return false;
 	  }
 
 	  function receiptOpenHtml(receipt) {
