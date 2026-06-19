@@ -374,6 +374,28 @@ func (s *Store) ListSubscriptionsExpiringBetween(ctx context.Context, from, to t
 	return subs, rows.Err()
 }
 
+func (s *Store) ListActiveNotificationUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx, userSelectSQL+`
+		JOIN subscriptions sub ON sub.user_id = u.id AND sub.status = 'active' AND sub.expires_at > CURRENT_TIMESTAMP
+		WHERE u.access_closed = 0
+		GROUP BY u.id
+		ORDER BY u.id ASC;
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		user, err := scanUserRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
 func (s *Store) ListUsersWithActiveTariffAtLeast(ctx context.Context, tariffCode string, limit int) ([]User, error) {
 	if limit <= 0 || limit > 2000 {
 		limit = 1000

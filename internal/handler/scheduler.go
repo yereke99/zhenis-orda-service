@@ -13,7 +13,7 @@ import (
 func (s *Server) StartSchedulers(ctx context.Context) {
 	go s.every(ctx, time.Minute, s.runMinuteJobs)
 	go s.every(ctx, 5*time.Second, s.runBroadcastJob)
-	go s.every(ctx, 10*time.Minute, s.runInactiveReminderJob)
+	go s.every(ctx, time.Minute, s.runZoomReminderJob)
 	go s.every(ctx, 24*time.Hour, s.runDailyJobs)
 	go s.every(ctx, time.Minute, s.runLiveStreamReminderJob)
 }
@@ -100,22 +100,43 @@ func (s *Server) runMinuteJobs(ctx context.Context) {
 	}
 }
 
-func (s *Server) runInactiveReminderJob(ctx context.Context) {
+func (s *Server) runZoomReminderJob(ctx context.Context) {
 	if s.bot == nil {
 		return
 	}
-	users, err := s.store.ListInactiveUsers(ctx, time.Now().Add(-72*time.Hour), 200)
+	localNow, ok := zoomReminderTime(time.Now())
+	if !ok {
+		return
+	}
+	users, err := s.store.ListActiveNotificationUsers(ctx)
 	if err != nil {
-		s.logger.Warn("inactive users query failed", zap.Error(err))
+		s.logger.Warn("zoom reminder users query failed", zap.Error(err))
 		return
 	}
 	for _, user := range users {
-		key := fmt.Sprintf("reminder:inactive3:%s", user.ID)
-		ok, err := s.kv.SetNX(ctx, key, "1", s.cfg.InactiveReminderCooldown)
+		key := fmt.Sprintf("reminder:zoom:%s:%s", localNow.Format("2006-01-02"), user.ID)
+		ok, err := s.kv.SetNX(ctx, key, "1", 7*24*time.Hour)
 		if err != nil || !ok {
 			continue
 		}
-		_ = s.bot.SendMessage(ctx, user.TelegramID, i18n.T(user.Language, "inactive_3_days"))
+		_ = s.bot.SendMessage(ctx, user.TelegramID, i18n.T(user.Language, "zoom_reminder"))
+	}
+}
+
+func zoomReminderTime(now time.Time) (time.Time, bool) {
+	loc, err := time.LoadLocation("Asia/Almaty")
+	if err != nil {
+		loc = time.FixedZone("Asia/Almaty", 5*60*60)
+	}
+	localNow := now.In(loc)
+	if localNow.Hour() != 20 || localNow.Minute() != 0 {
+		return localNow, false
+	}
+	switch localNow.Weekday() {
+	case time.Monday, time.Thursday:
+		return localNow, true
+	default:
+		return localNow, false
 	}
 }
 

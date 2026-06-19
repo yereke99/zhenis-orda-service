@@ -122,7 +122,7 @@ Startup responsibilities:
 - MAX_RECEIPT_BYTES
 - BROWSER_SESSION_TTL_HOURS
 - TELEGRAM_INIT_DATA_MAX_AGE_HOURS
-- INACTIVE_REMINDER_COOLDOWN_HOURS
+- INACTIVE_REMINDER_COOLDOWN_HOURS (legacy)
 - SUBSCRIPTION_REMINDER_HOURS
 
 Current behavior:
@@ -247,7 +247,7 @@ HTTP routing, Telegram bot, auth middleware, browser sessions, schedulers.
    Background jobs:
    - StartSchedulers()
    - runMinuteJobs()
-   - runInactiveReminderJob()
+   - runZoomReminderJob()
    - runDailyJobs()
    - runLiveStreamReminderJob()
 
@@ -612,7 +612,7 @@ main() вызывает srv.StartSchedulers(ctx).
 
 StartSchedulers() запускает goroutines:
 - every 1 minute: runMinuteJobs()
-- every 10 minutes: runInactiveReminderJob()
+- every 1 minute: runZoomReminderJob()
 - every 24 hours: runDailyJobs()
 - every 1 minute: runLiveStreamReminderJob()
 
@@ -812,7 +812,7 @@ Found:
 - payment_no_pending
 - payment_approved
 - payment_rejected
-- inactive_3_days scheduler reminder
+- zoom_reminder scheduler reminder
 - subscription_ending scheduler reminder
 - live stream reminders
 
@@ -2677,12 +2677,13 @@ ExpireSubscriptions():
 
 13.10. Reminders
 
-Inactive reminder:
-- runInactiveReminderJob()
-- every 10 minutes
-- users with last_seen_at <= now - 72h
-- sends inactive_3_days
-- idempotency key reminder:inactive3:{user.ID}
+Zoom reminder:
+- runZoomReminderJob()
+- every minute scheduler check
+- sends Monday and Thursday at 20:00 Asia/Almaty
+- active subscription users with access_closed = 0
+- sends zoom_reminder
+- idempotency key reminder:zoom:{localDate}:{user.ID}
 
 Subscription ending:
 - runDailyJobs()
@@ -3732,7 +3733,7 @@ Telegram:
 Schedulers:
 - StartSchedulers()
 - runMinuteJobs()
-- runInactiveReminderJob()
+- runZoomReminderJob()
 - runDailyJobs()
 - runLiveStreamReminderJob()
 
@@ -3839,7 +3840,7 @@ Browser admin:
 21.6. Scheduler functions
 
 - runMinuteJobs(): expires payments/subscriptions.
-- runInactiveReminderJob(): sends inactive reminders.
+- runZoomReminderJob(): sends Zoom reminders.
 - runDailyJobs(): sends subscription ending reminders.
 - runLiveStreamReminderJob(): sends stream reminders.
 
